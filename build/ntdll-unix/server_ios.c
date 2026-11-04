@@ -2477,11 +2477,7 @@ static void ios_xprobe_main( void )
         thread_act_array_t th = NULL; mach_msg_type_number_t nth = 0, k;
         uint64_t now; double dt_ms, sum_thr_ms = 0; int nrows = 0, i, j;
 #define XP_MS(ticks) ((double)(ticks) * tb.numer / tb.denom / 1e6)
-#ifdef __IPHONE_18_0
-#define RI_PAGE_WAIT(ru, pru) XP_MS( (ru).ri_page_wait_time_mach - (pru).ri_page_wait_time_mach )
-#else
 #define RI_PAGE_WAIT(ru, pru) 0.0
-#endif
         usleep( 250000 );
         now = mach_absolute_time();
         dt_ms = XP_MS( now - t_prev );
