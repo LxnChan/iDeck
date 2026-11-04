@@ -14,9 +14,9 @@ on:
         default: 'com.kuschqin.madeira.steamui'
         type: string
       build_number:
-        description: 'Build number (CFBundleVersion, must be > 143 to upgrade over Build 143)'
+        description: 'Build number (CFBundleVersion, must be > 144 to upgrade over Build 144)'
         required: false
-        default: '144'
+        default: '145'
         type: string
       configuration:
         description: 'Build configuration (Debug or Release)'
@@ -264,7 +264,7 @@ jobs:
           set -e
           CONFIG="${{ inputs.configuration || 'Debug' }}"
           BUNDLE_ID="${{ inputs.bundle_id || 'com.kuschqin.madeira.steamui' }}"
-          BUILD_NUMBER="${{ inputs.build_number || '144' }}"
+          BUILD_NUMBER="${{ inputs.build_number || '145' }}"
 
           echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID, build_number=$BUILD_NUMBER"
           xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \

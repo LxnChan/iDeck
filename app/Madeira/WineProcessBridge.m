@@ -1868,6 +1868,9 @@ static void *wine_process_thread(void *arg) {
         unsetenv("MADEIRA_CPU_COUNT"); unsetenv("DXMT_D9_ANISO_LIMIT");
         unsetenv("FEX_X87REDUCEDPRECISION");   /* ml1184 */
         unsetenv("MADEIRA_STEAM_UI_SESSION");
+        unsetenv("MADEIRA_STEAM_UI_ALLOW_CRASHPAD");
+        unsetenv("MADEIRA_STEAM_UI_STRICT_RESERVATIONS");
+        unsetenv("MADEIRA_" "GDI_SHARED_SECTION");
         unsetenv("MADEIRA_WGI_HOST_PADS");
         unsetenv("MADEIRA_INPUT_FOREGROUND");
         unsetenv("MADEIRA_DINPUT_PAD");        /* ml1240 */

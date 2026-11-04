@@ -627,7 +627,19 @@ import UIKit
             freshSession: !repairRequiresRestart && !running && wine_process_is_running() == 0 && wineserver_is_running() == 0 && !StikJITHelper.poolTaken,
             capacity: SteamUIExperiment.steam64 ? nil : IDeckAddressSpace.current())
     }
+    static func ensureRuntimeSettings() {
+        for (key, value) in [SteamUIExperiment.flag: "1", SteamUIExperiment.bigPictureFlag: "1",
+            "env.MADEIRA_GDI_SHARED_SECTION": "1", "env.MADEIRA_STEAM_UI_ALLOW_CRASHPAD": "1",
+            "env.MADEIRA_STEAM_UI_STRICT_RESERVATIONS": "1", "env.MADEIRA_FRONTEND": "0",
+            "env.MADEIRA_CONTROLS_XBOX_DEFAULT": "1", "pool-split": "1", "pool-low": "1"] {
+            if MadeiraConfig.get(key) == nil {
+                _ = MadeiraConfig.set(key, value)
+            }
+        }
+    }
+
     func checkPrerequisites() {
+        Self.ensureRuntimeSettings()
         guard !checkingPrerequisites, !preparing else { return }
         checkingPrerequisites = true
         prerequisites = IDeckPrerequisite.allCases.map { .init(id: $0, status: .unchecked, detail: "Waiting to check") }

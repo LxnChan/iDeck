@@ -3729,6 +3729,7 @@ struct ContentView: View {
                 try SteamUIExperiment.importBundledX86(source: source, prefix: prefix,
                     flag: MadeiraConfig.get(SteamUIExperiment.flag) ?? (IDeckState.enabled ? "1" : nil), bundleID: Bundle.main.bundleIdentifier)
             }
+            IDeckState.ensureRuntimeSettings()
             if IDeckState.enabled { try ideck.installControl() }
             let plan = try SteamUIExperiment.prepare(prefix: prefix, width: size.0, height: size.1,
                 flag: MadeiraConfig.get(SteamUIExperiment.flag) ?? (IDeckState.enabled ? "1" : nil), bundleID: Bundle.main.bundleIdentifier, x86Client: x86Client, bigPicture: bigPicture,
@@ -3751,6 +3752,11 @@ struct ContentView: View {
                 if SteamUIExperiment.steam64 && ProcessInfo.processInfo.arguments.contains("madeira-steam64-compact-layout") {
                     setenv("MADEIRA_STEAM64_COMPACT_LAYOUT", "1", 1)
                     logStore.log("[steam64-layout] isolated compact arena experiment requested")
+                }
+                if x86Client {
+                    setenv("env.MADEIRA_GDI_SHARED_SECTION".replacingOccurrences(of: "env.", with: ""), "1", 1)
+                    setenv("MADEIRA_STEAM_UI_ALLOW_CRASHPAD", "1", 1)
+                    setenv("MADEIRA_STEAM_UI_STRICT_RESERVATIONS", "1", 1)
                 }
                 setenv("MADEIRA_EXE", "explorer.exe", 1)
                 setenv("MADEIRA_ARGS", plan.arguments, 1)
