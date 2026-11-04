@@ -173,7 +173,27 @@ jobs:
               cp -vf "/tmp/base_extract/Payload/Madeira.app/ideck-control.exe" "build/ideck-control/ideck-control.exe"
               echo "Successfully extracted ideck-control.exe from $BASE_IPA"
             fi
+
+            # Extract resource directories and PE runtimes (x86_64-vcruntime, aarch64-windows, etc.)
+            for res_dir in "x86_64-vcruntime" "aarch64-windows" "arm64ec-windows" "i386-windows"; do
+              unzip -q -o "$BASE_IPA" "Payload/Madeira.app/$res_dir/*" -d /tmp/base_extract 2>/dev/null || true
+              mkdir -p "app/Madeira/$res_dir"
+              if [ -d "/tmp/base_extract/Payload/Madeira.app/$res_dir" ]; then
+                cp -vn /tmp/base_extract/Payload/Madeira.app/$res_dir/* "app/Madeira/$res_dir/" 2>/dev/null || true
+                echo "Successfully staged $res_dir from $BASE_IPA"
+              fi
+            done
           fi
+
+          # Ensure all expected resource directories exist on disk for Xcode copy phases
+          mkdir -p app/Madeira/x86_64-vcruntime \
+                   app/Madeira/aarch64-windows \
+                   app/Madeira/arm64ec-windows \
+                   app/Madeira/i386-windows \
+                   app/Madeira/d3d12 \
+                   app/Madeira/nls \
+                   app/Madeira/legal \
+                   app/Madeira/licenses
 
           # Fallback for StikJIT binary from upstream StikDebug/StikJIT release
           if [ ! -f "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT" ]; then
