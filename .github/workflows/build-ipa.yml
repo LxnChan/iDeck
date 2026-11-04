@@ -13,6 +13,11 @@ on:
         required: false
         default: 'com.kuschqin.madeira.steamui'
         type: string
+      build_number:
+        description: 'Build number (CFBundleVersion, must be > 143 to upgrade over Build 143)'
+        required: false
+        default: '144'
+        type: string
       configuration:
         description: 'Build configuration (Debug or Release)'
         required: false
@@ -149,13 +154,17 @@ jobs:
               echo "Successfully extracted prefix-template.tar.gz"
             fi
 
-            # Extract StikJIT framework binary
+            # Extract StikJIT framework binary & Info.plist
             unzip -q -o "$BASE_IPA" "Payload/Madeira.app/Frameworks/StikJIT.framework/*" -d /tmp/base_extract 2>/dev/null || true
             if [ -f "/tmp/base_extract/Payload/Madeira.app/Frameworks/StikJIT.framework/StikJIT" ]; then
               mkdir -p "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework"
               cp -vf "/tmp/base_extract/Payload/Madeira.app/Frameworks/StikJIT.framework/StikJIT" "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
               chmod +x "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
               echo "Successfully staged StikJIT binary from $BASE_IPA"
+            fi
+            if [ -f "/tmp/base_extract/Payload/Madeira.app/Frameworks/StikJIT.framework/Info.plist" ]; then
+              cp -vf "/tmp/base_extract/Payload/Madeira.app/Frameworks/StikJIT.framework/Info.plist" "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/Info.plist"
+              echo "Successfully staged StikJIT Info.plist from $BASE_IPA"
             fi
 
             # Extract libmetalirconverter.dylib if present
@@ -255,28 +264,39 @@ jobs:
           set -e
           CONFIG="${{ inputs.configuration || 'Debug' }}"
           BUNDLE_ID="${{ inputs.bundle_id || 'com.kuschqin.madeira.steamui' }}"
+          BUILD_NUMBER="${{ inputs.build_number || '144' }}"
 
-          echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID"
+          echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID, build_number=$BUILD_NUMBER"
           xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
             -configuration "$CONFIG" -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             MADEIRA_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             build
 
           APP_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/Info.plist"
           HELPER_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/PlugIns/MadeiraJITHelper.appex/Info.plist"
+          FRAMEWORK_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/Frameworks/StikJIT.framework/Info.plist"
           if [ -f "$APP_PLIST" ] && [ -f "$HELPER_PLIST" ]; then
             APP_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PLIST")
             HELPER_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$HELPER_PLIST")
-            echo "Main app Bundle ID: $APP_ID"
+            APP_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+            echo "Main app Bundle ID: $APP_ID, Version: $APP_VER"
             echo "JIT Helper Bundle ID: $HELPER_ID"
             if [ "$APP_ID" = "$HELPER_ID" ] || [[ "$HELPER_ID" != "$APP_ID."* ]]; then
               echo "Fixing JIT Helper Bundle ID to have '$APP_ID.JITHelper'..."
               /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $APP_ID.JITHelper" "$HELPER_PLIST"
               echo "Updated JIT Helper Bundle ID: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HELPER_PLIST")"
             fi
+            # Ensure helper also has matching CFBundleVersion
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$HELPER_PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" "$HELPER_PLIST"
+          fi
+          if [ -f "$FRAMEWORK_PLIST" ]; then
+            FW_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$FRAMEWORK_PLIST" 2>/dev/null || echo "unknown")
+            FW_MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$FRAMEWORK_PLIST" 2>/dev/null || echo "unknown")
+            echo "StikJIT.framework Bundle ID: $FW_ID, MinimumOSVersion: $FW_MIN_OS"
           fi
 
       - name: Package IPA
