@@ -2149,3 +2149,11 @@ int madeira_steam_ui_vm_probe_run(const char *path)
     if (fclose(out)) return -3;
     return result;
 }
+
+// MARK: - Compatibility stub for MetalFX frame interpolator
+@interface MTLFXFrameInterpolatorDescriptor : NSObject
+@end
+
+@implementation MTLFXFrameInterpolatorDescriptor
+@end
+
