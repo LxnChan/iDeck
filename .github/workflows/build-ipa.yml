@@ -131,19 +131,63 @@ jobs:
           [ -f "app/Madeira/libxxhash.a" ] && cp -f app/Madeira/libxxhash.a FEX/build-ios/External/xxhash/cmake_unofficial/ || true
           [ -f "app/Madeira/libsoftfloat_3e.a" ] && cp -f app/Madeira/libsoftfloat_3e.a FEX/build-ios/External/SoftFloat-3e/ || true
 
-          # 3. Ensure prefix-template.tar.gz is available
-          if [ ! -f "app/Madeira/prefix-template.tar.gz" ]; then
-            echo "Fetching base IPA to extract prefix-template.tar.gz..."
-            gh release download "$RELEASE_TAG" --dir "$DOWNLOAD_DIR" --pattern "*.ipa" 2>/dev/null || \
-            gh release download "$RELEASE_TAG" --repo "$UPSTREAM_REPO" --dir "$DOWNLOAD_DIR" --pattern "*.ipa" 2>/dev/null || \
-            curl -fsSL -o "$DOWNLOAD_DIR/base.ipa" "https://github.com/$UPSTREAM_REPO/releases/download/$RELEASE_TAG/iDeck.ipa" || true
+          # 3. Ensure base IPA components (prefix-template, StikJIT binary, libmetalirconverter, ideck-control)
+          echo "==> Fetching base IPA for companion runtime binaries..."
+          gh release download "$RELEASE_TAG" --dir "$DOWNLOAD_DIR" --pattern "*.ipa" 2>/dev/null || \
+          gh release download "$RELEASE_TAG" --repo "$UPSTREAM_REPO" --dir "$DOWNLOAD_DIR" --pattern "*.ipa" 2>/dev/null || \
+          curl -fsSL -o "$DOWNLOAD_DIR/base.ipa" "https://github.com/$UPSTREAM_REPO/releases/download/$RELEASE_TAG/iDeck.ipa" || true
 
-            BASE_IPA=$(find "$DOWNLOAD_DIR" -name "*.ipa" -o -name "base.ipa" | head -n 1)
-            if [ -n "$BASE_IPA" ] && [ -f "$BASE_IPA" ]; then
-              unzip -q -o "$BASE_IPA" "Payload/Madeira.app/prefix-template.tar.gz" -d /tmp/base_extract 2>/dev/null || true
-              if [ -f "/tmp/base_extract/Payload/Madeira.app/prefix-template.tar.gz" ]; then
-                cp "/tmp/base_extract/Payload/Madeira.app/prefix-template.tar.gz" "app/Madeira/prefix-template.tar.gz"
-                echo "Successfully extracted prefix-template.tar.gz from $BASE_IPA"
+          BASE_IPA=$(find "$DOWNLOAD_DIR" -name "*.ipa" -o -name "base.ipa" | head -n 1)
+          if [ -n "$BASE_IPA" ] && [ -f "$BASE_IPA" ]; then
+            echo "Extracting runtime components from $BASE_IPA..."
+            mkdir -p /tmp/base_extract
+
+            # Extract prefix-template.tar.gz
+            unzip -q -o "$BASE_IPA" "Payload/Madeira.app/prefix-template.tar.gz" -d /tmp/base_extract 2>/dev/null || true
+            if [ -f "/tmp/base_extract/Payload/Madeira.app/prefix-template.tar.gz" ]; then
+              cp -vf "/tmp/base_extract/Payload/Madeira.app/prefix-template.tar.gz" "app/Madeira/prefix-template.tar.gz"
+              echo "Successfully extracted prefix-template.tar.gz"
+            fi
+
+            # Extract StikJIT framework binary
+            unzip -q -o "$BASE_IPA" "Payload/Madeira.app/Frameworks/StikJIT.framework/*" -d /tmp/base_extract 2>/dev/null || true
+            if [ -f "/tmp/base_extract/Payload/Madeira.app/Frameworks/StikJIT.framework/StikJIT" ]; then
+              mkdir -p "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework"
+              cp -vf "/tmp/base_extract/Payload/Madeira.app/Frameworks/StikJIT.framework/StikJIT" "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
+              chmod +x "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
+              echo "Successfully staged StikJIT binary from $BASE_IPA"
+            fi
+
+            # Extract libmetalirconverter.dylib if present
+            unzip -q -o "$BASE_IPA" "Payload/Madeira.app/d3d12/libmetalirconverter.dylib" -d /tmp/base_extract 2>/dev/null || true
+            if [ -f "/tmp/base_extract/Payload/Madeira.app/d3d12/libmetalirconverter.dylib" ]; then
+              mkdir -p "app/Madeira/d3d12"
+              cp -vf "/tmp/base_extract/Payload/Madeira.app/d3d12/libmetalirconverter.dylib" "app/Madeira/d3d12/libmetalirconverter.dylib"
+              echo "Successfully extracted libmetalirconverter.dylib from $BASE_IPA"
+            fi
+
+            # Extract ideck-control.exe if present
+            unzip -q -o "$BASE_IPA" "Payload/Madeira.app/ideck-control.exe" -d /tmp/base_extract 2>/dev/null || true
+            if [ -f "/tmp/base_extract/Payload/Madeira.app/ideck-control.exe" ]; then
+              mkdir -p "build/ideck-control"
+              cp -vf "/tmp/base_extract/Payload/Madeira.app/ideck-control.exe" "build/ideck-control/ideck-control.exe"
+              echo "Successfully extracted ideck-control.exe from $BASE_IPA"
+            fi
+          fi
+
+          # Fallback for StikJIT binary from upstream StikDebug/StikJIT release
+          if [ ! -f "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT" ]; then
+            echo "Fetching StikJIT from upstream StikDebug/StikJIT release 1.9.0..."
+            curl -fsSL -o "$DOWNLOAD_DIR/StikJIT.xcframework.zip" "https://github.com/StikDebug/StikJIT/releases/download/1.9.0/StikJIT.xcframework.zip" 2>/dev/null || true
+            if [ -f "$DOWNLOAD_DIR/StikJIT.xcframework.zip" ]; then
+              mkdir -p /tmp/stikjit_extracted
+              unzip -q -o "$DOWNLOAD_DIR/StikJIT.xcframework.zip" -d /tmp/stikjit_extracted
+              STIK_BIN=$(find /tmp/stikjit_extracted -name "StikJIT" -type f | grep "ios-arm64" | head -n 1)
+              if [ -n "$STIK_BIN" ]; then
+                mkdir -p "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework"
+                cp -vf "$STIK_BIN" "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
+                chmod +x "app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT"
+                echo "Successfully staged StikJIT binary from official release"
               fi
             fi
           fi
@@ -210,6 +254,7 @@ jobs:
             exit 1
           fi
           echo "Found built application at: $APP_PATH"
+          rm -f "$IPA_PATH"
 
           if python3 tools/package-ipa.py "$APP_PATH" "$IPA_PATH" --entitlements app/Madeira/Madeira.entitlements; then
             echo "Package complete with tools/package-ipa.py"
