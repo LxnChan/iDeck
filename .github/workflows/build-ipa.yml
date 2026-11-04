@@ -230,6 +230,11 @@ jobs:
           bash build/fex-ios/build.sh
           cp -vf FEX/build-ios/FEXCore/Source/libFEXCore*.a app/Madeira/ || true
 
+      - name: Setup FEXCore generated headers
+        run: |
+          chmod +x build/setup-fex-headers.sh
+          bash build/setup-fex-headers.sh
+
       - name: Setup Wine host headers
         run: |
           chmod +x build/setup-wine-headers.sh
