@@ -1,0 +1,28 @@
+diff --git a/FEXCore/Source/Interface/Core/CPUID.cpp b/FEXCore/Source/Interface/Core/CPUID.cpp
+index 9c305e8..fe4a9a7 100644
+--- a/FEXCore/Source/Interface/Core/CPUID.cpp
++++ b/FEXCore/Source/Interface/Core/CPUID.cpp
+@@ -477,7 +477,7 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_01h(uint32_t Leaf) const {
+             (1 << 9) |                                      // SSSE3
+             (0 << 10) |                                     // L1 context ID
+             (0 << 11) |                                     // Silicon debug
+-            (SupportsAVX() << 12) |                         // FMA3
++            (1 << 12) |                                     // FMA3
+             (1 << 13) |                                     // CMPXCHG16B
+             (0 << 14) |                                     // xTPR update control
+             (0 << 15) |                                     // Perfmon and debug capability
+@@ -669,12 +669,12 @@ FEXCore::CPUID::FunctionResults CPUIDEmu::Function_07h(uint32_t Leaf) const {
+     Res.ebx = (1 << 0) |                               // FS/GS support
+               (0 << 1) |                               // TSC adjust MSR
+               (0 << 2) |                               // SGX
+-              (SupportsAVX() << 3) |                   // BMI1
++              (1 << 3) |                               // BMI1
+               (0 << 4) |                               // Intel Hardware Lock Elison
+               (SupportsAVX() << 5) |                   // AVX2 support
+               (1 << 6) |                               // FPU data pointer updated only on exception
+               (1 << 7) |                               // SMEP support
+-              (SupportsAVX() << 8) |                   // BMI2
++              (1 << 8) |                               // BMI2
+               (SupportsEnhancedREPMOVS << 9) |         // Enhanced REP MOVSB/STOSB
+               (1 << 10) |                              // INVPCID for system software control of process-context
+               (0 << 11) |                              // Restricted transactional memory

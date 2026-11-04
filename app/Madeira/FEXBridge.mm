@@ -443,7 +443,8 @@ bool fex_initialize(void) {
     Features.SupportsFCMA = true;
     Features.SupportsFlagM = true;
     Features.SupportsFlagM2 = true;
-    Features.SupportsAVX = false;     // No SVE on A15
+    const char *fex_avx = getenv("MADEIRA_FEX_AVX");
+    Features.SupportsAVX = (fex_avx && (fex_avx[0] == '1' || fex_avx[0] == 't' || fex_avx[0] == 'T'));
     Features.SupportsSVE128 = false;
     Features.SupportsSVE256 = false;
     // A15 has 6 performance + 2 efficiency cores

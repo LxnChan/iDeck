@@ -5,6 +5,12 @@
 set -eu
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 B="$R/FEX/build-ios"
+
+# Apply patch to decouple BMI/FMA from SupportsAVX
+PATCH="$R/build/fex-ios/fex-cpuid-bmi-fma.patch"
+if [ -f "$PATCH" ]; then
+    git -C "$R/FEX" apply --check "$PATCH" 2>/dev/null && git -C "$R/FEX" apply "$PATCH" || true
+fi
 if [ ! -f "$B/CMakeCache.txt" ]; then
     cmake -S "$R/FEX" -B "$B" -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release \
