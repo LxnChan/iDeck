@@ -387,9 +387,10 @@ final class MetalBackedView: UIView {
     /// left-button only, so these go through winios_pointer with ABSOLUTE.
     private func tmAbsoluteClick(down: UInt32, up: UInt32, at p: CGPoint) {
         let (x, y) = mapPoint(p)
+        let upFlags = up | F_ABS | F_MOVE
         winios_pointer(x, y, down | F_ABS | F_MOVE, 0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
-            winios_pointer(x, y, up | F_ABS | F_MOVE, 0)
+            winios_pointer(x, y, upFlags, 0)
         }
     }
 
