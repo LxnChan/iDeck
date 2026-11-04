@@ -15,8 +15,19 @@
 #define MADSYNC_LINUX_NTSYNC_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <sys/ioctl.h>   /* before the macros below, so libc's prototypes stay intact */
 #include <unistd.h>
+
+/* Darwin sys/ioctl.h pulls in sys/queue.h which collides with wine/list.h */
+#undef LIST_INIT
+#define LIST_INIT(list)  { &(list), &(list) }
+#undef LIST_ENTRY
+#define LIST_ENTRY(elem, type, field) \
+    ((type *)((char *)(elem) - offsetof(type, field)))
+#undef LIST_HEAD
+#undef LIST_FIRST
+#undef LIST_NEXT
 
 typedef uint32_t __u32;
 typedef uint64_t __u64;
