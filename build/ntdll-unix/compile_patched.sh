@@ -11,6 +11,14 @@ APP_LIB="$REPO_ROOT/app/Madeira/libntdll_unix.a"
 
 mkdir -p "$OBJ_DIR"
 
+if [ ! -f "$WINE_BUILD/include/config.h" ]; then
+    bash "$REPO_ROOT/build/setup-wine-headers.sh"
+fi
+
+if [ ! -f "$OBJ_DIR/libntdll_unix.a" ] && [ -f "$APP_LIB" ]; then
+    cp "$APP_LIB" "$OBJ_DIR/libntdll_unix.a"
+fi
+
 compile_one() {
     local src=$1
     local out=$2

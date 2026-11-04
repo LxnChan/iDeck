@@ -12,6 +12,10 @@ SHIMS_DIR="$REPO_ROOT/build/ntdll-unix/shims"
 OBJ_DIR="$BUILD_DIR/obj"
 mkdir -p "$OBJ_DIR"
 
+if [ ! -f "$WINE_SRC/build-macos/include/config.h" ]; then
+    bash "$REPO_ROOT/build/setup-wine-headers.sh"
+fi
+
 # A clean checkout has no prebuilt archive. Build the unchanged members
 # from the pinned Wine tree below before replacing the iOS-specific ones.
 if [ ! -f "$OBJ_DIR/libwineserver.a" ] && [ -f "$APP_LIB" ]; then
@@ -223,6 +227,7 @@ echo "=== Renaming colliding symbols in every .o (objcopy sweep) ==="
 # references uniformly, so cross-file calls inside wineserver still
 # resolve. Externals (win32u, etc.) only see the ws_-prefixed names.
 OBJCOPY=$(command -v llvm-objcopy || echo /opt/homebrew/opt/llvm/bin/llvm-objcopy)
+[ -x "$OBJCOPY" ] || OBJCOPY=$(find /opt/homebrew -name llvm-objcopy 2>/dev/null | head -n 1 || echo "")
 [ -x "$OBJCOPY" ] || OBJCOPY=/opt/homebrew/Cellar/llvm/22.1.0/bin/llvm-objcopy
 COLLISIONS=(
     alloc_user_handle free_user_handle get_virtual_screen_rect
