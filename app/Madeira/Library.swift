@@ -708,6 +708,9 @@ final class LibraryModel: ObservableObject {
 
     private init() {
         refreshFlag()
+        if IDeckState.enabled {
+            enabled = true
+        }
         if FileManager.default.fileExists(atPath: file.path) {
             do {
                 let doc = try JSONDecoder().decode(Document.self, from: Data(contentsOf: file))
@@ -837,7 +840,10 @@ final class LibraryModel: ObservableObject {
     func refreshFlag() {
         guard current == nil, wine_process_is_running() == 0 else { return }
         // Fixed for the whole run (FrontendChoice); a change applies at the next start.
-        let allowed = FrontendChoice.startup.useNew
+        var allowed = FrontendChoice.startup.useNew
+        if IDeckState.enabled {
+            allowed = true
+        }
         if enabled != allowed { fputs("[frontend] library enabled=\(allowed ? 1 : 0)\n", stderr) }
         enabled = allowed
         LibraryController.shared.configure(enabled: allowed, ownsInput: allowed)

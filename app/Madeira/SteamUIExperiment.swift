@@ -630,11 +630,17 @@ import UIKit
     static func ensureRuntimeSettings() {
         for (key, value) in [SteamUIExperiment.flag: "1", SteamUIExperiment.bigPictureFlag: "1",
             "env.MADEIRA_GDI_SHARED_SECTION": "1", "env.MADEIRA_STEAM_UI_ALLOW_CRASHPAD": "1",
-            "env.MADEIRA_STEAM_UI_STRICT_RESERVATIONS": "1", "env.MADEIRA_FRONTEND": "0",
+            "env.MADEIRA_STEAM_UI_STRICT_RESERVATIONS": "1",
             "env.MADEIRA_CONTROLS_XBOX_DEFAULT": "1", "pool-split": "1", "pool-low": "1"] {
             if MadeiraConfig.get(key) == nil {
                 _ = MadeiraConfig.set(key, value)
             }
+        }
+        if MadeiraConfig.get("env.MADEIRA_FRONTEND") == "0" {
+            _ = MadeiraConfig.set("env.MADEIRA_FRONTEND", "1")
+        }
+        if UserDefaults.standard.string(forKey: FrontendChoice.key) == "old" {
+            FrontendChoice.choose(new: true)
         }
     }
 
@@ -1000,7 +1006,13 @@ struct IDeckLauncher: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                     Text("Powered by Madeira · Genuine Windows Steam. Compatibility is experimental.")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Advanced diagnostics", action: diagnostics).font(.caption)
+                    Button(action: diagnostics) {
+                        Label("Open Game Library & Diagnostics", systemImage: "square.grid.2x2")
+                            .font(.subheadline.bold())
+                            .frame(maxWidth: .infinity)
+                            .padding(8)
+                    }
+                    .buttonStyle(.bordered)
                 }.padding(24).padding(.bottom, 48).frame(maxWidth: 660).frame(maxWidth: .infinity)
             }.background(Color(.systemGroupedBackground))
                 .onChange(of: selection) { _, value in

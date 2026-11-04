@@ -19,6 +19,10 @@ research/vkd3d-proton/
 research/Winlator-Ludashi/
 research/*.md
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Build artifacts
 app/build/
 app/DerivedData/

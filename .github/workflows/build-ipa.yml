@@ -264,7 +264,7 @@ jobs:
           set -e
           CONFIG="${{ inputs.configuration || 'Debug' }}"
           BUNDLE_ID="${{ inputs.bundle_id || 'com.kuschqin.madeira.steamui' }}"
-          BUILD_NUMBER="${{ inputs.build_number || '145' }}"
+          BUILD_NUMBER="${{ inputs.build_number || '146' }}"
 
           echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID, build_number=$BUILD_NUMBER"
           xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \

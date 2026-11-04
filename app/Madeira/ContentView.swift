@@ -1300,7 +1300,7 @@ struct ContentView: View {
     @State private var devSheet: SettingsSheet?
     @State private var steamUIStarting = false
     @ObservedObject private var ideck = IDeckState.shared
-    @State private var ideckAdvanced = false
+    @AppStorage("ideckAdvanced") private var ideckAdvanced = true
     @State private var automaticProbeRequested = false
     @StateObject private var logStore = LogStore.shared
     @StateObject private var jitCoordinator = JITCoordinator.shared
@@ -1355,7 +1355,13 @@ struct ContentView: View {
             }
             .toolbar {
                 if IDeckState.enabled && ideckAdvanced && !ideck.running {
-                    ToolbarItem(placement: .topBarLeading) { Button("iDeck") { ideckAdvanced = false } }
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            ideckAdvanced = false
+                        } label: {
+                            Label("Steam UI", systemImage: "gamecontroller")
+                        }
+                    }
                 }
             }
             .navigationTitle(IDeckState.enabled ? "iDeck" : "Madeira")
@@ -1408,14 +1414,15 @@ struct ContentView: View {
                 }
             } message: { Text(library.cloudNotice?.message ?? "") }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                library.refreshFlag()
                 if IDeckState.enabled {
                     LibraryController.shared.configure(enabled: true, ownsInput: !ideck.running || ideck.menu)
                 } else {
-                    library.refreshFlag()
                     if library.enabled && library.current == nil { MetalHostView.shared.isHidden = true }
                 }
             }
             .onAppear {
+                library.refreshFlag()
                 jit_install_trap_handler()
                 entitlements = EntitlementStatus.check()
                 logEntitlementStatus()
@@ -1469,7 +1476,7 @@ struct ContentView: View {
                 if IDeckState.enabled && !automaticATL && !automaticSteamUI && !automaticX86CEF && !automaticNativeVM && !automaticReservation && !automaticFLS {
                     ideck.refresh()
                     if IDeckRules.shouldAutoStart(setup: ideck.setupDone, ready: ideck.ready,
-                        automatic: ideck.autoStart, arguments: ProcessInfo.processInfo.arguments) && !automaticProbeRequested {
+                        automatic: ideck.autoStart, arguments: ProcessInfo.processInfo.arguments) && !automaticProbeRequested && !ideckAdvanced {
                         automaticProbeRequested = true
                         DispatchQueue.main.async { startIDeck() }
                     }
