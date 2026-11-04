@@ -280,12 +280,18 @@ jobs:
           fi
 
       - name: Package IPA
+        id: package
         run: |
           set -e
           CONFIG="${{ inputs.configuration || 'Debug' }}"
           OUTPUT_DIR="output"
           mkdir -p "$OUTPUT_DIR"
-          IPA_PATH="$OUTPUT_DIR/iDeck.ipa"
+
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          IPA_NAME="iDeck-fork-${SHORT_SHA}.ipa"
+          IPA_PATH="$OUTPUT_DIR/$IPA_NAME"
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "ipa_name=$IPA_NAME" >> $GITHUB_OUTPUT
 
           APP_PATH=$(find build/DerivedData -name "Madeira.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
@@ -296,7 +302,7 @@ jobs:
           rm -f "$IPA_PATH"
 
           if python3 tools/package-ipa.py "$APP_PATH" "$IPA_PATH" --entitlements app/Madeira/Madeira.entitlements; then
-            echo "Package complete with tools/package-ipa.py"
+            echo "Package complete with tools/package-ipa.py -> $IPA_NAME"
           else
             echo "tools/package-ipa.py returned non-zero, using fallback packaging..."
             PAYLOAD_DIR="/tmp/manual_ipa_payload"
@@ -312,7 +318,7 @@ jobs:
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: iDeck-ipa
+          name: iDeck-fork-${{ steps.package.outputs.short_sha }}
           path: |
             output/*.ipa
             output/*.inventory.json
