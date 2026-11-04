@@ -1,6 +1,10 @@
 // Include the macOS-generated config.h first
 #include "config.h"
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
 // Override settings that differ on iOS
 #undef HAVE_SYS_USER_H
 #undef HAVE_SYS_PTRACE_H

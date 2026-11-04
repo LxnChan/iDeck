@@ -20,6 +20,10 @@
 
 
 #include "config.h"
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "../madeira_cfg.h"   /* ios_srv_switch */
 #include <os/log.h>
 #include <os/lock.h>
