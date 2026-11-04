@@ -24239,11 +24239,21 @@ TEB *virtual_alloc_first_teb(void)
 
     /* reserve space for shared user data */
 #ifdef WINE_IOS
-    /* iOS arm64 has mandatory 4GB __PAGEZERO — can't map at 0x7ffe0000 */
-    user_shared_data = NULL;
-#endif
+    /* Try 0x7ffe0000 first (e.g. if pagezero is small or in a guest context).
+     * If 0x7ffe0000 fails, fall back to NULL to let the system allocate high memory. */
+    user_shared_data = (void *)0x7ffe0000;
     status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&user_shared_data, 0, &data_size,
                                       MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
+    if (status || user_shared_data != (void *)0x7ffe0000)
+    {
+        user_shared_data = NULL;
+        status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&user_shared_data, 0, &data_size,
+                                          MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
+    }
+#else
+    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&user_shared_data, 0, &data_size,
+                                      MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
+#endif
     if (status)
     {
         ERR( "wine: failed to map the shared user data: %08x\n", status );
@@ -25041,6 +25051,15 @@ void virtual_map_user_shared_data(void)
         ERR( "failed to remap the process USD: %d\n", res );
         exit(1);
     }
+#ifdef WINE_IOS
+    /* If user_shared_data was mapped high, also attempt to map guest 0x7ffe0000 directly */
+    if (user_shared_data != (void *)0x7ffe0000)
+    {
+        void *direct = mmap( (void *)0x7ffe0000, page_size, PROT_READ, MAP_SHARED|MAP_FIXED, fd, 0 );
+        if (direct == (void *)0x7ffe0000)
+            dprintf( 2, "[usd-clock] mapped guest 0x7ffe0000 directly via MAP_SHARED\n" );
+    }
+#endif
     if (needs_close) close( fd );
     NtClose( section );
 
@@ -25248,7 +25267,31 @@ void virtual_init_user_shared_data(void)
     case IMAGE_FILE_MACHINE_ARM64: data->NativeProcessorArchitecture = PROCESSOR_ARCHITECTURE_ARM64; break;
     }
 
+    /* On iOS wineboot never runs, so populate Windows version and SystemRoot here */
+    data->NtMajorVersion        = 10;
+    data->NtMinorVersion        = 0;
+    data->NtBuildNumber         = 19045;
+    data->NtProductType         = 1; /* NtProductWinNt */
+    data->ProductTypeIsValid    = TRUE;
+    data->SuiteMask             = 0x110; /* VER_SUITE_SINGLEUSERTS | VER_SUITE_TERMINAL */
+    memcpy( data->NtSystemRoot, L"C:\\windows", sizeof(L"C:\\windows") );
+
     init_shared_data_cpuinfo( data );
+
+    /* Ensure standard x86/x64 features for emulated guest */
+    data->ProcessorFeatures[PF_MMX_INSTRUCTIONS_AVAILABLE]    = TRUE;
+    data->ProcessorFeatures[PF_XMMI_INSTRUCTIONS_AVAILABLE]   = TRUE;
+    data->ProcessorFeatures[PF_RDTSC_INSTRUCTION_AVAILABLE]   = TRUE;
+    data->ProcessorFeatures[PF_XMMI64_INSTRUCTIONS_AVAILABLE] = TRUE;
+    data->ProcessorFeatures[PF_SSE3_INSTRUCTIONS_AVAILABLE]   = TRUE;
+    data->ProcessorFeatures[PF_COMPARE_EXCHANGE128]           = TRUE;
+    data->ProcessorFeatures[PF_RDTSCP_INSTRUCTION_AVAILABLE]  = TRUE;
+    data->ProcessorFeatures[PF_SSSE3_INSTRUCTIONS_AVAILABLE]  = TRUE;
+    data->ProcessorFeatures[PF_SSE4_1_INSTRUCTIONS_AVAILABLE] = TRUE;
+    data->ProcessorFeatures[PF_SSE4_2_INSTRUCTIONS_AVAILABLE] = TRUE;
+    data->ProcessorFeatures[PF_FASTFAIL_AVAILABLE]            = TRUE;
+    data->ProcessorFeatures[PF_COMPARE_EXCHANGE_DOUBLE]       = TRUE;
+    data->ProcessorFeatures[PF_NX_ENABLED]                    = TRUE;
     ios_pool_va_warn( "munmap", data, sizeof(*data) );
     munmap( data, sizeof(*data) );
 }

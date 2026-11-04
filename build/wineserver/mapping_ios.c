@@ -1586,7 +1586,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
     if (!ios_usd_time_enabled())
     {
         ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
-        if (ptr != MAP_FAILED) user_shared_data = ptr;
+        if (ptr != MAP_FAILED)
+        {
+            user_shared_data = ptr;
+#ifdef WINE_IOS
+            user_shared_data->TickCountMultiplier = 1 << 24;
+            user_shared_data->NtProductType       = 1;
+            user_shared_data->ProductTypeIsValid  = 1;
+            user_shared_data->NtMajorVersion      = 10;
+            user_shared_data->NtMinorVersion      = 0;
+            user_shared_data->NtBuildNumber       = 19045;
+            user_shared_data->SuiteMask           = 0x110;
+            memcpy( user_shared_data->NtSystemRoot, L"C:\\windows", sizeof(L"C:\\windows") );
+#endif
+        }
         return &mapping->obj;
     }
 
@@ -1629,7 +1642,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
 #else
     ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
 #endif
-    if (ptr != MAP_FAILED) user_shared_data = ptr;
+    if (ptr != MAP_FAILED)
+    {
+        user_shared_data = ptr;
+#ifdef WINE_IOS
+        user_shared_data->TickCountMultiplier = 1 << 24;
+        user_shared_data->NtProductType       = 1;
+        user_shared_data->ProductTypeIsValid  = 1;
+        user_shared_data->NtMajorVersion      = 10;
+        user_shared_data->NtMinorVersion      = 0;
+        user_shared_data->NtBuildNumber       = 19045;
+        user_shared_data->SuiteMask           = 0x110;
+        memcpy( user_shared_data->NtSystemRoot, L"C:\\windows", sizeof(L"C:\\windows") );
+#endif
+    }
 #ifdef WINE_IOS
     /* ml1001: PUBLISH ONCE, HERE, BEFORE ANY CLIENT EXISTS.
      *
