@@ -10,6 +10,111 @@
 #undef DEBUG
 #endif
 
+#include <atomic>
+#include <type_traits>
+
+#if !defined(__cpp_lib_atomic_ref)
+namespace std {
+
+template <typename T>
+class atomic_ref {
+public:
+    static_assert(std::is_trivially_copyable_v<T>, "std::atomic_ref requires trivially copyable type");
+    using value_type = T;
+    static constexpr size_t required_alignment = alignof(T);
+    static constexpr bool is_always_lock_free = true;
+
+    explicit atomic_ref(T& obj) noexcept : ptr_(&obj) {}
+    atomic_ref(const atomic_ref&) noexcept = default;
+    atomic_ref& operator=(const atomic_ref&) = delete;
+
+    T operator=(T desired) const noexcept {
+        store(desired);
+        return desired;
+    }
+
+    operator T() const noexcept {
+        return load();
+    }
+
+    T load(std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_load_n(ptr_, to_mem_order(order));
+    }
+
+    void store(T desired, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        __atomic_store_n(ptr_, desired, to_mem_order(order));
+    }
+
+    T exchange(T desired, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_exchange_n(ptr_, desired, to_mem_order(order));
+    }
+
+    bool compare_exchange_strong(T& expected, T desired, std::memory_order success, std::memory_order failure) const noexcept {
+        return __atomic_compare_exchange_n(ptr_, &expected, desired, false, to_mem_order(success), to_mem_order(failure));
+    }
+
+    bool compare_exchange_strong(T& expected, T desired, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        std::memory_order failure = (order == std::memory_order_acq_rel) ? std::memory_order_acquire :
+                                    (order == std::memory_order_release) ? std::memory_order_relaxed : order;
+        return compare_exchange_strong(expected, desired, order, failure);
+    }
+
+    bool compare_exchange_weak(T& expected, T desired, std::memory_order success, std::memory_order failure) const noexcept {
+        return __atomic_compare_exchange_n(ptr_, &expected, desired, true, to_mem_order(success), to_mem_order(failure));
+    }
+
+    bool compare_exchange_weak(T& expected, T desired, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        std::memory_order failure = (order == std::memory_order_acq_rel) ? std::memory_order_acquire :
+                                    (order == std::memory_order_release) ? std::memory_order_relaxed : order;
+        return compare_exchange_weak(expected, desired, order, failure);
+    }
+
+    T fetch_add(T arg, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_fetch_add(ptr_, arg, to_mem_order(order));
+    }
+
+    T fetch_sub(T arg, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_fetch_sub(ptr_, arg, to_mem_order(order));
+    }
+
+    T fetch_and(T arg, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_fetch_and(ptr_, arg, to_mem_order(order));
+    }
+
+    T fetch_or(T arg, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_fetch_or(ptr_, arg, to_mem_order(order));
+    }
+
+    T fetch_xor(T arg, std::memory_order order = std::memory_order_seq_cst) const noexcept {
+        return __atomic_fetch_xor(ptr_, arg, to_mem_order(order));
+    }
+
+    T operator++() const noexcept { return fetch_add(1) + 1; }
+    T operator++(int) const noexcept { return fetch_add(1); }
+    T operator--() const noexcept { return fetch_sub(1) - 1; }
+    T operator--(int) const noexcept { return fetch_sub(1); }
+    T operator+=(T arg) const noexcept { return fetch_add(arg) + arg; }
+    T operator-=(T arg) const noexcept { return fetch_sub(arg) - arg; }
+
+private:
+    static inline constexpr int to_mem_order(std::memory_order order) noexcept {
+        switch (order) {
+            case std::memory_order_relaxed: return __ATOMIC_RELAXED;
+            case std::memory_order_consume: return __ATOMIC_CONSUME;
+            case std::memory_order_acquire: return __ATOMIC_ACQUIRE;
+            case std::memory_order_release: return __ATOMIC_RELEASE;
+            case std::memory_order_acq_rel: return __ATOMIC_ACQ_REL;
+            case std::memory_order_seq_cst: return __ATOMIC_SEQ_CST;
+            default: return __ATOMIC_SEQ_CST;
+        }
+    }
+
+    T* ptr_;
+};
+
+} // namespace std
+#endif
+
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Core/CoreState.h>
