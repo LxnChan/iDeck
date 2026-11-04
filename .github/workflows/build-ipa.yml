@@ -1,0 +1,222 @@
+name: Build iDeck IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to fetch companion runtime assets & relink libraries'
+        required: false
+        default: 'v0.1.3-alpha.5'
+        type: string
+      bundle_id:
+        description: 'Bundle Identifier for the app'
+        required: false
+        default: 'com.kuscholar.ideck.steamui'
+        type: string
+      configuration:
+        description: 'Build configuration (Debug or Release)'
+        required: false
+        default: 'Debug'
+        type: choice
+        options:
+          - Debug
+          - Release
+      rebuild_fex:
+        description: 'Rebuild FEXCore from source with CPUID patches'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'docs/**'
+      - 'experiments/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Package IPA
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select Xcode
+        run: |
+          echo "Available Xcode installations:"
+          ls -d /Applications/Xcode* || true
+          if [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          elif [ -d "/Applications/Xcode_16.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.app
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Refresh bundled licenses
+        run: |
+          chmod +x build/stage-licenses.sh
+          bash build/stage-licenses.sh
+
+      - name: Stage companion runtime assets & native libraries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          RELEASE_TAG="${{ inputs.release_tag || 'v0.1.3-alpha.5' }}"
+          UPSTREAM_REPO="kuscholar/iDeck"
+          DOWNLOAD_DIR="download_cache"
+          mkdir -p "$DOWNLOAD_DIR"
+          mkdir -p app/Madeira
+
+          echo "==> Fetching companion relink libraries and base runtime assets..."
+
+          # 1. Download relink archive containing prebuilt static libraries
+          if ! gh release download "$RELEASE_TAG" --dir "$DOWNLOAD_DIR" --pattern "*relink*.tar.gz" 2>/dev/null; then
+            echo "Attempting download from upstream $UPSTREAM_REPO..."
+            gh release download "$RELEASE_TAG" --repo "$UPSTREAM_REPO" --dir "$DOWNLOAD_DIR" --pattern "*relink*.tar.gz" 2>/dev/null || \
+            curl -fsSL -o "$DOWNLOAD_DIR/relink.tar.gz" "https://github.com/$UPSTREAM_REPO/releases/download/$RELEASE_TAG/iDeck-${RELEASE_TAG#v}-relink.tar.gz" 2>/dev/null || \
+            curl -fsSL -o "$DOWNLOAD_DIR/relink.tar.gz" "https://github.com/$UPSTREAM_REPO/releases/download/v0.1.3-alpha.3/iDeck-0.1.3-alpha.3-relink.tar.gz" || true
+          fi
+
+          RELINK_TAR=$(find "$DOWNLOAD_DIR" -name "*relink*.tar.gz" -o -name "relink.tar.gz" | head -n 1)
+          if [ -n "$RELINK_TAR" ] && [ -f "$RELINK_TAR" ]; then
+            echo "Extracting static libraries from $RELINK_TAR..."
+            mkdir -p /tmp/relink_extracted
+            tar -xzf "$RELINK_TAR" -C /tmp/relink_extracted
+            if [ -d "/tmp/relink_extracted/libraries" ]; then
+              cp -vf /tmp/relink_extracted/libraries/*.a app/Madeira/ || true
+            fi
+          else
+            echo "Warning: Relink archive not found; continuing with local libraries."
+          fi
+
+          # 2. Stage FEX build-ios library paths expected by Madeira.xcodeproj
+          mkdir -p FEX/build-ios/FEXCore/Source
+          mkdir -p FEX/build-ios/External/fmt
+          mkdir -p FEX/build-ios/External/cephes
+          mkdir -p FEX/build-ios/External/xxhash/cmake_unofficial
+          mkdir -p FEX/build-ios/External/SoftFloat-3e
+
+          [ -f "app/Madeira/libFEXCore.a" ] && cp -f app/Madeira/libFEXCore.a FEX/build-ios/FEXCore/Source/ || true
+          [ -f "app/Madeira/libFEXCore_Base.a" ] && cp -f app/Madeira/libFEXCore_Base.a FEX/build-ios/FEXCore/Source/ || true
+          [ -f "app/Madeira/libJemallocLibs.a" ] && cp -f app/Madeira/libJemallocLibs.a FEX/build-ios/FEXCore/Source/ || true
+          [ -f "app/Madeira/libfmt.a" ] && cp -f app/Madeira/libfmt.a FEX/build-ios/External/fmt/ || true
+          [ -f "app/Madeira/libcephes_128bit.a" ] && cp -f app/Madeira/libcephes_128bit.a FEX/build-ios/External/cephes/ || true
+          [ -f "app/Madeira/libxxhash.a" ] && cp -f app/Madeira/libxxhash.a FEX/build-ios/External/xxhash/cmake_unofficial/ || true
+          [ -f "app/Madeira/libsoftfloat_3e.a" ] && cp -f app/Madeira/libsoftfloat_3e.a FEX/build-ios/External/SoftFloat-3e/ || true
+
+          # 3. Ensure prefix-template.tar.gz is available
+          if [ ! -f "app/Madeira/prefix-template.tar.gz" ]; then
+            echo "Fetching base IPA to extract prefix-template.tar.gz..."
+            gh release download "$RELEASE_TAG" --dir "$DOWNLOAD_DIR" --pattern "*.ipa" 2>/dev/null || \
+            gh release download "$RELEASE_TAG" --repo "$UPSTREAM_REPO" --dir "$DOWNLOAD_DIR" --pattern "*.ipa" 2>/dev/null || \
+            curl -fsSL -o "$DOWNLOAD_DIR/base.ipa" "https://github.com/$UPSTREAM_REPO/releases/download/$RELEASE_TAG/iDeck.ipa" || true
+
+            BASE_IPA=$(find "$DOWNLOAD_DIR" -name "*.ipa" -o -name "base.ipa" | head -n 1)
+            if [ -n "$BASE_IPA" ] && [ -f "$BASE_IPA" ]; then
+              unzip -q -o "$BASE_IPA" "Payload/Madeira.app/prefix-template.tar.gz" -d /tmp/base_extract 2>/dev/null || true
+              if [ -f "/tmp/base_extract/Payload/Madeira.app/prefix-template.tar.gz" ]; then
+                cp "/tmp/base_extract/Payload/Madeira.app/prefix-template.tar.gz" "app/Madeira/prefix-template.tar.gz"
+                echo "Successfully extracted prefix-template.tar.gz from $BASE_IPA"
+              fi
+            fi
+          fi
+
+          # Fallback if prefix-template.tar.gz could not be downloaded
+          if [ ! -f "app/Madeira/prefix-template.tar.gz" ]; then
+            echo "Warning: Creating fallback empty prefix-template.tar.gz..."
+            mkdir -p /tmp/fallback_pfx
+            tar -czf app/Madeira/prefix-template.tar.gz -C /tmp/fallback_pfx .
+          fi
+
+          echo "Staging complete. Libraries present in app/Madeira:"
+          ls -lh app/Madeira/*.a || true
+
+      - name: Rebuild FEXCore (optional)
+        if: ${{ inputs.rebuild_fex == true }}
+        run: |
+          chmod +x build/fex-ios/build.sh
+          echo "==> Rebuilding FEXCore with CPUID patch from source..."
+          bash build/fex-ios/build.sh
+          cp -vf FEX/build-ios/FEXCore/Source/libFEXCore*.a app/Madeira/ || true
+
+      - name: Rebuild modified Wine runtime libraries
+        run: |
+          chmod +x build/wineserver/build.sh build/ntdll-unix/build.sh build/win32u-unix/build.sh
+          echo "==> Rebuilding libwineserver.a with modified source..."
+          bash build/wineserver/build.sh
+          echo "==> Rebuilding libntdll_unix.a with modified source..."
+          bash build/ntdll-unix/build.sh
+          echo "==> Rebuilding libwin32u_unix.a with modified source..."
+          bash build/win32u-unix/build.sh
+
+      - name: Build application with xcodebuild
+        run: |
+          set -e
+          CONFIG="${{ inputs.configuration || 'Debug' }}"
+          BUNDLE_ID="${{ inputs.bundle_id || 'com.kuscholar.ideck.steamui' }}"
+
+          echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID"
+          xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
+            -configuration "$CONFIG" -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+            build
+
+      - name: Package IPA
+        run: |
+          set -e
+          CONFIG="${{ inputs.configuration || 'Debug' }}"
+          OUTPUT_DIR="output"
+          mkdir -p "$OUTPUT_DIR"
+          IPA_PATH="$OUTPUT_DIR/iDeck.ipa"
+
+          APP_PATH=$(find build/DerivedData -name "Madeira.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Error: Could not locate built Madeira.app under build/DerivedData"
+            exit 1
+          fi
+          echo "Found built application at: $APP_PATH"
+
+          if python3 tools/package-ipa.py "$APP_PATH" "$IPA_PATH" --entitlements app/Madeira/Madeira.entitlements; then
+            echo "Package complete with tools/package-ipa.py"
+          else
+            echo "tools/package-ipa.py returned non-zero, using fallback packaging..."
+            PAYLOAD_DIR="/tmp/manual_ipa_payload"
+            rm -rf "$PAYLOAD_DIR"
+            mkdir -p "$PAYLOAD_DIR/Payload"
+            cp -R "$APP_PATH" "$PAYLOAD_DIR/Payload/"
+            (cd "$PAYLOAD_DIR" && zip -r -9 "$GITHUB_WORKSPACE/$IPA_PATH" Payload)
+          fi
+
+          echo "IPA package generated successfully:"
+          ls -lh "$OUTPUT_DIR"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iDeck-ipa
+          path: |
+            output/*.ipa
+            output/*.inventory.json
+          retention-days: 14
+          if-no-files-found: error
