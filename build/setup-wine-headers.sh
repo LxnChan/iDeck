@@ -88,4 +88,11 @@ if [ ! -f "$WINE_BUILD/include/config.h" ]; then
 EOF
 fi
 
+# Provide stub headers for IDL-generated COM headers if not present
+for hdr in objidlbase.h objidl.h unknwn.h unknwnbase.h propidl.h propidlbase.h oaidl.h; do
+    if [ ! -f "$WINE_BUILD/include/$hdr" ] && [ ! -f "$WINE_SRC/include/$hdr" ]; then
+        echo "#pragma once" > "$WINE_BUILD/include/$hdr"
+    fi
+done
+
 echo "Wine host headers ready at $WINE_BUILD/include/config.h"

@@ -28,6 +28,7 @@
 
 #include "ntstatus.h"
 #include "ntgdi_private.h"
+#define __WINE_SHLOBJ_H
 #include "ntuser_private.h"
 #include "wine/winbase16.h"
 #include "wine/list.h"
