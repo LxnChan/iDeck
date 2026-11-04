@@ -2477,6 +2477,11 @@ static void ios_xprobe_main( void )
         thread_act_array_t th = NULL; mach_msg_type_number_t nth = 0, k;
         uint64_t now; double dt_ms, sum_thr_ms = 0; int nrows = 0, i, j;
 #define XP_MS(ticks) ((double)(ticks) * tb.numer / tb.denom / 1e6)
+#ifdef __IPHONE_18_0
+#define RI_PAGE_WAIT(ru, pru) XP_MS( (ru).ri_page_wait_time_mach - (pru).ri_page_wait_time_mach )
+#else
+#define RI_PAGE_WAIT(ru, pru) 0.0
+#endif
         usleep( 250000 );
         now = mach_absolute_time();
         dt_ms = XP_MS( now - t_prev );
@@ -2579,7 +2584,7 @@ static void ios_xprobe_main( void )
             n = snprintf( line, sizeof(line),
                           "[xp] %s +%.2f dt=%.0f cpu=%.0f (thr %.0f) P=%.0f E=%.0f run=%.0f pgw=%.1f GHz P=%.2f E=%.2f Minst=%.0f IPC=%.2f mJ=%.0f pin=%llu rdKB=%llu fpMB=%llu",
                           wall, XP_MS( now - t_start ) / 1000.0, dt_ms, cpu, sum_thr_ms, pms, ems,
-                          XP_MS( ru.ri_runnable_time - pru.ri_runnable_time ), XP_MS( ru.ri_page_wait_time_mach - pru.ri_page_wait_time_mach ),
+                          XP_MS( ru.ri_runnable_time - pru.ri_runnable_time ), RI_PAGE_WAIT( ru, pru ),
                           pms > 0 ? pcy / (pms * 1e6) : 0, ems > 0 ? (cy - pcy) / (ems * 1e6) : 0, ins / 1e6, cy > 0 ? ins / cy : 0,
                           (double)(ru.ri_energy_nj - pru.ri_energy_nj) / 1e6,
                           (unsigned long long)(ru.ri_pageins - pru.ri_pageins), (unsigned long long)((ru.ri_diskio_bytesread - pru.ri_diskio_bytesread) >> 10),
