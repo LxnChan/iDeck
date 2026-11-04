@@ -1,5 +1,6 @@
 import Metal
 import QuartzCore
+import SwiftUI
 import UIKit
 
 /// Liquid metal in place of Liquid Glass's refraction, on the navigation bar's
@@ -570,3 +571,51 @@ final class GlassSkin: NSObject {
         commands.commit()
     }
 }
+
+// MARK: - Compatibility stubs for iOS 26 SwiftUI / UIKit features
+
+struct GlassEffectContainer<Content: View>: View {
+    var spacing: CGFloat? = nil
+    @ViewBuilder var content: () -> Content
+
+    init(spacing: CGFloat? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    var body: some View {
+        content()
+    }
+}
+
+struct GlassEffectStyle {
+    static let regular = GlassEffectStyle()
+    func tint(_ color: Color) -> GlassEffectStyle { self }
+    func interactive() -> GlassEffectStyle { self }
+}
+
+extension View {
+    func glassEffect(_ style: GlassEffectStyle, in shape: some Shape) -> some View {
+        self
+    }
+}
+
+enum SharedBackgroundVisibility {
+    case hidden
+    case automatic
+    case visible
+}
+
+extension ToolbarItem {
+    func sharedBackgroundVisibility(_ visibility: SharedBackgroundVisibility) -> ToolbarItem<ID, Content> {
+        self
+    }
+}
+
+extension UINavigationItem {
+    @objc var searchBarPlacementAllowsToolbarIntegration: Bool {
+        get { false }
+        set {}
+    }
+}
+
