@@ -11,7 +11,7 @@ on:
       bundle_id:
         description: 'Bundle Identifier for the app'
         required: false
-        default: 'com.kuscholar.ideck.steamui'
+        default: 'com.kuschqin.madeira.steamui'
         type: string
       configuration:
         description: 'Build configuration (Debug or Release)'
@@ -254,7 +254,7 @@ jobs:
         run: |
           set -e
           CONFIG="${{ inputs.configuration || 'Debug' }}"
-          BUNDLE_ID="${{ inputs.bundle_id || 'com.kuscholar.ideck.steamui' }}"
+          BUNDLE_ID="${{ inputs.bundle_id || 'com.kuschqin.madeira.steamui' }}"
 
           echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID"
           xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
