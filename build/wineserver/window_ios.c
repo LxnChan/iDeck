@@ -1100,6 +1100,20 @@ user_handle_t shallow_window_from_point( struct desktop *desktop, int x, int y )
     return desktop->top_window->handle;
 }
 
+/* return handle of deepest child window containing point (in absolute raw coords) */
+user_handle_t deep_window_from_point( user_handle_t scope, int x, int y )
+{
+    struct window *win = get_user_object( scope, NTUSER_OBJ_WINDOW );
+
+    if (!win) return scope;
+
+    map_point_raw_to_virt( win->desktop, &x, &y );
+
+    screen_to_client( win, &x, &y, 0 );
+    win = child_window_from_point( win, x, y );
+    return win ? win->handle : scope;
+}
+
 /* return thread of top-most window containing point (in absolute raw coords) */
 struct thread *window_thread_from_point( user_handle_t scope, int x, int y )
 {

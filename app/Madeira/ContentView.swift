@@ -387,8 +387,10 @@ final class MetalBackedView: UIView {
     /// left-button only, so these go through winios_pointer with ABSOLUTE.
     private func tmAbsoluteClick(down: UInt32, up: UInt32, at p: CGPoint) {
         let (x, y) = mapPoint(p)
-        winios_pointer(x, y, down | F_ABS, 0)
-        winios_pointer(x, y, up | F_ABS, 0)
+        winios_pointer(x, y, down | F_ABS | F_MOVE, 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            winios_pointer(x, y, up | F_ABS | F_MOVE, 0)
+        }
     }
 
     private func touchModeBegan(_ touches: Set<UITouch>) {
@@ -468,7 +470,9 @@ final class MetalBackedView: UIView {
         case 1:
             let (x, y) = mapPoint(mid)
             winios_post_touch_down(x, y)
-            winios_post_touch_up(x, y)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+                winios_post_touch_up(x, y)
+            }
         case 2: tmAbsoluteClick(down: F_RDOWN, up: F_RUP, at: mid)
         case 3: tmAbsoluteClick(down: F_MDOWN, up: F_MUP, at: mid)
         default: break
@@ -522,6 +526,12 @@ final class MetalBackedView: UIView {
     private var relCarryX: CGFloat = 0
     private var relCarryY: CGFloat = 0
 
+    // Direct touch gesture tracking for anti-jitter and tap debounce (DragDetect prevention)
+    private var directTouchStartPoint = CGPoint.zero
+    private var directTouchStartTime: TimeInterval = 0
+    private var directTouchStartGuest: (Int32, Int32) = (0, 0)
+    private var directTouchMovedBeyondSlop = false
+
     private let F_MOVE: UInt32 = 0x1, F_LDOWN: UInt32 = 0x2, F_LUP: UInt32 = 0x4
     private let F_RDOWN: UInt32 = 0x8, F_RUP: UInt32 = 0x10
     private let F_WHEEL: UInt32 = 0x800, F_ABS: UInt32 = 0x8000
@@ -535,7 +545,11 @@ final class MetalBackedView: UIView {
         return i
     }
     private func postPointer(_ flags: UInt32, data: Int32 = 0) {
-        winios_pointer(Int32(Self.cursor.x), Int32(Self.cursor.y), flags, UInt32(bitPattern: data))
+        var f = flags
+        if !InputSettings.shared.relative {
+            f |= F_ABS | F_MOVE
+        }
+        winios_pointer(Int32(Self.cursor.x), Int32(Self.cursor.y), f, UInt32(bitPattern: data))
     }
     private func avgPoint(_ touches: [UITouch]) -> CGPoint {
         var x: CGFloat = 0, y: CGFloat = 0
@@ -577,7 +591,12 @@ final class MetalBackedView: UIView {
         if touchPointerMode { touchModeBegan(touches); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
+            let p = t.location(in: self)
             let (x, y) = mapTouch(t)
+            directTouchStartPoint = p
+            directTouchStartTime = Date().timeIntervalSinceReferenceDate
+            directTouchStartGuest = (x, y)
+            directTouchMovedBeyondSlop = false
             winios_post_touch_down(x, y)
             return
         }
@@ -624,8 +643,16 @@ final class MetalBackedView: UIView {
         if touchPointerMode { touchModeMoved(touches, event); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
-            let (x, y) = mapTouch(t)
-            winios_post_touch_move(x, y)
+            let p = t.location(in: self)
+            if !directTouchMovedBeyondSlop {
+                if hypot(p.x - directTouchStartPoint.x, p.y - directTouchStartPoint.y) > 8 {
+                    directTouchMovedBeyondSlop = true
+                }
+            }
+            if directTouchMovedBeyondSlop {
+                let (x, y) = mapTouch(t)
+                winios_post_touch_move(x, y)
+            }
             return
         }
         let active = activeTouches(event)
@@ -706,8 +733,19 @@ final class MetalBackedView: UIView {
         if touchPointerMode { touchModeEnded(touches, event); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
-            let (x, y) = mapTouch(t)
-            winios_post_touch_up(x, y)
+            let now = Date().timeIntervalSinceReferenceDate
+            if !directTouchMovedBeyondSlop {
+                // Tap detected within slop: lock coordinates to directTouchStartGuest and ensure 25ms delay
+                let (startX, startY) = directTouchStartGuest
+                let elapsed = now - directTouchStartTime
+                let delay = max(0.025 - elapsed, 0.0)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    winios_post_touch_up(startX, startY)
+                }
+            } else {
+                let (x, y) = mapTouch(t)
+                winios_post_touch_up(x, y)
+            }
             return
         }
         let now = Date().timeIntervalSinceReferenceDate
@@ -716,7 +754,9 @@ final class MetalBackedView: UIView {
                 if !twoFingerMoved && now - twoFingerStartTime < 0.40
                     && !InputSettings.shared.relative {   // ml643: see touchesBegan
                     postPointer(F_RDOWN)
-                    postPointer(F_RUP)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                        self?.postPointer(self?.F_RUP ?? 0x10)
+                    }
                 }
                 twoFingerActive = false
             }
@@ -740,7 +780,9 @@ final class MetalBackedView: UIView {
         if !movedBeyondSlop && now - touchStartTime < 0.5 && !InputSettings.shared.relative {
             fputs("[trackpad] ended: click\n", stderr)
             postPointer(F_LDOWN)
-            postPointer(F_LUP)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                self?.postPointer(self?.F_LUP ?? 0x4)
+            }
         }
     }
 
@@ -750,7 +792,7 @@ final class MetalBackedView: UIView {
         if touchPointerMode { touchModeCancelled(touches); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
-            let (x, y) = mapTouch(t)
+            let (x, y) = directTouchMovedBeyondSlop ? mapTouch(t) : directTouchStartGuest
             winios_post_touch_up(x, y)
             return
         }

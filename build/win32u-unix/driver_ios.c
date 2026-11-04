@@ -120,6 +120,8 @@ void winios_drv_post_mouse(int x, int y, unsigned int flags, unsigned int mouse_
     input.mi.dx          = x;
     input.mi.dy          = y;
     input.mi.mouseData   = mouse_data;
+    if ((flags & MOUSEEVENTF_ABSOLUTE) && !(flags & MOUSEEVENTF_MOVE))
+        flags |= MOUSEEVENTF_MOVE;
     input.mi.dwFlags     = flags;
     input.mi.time        = 0;
     input.mi.dwExtraInfo = 0;

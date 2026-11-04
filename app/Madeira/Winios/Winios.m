@@ -857,7 +857,7 @@ void winios_post_touch_move(int x, int y) {
 
 void winios_post_touch_up(int x, int y) {
     fprintf(stderr, "[winios] post_touch_up x=%d y=%d\n", x, y); fflush(stderr);
-    winios_q_push_ev(WINIOS_EV_MOUSE, x, y, MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE, 0);
+    winios_q_push_ev(WINIOS_EV_MOUSE, x, y, MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE, 0);
     winios_game_cursor_touch(x, y);
 }
 
@@ -2437,6 +2437,7 @@ static void winios_game_cursor_touch(int x, int y) {
 /* Swift trackpad engine → wine. Absolute desktop-pixel coords; the
  * engine owns the cursor position. */
 void winios_pointer(int x, int y, unsigned int flags, unsigned int data) {
+    if (flags & MOUSEEVENTF_ABSOLUTE) flags |= MOUSEEVENTF_MOVE;
     winios_q_push_ev(WINIOS_EV_MOUSE, x, y, flags, data);
     /* a mouse or trackpad took over from the finger: its own cursor
      * (HardwareInput's DirectCursorOverlay) is the one to see, not two */

@@ -1891,7 +1891,12 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
         if (!input || !(win = input_shm->capture))
         {
             if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
-            else win = shallow_window_from_point( desktop, msg->x, msg->y );
+            else
+            {
+                extern user_handle_t deep_window_from_point( user_handle_t scope, int x, int y );
+                user_handle_t top = shallow_window_from_point( desktop, msg->x, msg->y );
+                win = deep_window_from_point( top, msg->x, msg->y );
+            }
             *thread = window_thread_from_point( win, msg->x, msg->y );
             /* iOS S2 diag: trace button routing (spammy for moves — buttons only) */
             if (get_hardware_msg_bit( msg->msg ) == QS_MOUSEBUTTON)
@@ -2311,7 +2316,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
     time  = input->mouse.time;
     if (!time) time = desktop_shm->cursor.last_change;
 
-    if (flags & MOUSEEVENTF_MOVE)
+    if (flags & (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE))
     {
         if (flags & MOUSEEVENTF_ABSOLUTE)
         {
