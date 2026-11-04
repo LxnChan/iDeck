@@ -24,6 +24,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#undef LIST_INIT
+#undef LIST_ENTRY
+#undef LIST_HEAD
+#undef LIST_FIRST
+#undef LIST_NEXT
 #include "../madeira_cfg.h"   /* ios_srv_switch */
 #include <os/log.h>
 #include <os/lock.h>

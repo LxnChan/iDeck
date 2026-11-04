@@ -1,10 +1,6 @@
 // Include the macOS-generated config.h first
 #include "config.h"
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-
 // Override settings that differ on iOS
 #undef HAVE_SYS_USER_H
 #undef HAVE_SYS_PTRACE_H
@@ -15,3 +11,10 @@
 #ifdef __APPLE__
 #define WINE_IOS 1
 #endif
+
+// Prevent sys/queue.h BSD macros from clashing with wine/list.h
+#undef LIST_INIT
+#undef LIST_ENTRY
+#undef LIST_HEAD
+#undef LIST_FIRST
+#undef LIST_NEXT
