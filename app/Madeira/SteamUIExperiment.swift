@@ -594,6 +594,9 @@ import UIKit
     @Published var autoStart = UserDefaults.standard.object(forKey: "iDeckAutoStart") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoStart, forKey: "iDeckAutoStart") }
     }
+    @Published var bigPictureMode = UserDefaults.standard.object(forKey: "iDeckBigPictureMode") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(bigPictureMode, forKey: "iDeckBigPictureMode") }
+    }
     @Published private(set) var checkingPrerequisites = false
     @Published private(set) var lastChecked: Date?
     @Published private(set) var prerequisites = IDeckPrerequisite.allCases.map {
@@ -743,8 +746,10 @@ import UIKit
             LogStore.shared.log("[ideck-account] Steam reported Success/OK; no account payload recorded")
         }
         if loginConfirmed && controlReady && !controlBusy {
-            command(.bigPicture)
-            if controlBusy { accountSetup = false; loginObservation = nil; loginConfirmed = false }
+            if bigPictureMode {
+                command(.bigPicture)
+            }
+            if controlBusy || !bigPictureMode { accountSetup = false; loginObservation = nil; loginConfirmed = false }
         }
     }
     private var controlTimer: Timer?
@@ -990,7 +995,7 @@ struct IDeckLauncher: View {
                     if let message = jit.error { Text(message).foregroundStyle(.orange) }
                     if let error = state.error { Text(error).foregroundStyle(.orange) }
                     Button(action: start) {
-                        Label(jit.busy ? "Enabling JIT…" : "Launch Steam Big Picture", systemImage: "play.fill")
+                        Label(jit.busy ? "Enabling JIT…" : (state.bigPictureMode ? "Launch Steam Big Picture" : "Launch Steam (Desktop Mode)"), systemImage: "play.fill")
                             .font(.headline).frame(maxWidth: .infinity).padding(12)
                     }.buttonStyle(.borderedProminent).disabled(!launchEnabled).id(8)
                     GroupBox("Steam account") {
@@ -1001,7 +1006,8 @@ struct IDeckLauncher: View {
                                 .buttonStyle(.bordered).disabled(!launchEnabled)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.id(9)
-                    Toggle("Open Big Picture automatically next time", isOn: $state.autoStart).id(10)
+                    Toggle("Open Steam automatically next time", isOn: $state.autoStart).id(10)
+                    Toggle("Launch in Big Picture mode", isOn: $state.bigPictureMode)
                     Text("Connect a controller, or tap directly on Steam. The floating iDeck button opens the keyboard, virtual controller and options.")
                         .font(.subheadline).foregroundStyle(.secondary)
                     Text("Powered by Madeira · Genuine Windows Steam. Compatibility is experimental.")

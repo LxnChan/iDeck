@@ -3707,7 +3707,7 @@ struct ContentView: View {
         guard !ideck.running, !jitCoordinator.busy, wine_process_is_running() == 0 else { return }
         ideck.error = nil
         UserDefaults.standard.set(true, forKey: "iDeckSetupComplete")
-        let launch = { startSteamUIExperiment(x86Client: !SteamUIExperiment.steam64, bigPicture: true, accountChooser: accountChooser, loginFirst: accountChooser) }
+        let launch = { startSteamUIExperiment(x86Client: !SteamUIExperiment.steam64, bigPicture: ideck.bigPictureMode, accountChooser: accountChooser, loginFirst: accountChooser) }
         if jit_check_debugged() && StikJITHelper.ready { launch() }
         else { launchAfterJIT = launch; enableJIT() }
     }
