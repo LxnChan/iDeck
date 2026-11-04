@@ -207,3 +207,26 @@ import UserNotifications
                                                                      content: content, trigger: nil))
     }
 }
+
+// MARK: - Compatibility stubs for iOS 26 continued processing tasks
+
+class BGContinuedProcessingTask: BGTask {
+    var progress: Progress = Progress()
+    func updateTitle(_ title: String, subtitle: String? = nil) {}
+}
+
+class BGContinuedProcessingTaskRequest: BGProcessingTaskRequest {
+    enum Strategy {
+        case fail
+    }
+    var strategy: Strategy = .fail
+    var title: String?
+    var subtitle: String?
+
+    init(identifier: String, title: String? = nil, subtitle: String? = nil) {
+        self.title = title
+        self.subtitle = subtitle
+        super.init(identifier: identifier)
+    }
+}
+
