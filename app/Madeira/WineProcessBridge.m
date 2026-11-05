@@ -3,6 +3,7 @@
 // to the already-running wineserver thread.
 
 #import <Foundation/Foundation.h>
+#import <CoreText/CoreText.h>
 #import <os/log.h>
 #import <pthread.h>
 #import "WineProcessBridge.h"
