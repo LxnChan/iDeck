@@ -33,10 +33,10 @@ def between(text, start, end):
     return text[i:text.index(end, i)]
 
 
-library = (app / 'Library.swift').read_text()
-games = (app / 'SteamGames.swift').read_text()
-docs = (root / 'docs/LIBRARY.md').read_text()
-steam_docs = (root / 'docs/STEAM_LIBRARY.md').read_text()
+library = (app / 'Library.swift').read_text(encoding='utf-8')
+games = (app / 'SteamGames.swift').read_text(encoding='utf-8')
+docs = (root / 'docs/LIBRARY.md').read_text(encoding='utf-8')
+steam_docs = (root / 'docs/STEAM_LIBRARY.md').read_text(encoding='utf-8')
 
 view = between(library, 'struct LibraryView: View {', 'struct ExecutableBrowser: View {')
 page = between(view, '    private var library: some View {', '    private func cells(')
@@ -49,10 +49,12 @@ others_at = page.index('LibrarySectionHeader(title: "Other games"')
 require(page.index('Label("Desktop", systemImage: "desktopcomputer")') < steam_at < others_at,
         'page order: Desktop, then Steam, then Other games')
 require('let steamFirst = MadeiraDock.enabled && SteamGamesSection.hasInstalled' in page[:steam_at]
-        and 'part: .installed, open: { selected = $0 })' in page[steam_at:others_at]
+        and 'part: .installed,' in page[steam_at:others_at]
+        and 'open: { selected = $0 })' in page[steam_at:others_at]
         and 'if SteamGamesSection.shown {' in page[steam_at:others_at],
         'Other games is a section exactly when the Steam section is shown; installed Steam games come first')
-require('part: steamFirst ? .notInstalled : .all, open: { selected = $0 })' in page[others_at:]
+require('part: steamFirst ? .notInstalled : .all,' in page[others_at:]
+        and 'open: { selected = $0 })' in page[others_at:]
         and 'if MadeiraDock.enabled {' in page[others_at:],
         'Not installed follows Other games; with nothing installed the whole Steam section does')
 single = page[others_at:]
@@ -82,8 +84,8 @@ require('LibrarySectionHeader(title: "Steam", count: installed.count,' in body a
 require('if steam.refreshing { ProgressView().accessibilityLabel("Refreshing Steam library") }' in body,
         'Steam: a progress indicator while the library refreshes')
 require('@AppStorage("madeiraLibraryHideInstalled") private var hideInstalled = false' in section and
-        '@AppStorage("madeiraSteamShowUninstalled") private var showUninstalled = true' in section,
-        'Steam: remembered states (installed shown, Not installed open by default)')
+        '@AppStorage("madeiraSteamShowUninstalled") private var showUninstalled = false' in section,
+        'Steam: remembered states (installed shown, Not installed closed by default)')
 require('static var collapsible: Bool { MadeiraConfig.flag("MADEIRA_LIBRARY_COLLAPSE") }' in section,
         'MADEIRA_LIBRARY_COLLAPSE (on by default) makes the titles collapsible')
 order = [body.index('LibrarySectionHeader(title: "Steam"'), body.index('SteamSignInCard { showSignIn = true }'),

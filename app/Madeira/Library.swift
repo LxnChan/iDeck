@@ -2404,7 +2404,8 @@ enum LibraryGrouping {
 
     /// The collapsed groups' ids, stored comma-separated ("played.today,installed.notInstalled").
     static func collapsed(_ stored: String) -> Set<String> {
-        Set(stored.split(separator: ",").map(String.init))
+        if stored.isEmpty { return ["installed.notInstalled"] }
+        return Set(stored.split(separator: ",").map(String.init))
     }
 
     static func storing(_ collapsed: Set<String>) -> String { collapsed.sorted().joined(separator: ",") }
@@ -2439,7 +2440,7 @@ struct LibraryGroupedGames<LocalCell: View>: View {
     @ObservedObject private var steamGames = SteamGamesModel.shared
     @ObservedObject private var steam = SteamOwnedLibrary.shared
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("madeiraLibraryCollapsedGroups") private var collapsedGroups = ""
+    @AppStorage("madeiraLibraryCollapsedGroups") private var collapsedGroups = "installed.notInstalled"
     @State private var steamSheet: SteamSelection?
 
     private struct SteamSelection: Identifiable { let id: Int }
@@ -2586,7 +2587,7 @@ struct LibraryView: View {
     @AppStorage("madeiraLibraryLayout") private var layout = "cards"
     @AppStorage("madeiraLibrarySort") private var sort = "played"
     @AppStorage("madeiraLibraryGroup") private var group = "platform"
-    @AppStorage("madeiraLibraryCollapsedGroups") private var collapsedGroups = ""
+    @AppStorage("madeiraLibraryCollapsedGroups") private var collapsedGroups = "installed.notInstalled"
     @AppStorage("ideckAdvanced") private var ideckAdvanced = true
     // Collapsed state of the Other games section (MADEIRA_LIBRARY_COLLAPSE=0: no collapsing).
     @AppStorage("madeiraLibraryHideOthers") private var hideOthers = false

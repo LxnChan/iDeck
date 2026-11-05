@@ -429,7 +429,7 @@ struct SteamGamesSection: View {
     @Environment(\.scenePhase) private var scenePhase
     // Collapsed state of the installed games (the Steam title) and of Not installed.
     @AppStorage("madeiraLibraryHideInstalled") private var hideInstalled = false
-    @AppStorage("madeiraSteamShowUninstalled") private var showUninstalled = true
+    @AppStorage("madeiraSteamShowUninstalled") private var showUninstalled = false
     @State private var selected: SteamGameSelection?
     @State private var showSignIn = false
 
@@ -550,6 +550,10 @@ struct SteamGamesSection: View {
         }
         // The library reappears after every session, so this also rereads after a game.
         .onAppear {
+            if !UserDefaults.standard.bool(forKey: "madeiraSteamShowUninstalledInitialized_v1") {
+                UserDefaults.standard.set(true, forKey: "madeiraSteamShowUninstalledInitialized_v1")
+                showUninstalled = false
+            }
             model.refresh()
             if libraryEnabled { steam.start(); steam.reconcileSession() }
         }
