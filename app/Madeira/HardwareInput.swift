@@ -1147,22 +1147,32 @@ final class HardwareInput: ObservableObject {
     /// Absolute route: put the program's cursor where the iOS pointer is on
     /// the game view. Main thread.
     private func postAbsolute(_ p: CGPoint, in view: UIView) {
-        let desktop = Self.desktopMode
-        let desk = Self.desktopSize()
-        let sw = desktop ? desk.w : DirectCursorOverlay.screenW
-        let sh = desktop ? desk.h : DirectCursorOverlay.screenH
-        let s = ScreenMap.toScreen(x: Double(p.x), y: Double(p.y), viewW: Double(view.bounds.width),
-                                   viewH: Double(view.bounds.height), screenW: sw, screenH: sh)
+        let (sx, sy): (Int32, Int32)
+        if let mbv = (view as? MetalBackedView) ?? MetalBackedView.keyboardTarget {
+            let ptInMbv = view === mbv ? p : view.convert(p, to: mbv)
+            let mapped = mbv.mapPoint(ptInMbv)
+            sx = mapped.0
+            sy = mapped.1
+        } else {
+            let desktop = Self.desktopMode
+            let desk = Self.desktopSize()
+            let sw = desktop ? desk.w : DirectCursorOverlay.screenW
+            let sh = desktop ? desk.h : DirectCursorOverlay.screenH
+            let s = ScreenMap.toScreen(x: Double(p.x), y: Double(p.y), viewW: Double(view.bounds.width),
+                                       viewH: Double(view.bounds.height), screenW: sw, screenH: sh)
+            sx = s.x
+            sy = s.y
+        }
         setMouseInUse(true)
-        if let last = lastAbsolute, last.x == s.x, last.y == s.y { return }
-        lastAbsolute = s
-        if desktop {
+        if let last = lastAbsolute, last.x == sx, last.y == sy { return }
+        lastAbsolute = (sx, sy)
+        if Self.desktopMode {
             // The touch trackpad continues from here; the compositor's arrow
             // follows the absolute move.
-            MetalBackedView.cursor = CGPoint(x: Int(s.x), y: Int(s.y))
+            MetalBackedView.cursor = CGPoint(x: Int(sx), y: Int(sy))
             motionLock.lock(); desktopCursorSynced = true; motionLock.unlock()
         }
-        winios_pointer(s.x, s.y, Self.moveFlag | Self.absoluteFlag, 0)
+        winios_pointer(sx, sy, Self.moveFlag | Self.absoluteFlag, 0)
         updateTracking()
         renderCursor()
     }
@@ -1416,6 +1426,10 @@ final class HardwareInput: ObservableObject {
     func interceptTouches(_ touches: Set<UITouch>, _ event: UIEvent?, _ phase: TouchPhase) -> Bool {
         guard Self.enabled else { return false }
         if touches.contains(where: { $0.type == .indirectPointer }) {
+            if let t = touches.first(where: { $0.type == .indirectPointer }), let v = t.view {
+                let p = t.location(in: v)
+                pointerHovered(at: p, in: v, inside: v.bounds.contains(p))
+            }
             switch phase {
             case .moved: break
             case .cancelled: uikitButtons([])       // no mask worth reading: drop all
@@ -1509,7 +1523,7 @@ final class HardwareInput: ObservableObject {
     /// The complete set of buttons UIKit says are down, declared, not edged.
     /// These touches reach the game view only while the pointer is over it.
     func uikitButtons(_ want: Set<MouseButton>) {
-        guard Self.enabled, !gcLive else { return }
+        guard Self.enabled else { return }
         let allowed = baseFocused ? want : []
         if !want.isEmpty { noteUIKitPointer(); setMouseInUse(true) }
         guard allowed != gameButtons else { return }
@@ -1825,7 +1839,8 @@ final class PointerFallback: NSObject {
             HardwareInput.shared.uikitMoved(d.x, d.y, src: "hover")
         default:
             hoverHasLast = false
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: false)
+            let inside = view.bounds.contains(p)
+            HardwareInput.shared.pointerHovered(at: p, in: view, inside: inside)
         }
     }
 
@@ -1834,19 +1849,24 @@ final class PointerFallback: NSObject {
         // Translation, not location, for motion: it keeps accumulating past
         // the point where the clamped system pointer stops.
         let t = g.translation(in: view)
+        let p = g.location(in: view)
         switch g.state {
         case .began:
             panLast = .zero
             hoverHasLast = false
-            HardwareInput.shared.pointerDragged(at: g.location(in: view), in: view)
+            HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+            HardwareInput.shared.pointerDragged(at: p, in: view)
         case .changed:
-            HardwareInput.shared.pointerDragged(at: g.location(in: view), in: view)
+            HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+            HardwareInput.shared.pointerDragged(at: p, in: view)
             let d = CGPoint(x: t.x - panLast.x, y: t.y - panLast.y)
             panLast = t
             HardwareInput.shared.uikitMoved(d.x, d.y, src: "pan")
         default:
             panLast = .zero
             hoverHasLast = false
+            let inside = view.bounds.contains(p)
+            HardwareInput.shared.pointerHovered(at: p, in: view, inside: inside)
         }
     }
 
@@ -1909,13 +1929,18 @@ final class DirectCursorOverlay {
         CATransaction.setDisableActions(true)
         l.isHidden = !visible
         if visible {
-            let k = MetalHostView.shared.bounds.width / CGFloat(Self.screenW)
+            let guest = MetalBackedView.keyboardTarget?.guestSize() ?? CGSize(width: CGFloat(Self.screenW), height: CGFloat(Self.screenH))
+            let gw = max(guest.width, 1)
+            let gh = max(guest.height, 1)
+            let hostBounds = MetalHostView.shared.bounds
+            let kx = hostBounds.width / gw
+            let ky = hostBounds.height / gh
             let w = serial != 0 ? Int(image.w) : Self.arrowSize.w
             let h = serial != 0 ? Int(image.h) : Self.arrowSize.h
             let hx = serial != 0 ? Int(image.hot_x) : 0
             let hy = serial != 0 ? Int(image.hot_y) : 0
-            l.bounds = CGRect(x: 0, y: 0, width: CGFloat(w) * k, height: CGFloat(h) * k)
-            l.position = CGPoint(x: CGFloat(Int(x) - hx) * k, y: CGFloat(Int(y) - hy) * k)
+            l.bounds = CGRect(x: 0, y: 0, width: CGFloat(w) * kx, height: CGFloat(h) * ky)
+            l.position = CGPoint(x: CGFloat(Int(x) - hx) * kx, y: CGFloat(Int(y) - hy) * ky)
         }
         CATransaction.commit()
     }
