@@ -1488,7 +1488,7 @@ final class LibraryJITState: ObservableObject {
 /// simulators: the M starts on the field's edge to the pixel on both.
 final class LibraryHeaderAlignment: ObservableObject {
     static let shared = LibraryHeaderAlignment()
-    static let title = "Madeira"
+    static var title: String { IDeckState.enabled ? "iDeck" : "Madeira" }
     @Published private(set) var shift: CGFloat = 0
     weak var field: UIView?
     weak var anchor: UIView?
@@ -2563,6 +2563,7 @@ struct LibraryView: View {
     @AppStorage("madeiraLibrarySort") private var sort = "played"
     @AppStorage("madeiraLibraryGroup") private var group = "platform"
     @AppStorage("madeiraLibraryCollapsedGroups") private var collapsedGroups = ""
+    @AppStorage("ideckAdvanced") private var ideckAdvanced = true
     // Collapsed state of the Other games section (MADEIRA_LIBRARY_COLLAPSE=0: no collapsing).
     @AppStorage("madeiraLibraryHideOthers") private var hideOthers = false
     // The sections follow the Steam section's games and sign-in (SteamGames.swift).
@@ -2675,6 +2676,13 @@ struct LibraryView: View {
         }
     }
     @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
+        if IDeckState.enabled {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { ideckAdvanced = false } label: {
+                    Label("Steam Launcher", systemImage: "gamecontroller")
+                }
+            }
+        }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Picker("Library layout", selection: $layout) {
@@ -2806,7 +2814,7 @@ struct LibraryView: View {
         ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack {
+                HStack(spacing: 12) {
                     Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {
                         if liquidMetal.on {
                             // On the chrome's middle band (dark, or light in light mode), with a soft
@@ -2817,8 +2825,6 @@ struct LibraryView: View {
                                 .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
                                 .padding(.horizontal, 14).frame(minHeight: 44)
                                 .background(LiquidMetalFill())
-                                // ml1217: the fill does not hit-test, so without this only the
-                                // glyphs took a tap (the plain fill's Capsule did).
                                 .contentShape(Capsule())
                         } else {
                             Label("Desktop", systemImage: "desktopcomputer")
@@ -2829,6 +2835,25 @@ struct LibraryView: View {
                         .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
                         .id(LibraryEntry.desktopID)
                         .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.desktopID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+
+                    if IDeckState.enabled {
+                        Button { ideckAdvanced = false } label: {
+                            if liquidMetal.on {
+                                let light = colorScheme == .light
+                                Label("Steam Launcher", systemImage: "gamecontroller")
+                                    .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
+                                    .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
+                                    .padding(.horizontal, 14).frame(minHeight: 44)
+                                    .background(LiquidMetalFill())
+                                    .contentShape(Capsule())
+                            } else {
+                                Label("Steam Launcher", systemImage: "gamecontroller")
+                                    .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
+                                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                            }
+                        }.buttonStyle(.plain)
+                            .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                    }
                 }
                 // The library's sections, as in the fork: Steam (installed and downloading
                 // Steam games, then Not installed), then Other games, the games you added.

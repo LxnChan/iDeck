@@ -1297,6 +1297,9 @@ struct ContentView: View {
         if #available(iOS 26.0, *) { return true }
         return false
     }
+    private var isPad: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+    }
     @State private var devSheet: SettingsSheet?
     @State private var steamUIStarting = false
     @ObservedObject private var ideck = IDeckState.shared
@@ -1351,17 +1354,6 @@ struct ContentView: View {
                                 startDock: { startDock($0, compactPool: $1) })
                 } else {
                     developerBody
-                }
-            }
-            .toolbar {
-                if IDeckState.enabled && ideckAdvanced && !ideck.running {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            ideckAdvanced = false
-                        } label: {
-                            Label("Steam UI", systemImage: "gamecontroller")
-                        }
-                    }
                 }
             }
             .navigationTitle(IDeckState.enabled ? "iDeck" : "Madeira")
@@ -1551,9 +1543,9 @@ struct ContentView: View {
                     TouchControlsHost.attach()   // re-frame to the new bounds
                 }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: isPad ? [.bottom, .leading, .trailing] : .all)
         .background(Color.black)
-        .statusBarHidden(true)
+        .statusBarHidden(!isPad)
     }
 
     /// Portrait: classic tooling layout — header, badges, 240pt game strip,
@@ -1657,7 +1649,7 @@ struct ContentView: View {
                 }
             }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: isPad ? [.bottom, .leading, .trailing] : .all)
         .background(Color.black)
     }
 
@@ -4377,6 +4369,7 @@ struct TouchControlsOverlay: View {
     @ObservedObject private var library = LibraryModel.shared
     @State private var pinchBase: Double?
     @ObservedObject private var ideck = IDeckState.shared
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
     var body: some View {
         GeometryReader { geo in
@@ -4391,8 +4384,16 @@ struct TouchControlsOverlay: View {
                     if (m.visible || m.editing) && !library.blocksGameplayTouch {
                         controls(geo.size, session: session)
                     }
-                    if IDeckState.enabled && ideck.running && !m.editing { IDeckHUD() }
-                    else if session && !m.editing { LibraryHUD() } else { topBar }
+                    if IDeckState.enabled && ideck.running && !m.editing {
+                        IDeckHUD()
+                            .padding(.top, isPad ? geo.safeAreaInsets.top : 0)
+                    }
+                    else if session && !m.editing {
+                        LibraryHUD()
+                    } else {
+                        topBar
+                            .padding(.top, isPad ? geo.safeAreaInsets.top : 0)
+                    }
                     if m.editing, let i = m.index(of: m.selected) {
                         MappingPanel(control: m.controls[i], screen: geo.size)
                     }
