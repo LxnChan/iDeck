@@ -439,14 +439,15 @@ static NSString *madeira_find_cjk_font(void)
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
 
-    // 1. Check bundled high-coverage CJK font (DroidSansFallback / simsun)
+    // 1. Check bundled SimSun font
     NSString *bundled = [bundlePath stringByAppendingPathComponent:@"fonts/simsun.ttc"];
     if ([fm isReadableFileAtPath:bundled]) return bundled;
-    bundled = [bundlePath stringByAppendingPathComponent:@"fonts/DroidSansFallback.ttf"];
+    bundled = [bundlePath stringByAppendingPathComponent:@"fonts/simsun.ttf"];
     if ([fm isReadableFileAtPath:bundled]) return bundled;
 
-    // 2. Check CoreText URL for PingFang
-    CTFontRef ctFont = CTFontCreateWithName((CFStringRef)@"PingFangSC-Regular", 12.0, NULL);
+    // 2. Check CoreText URL for Songti / PingFang
+    CTFontRef ctFont = CTFontCreateWithName((CFStringRef)@"SongtiSC-Regular", 12.0, NULL);
+    if (!ctFont) ctFont = CTFontCreateWithName((CFStringRef)@"PingFangSC-Regular", 12.0, NULL);
     if (ctFont) {
         CFURLRef url = (CFURLRef)CTFontCopyAttribute(ctFont, kCTFontURLAttribute);
         if (url) {
@@ -463,11 +464,10 @@ static NSString *madeira_find_cjk_font(void)
 
     // 3. Fallback candidates on host
     static const char * const candidates[] = {
+        "/System/Library/Fonts/LanguageSupport/Songti.ttc",
         "/System/Library/Fonts/LanguageSupport/PingFang.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/CoreAddition/STHeiti-Light.ttc",
-        "/System/Library/Fonts/CoreAddition/STHeiti-Medium.ttc",
-        "/System/Library/Fonts/LanguageSupport/Songti.ttc",
         "/System/Library/Fonts/LanguageSupport/Kaiti.ttc",
         NULL
     };
@@ -480,12 +480,12 @@ static NSString *madeira_find_cjk_font(void)
 
 static NSString *madeira_cjk_family(NSString *fontPath)
 {
-    if (!fontPath) return @"Droid Sans Fallback";
+    if (!fontPath) return @"SimSun";
+    if ([fontPath containsString:@"Songti"]) return @"Songti SC";
     if ([fontPath containsString:@"PingFang"]) return @"PingFang SC";
     if ([fontPath containsString:@"STHeiti"]) return @"STHeiti";
-    if ([fontPath containsString:@"Songti"]) return @"Songti SC";
     if ([fontPath containsString:@"Kaiti"]) return @"Kaiti SC";
-    return @"Droid Sans Fallback";
+    return @"SimSun";
 }
 
 static void madeira_setup_cjk_fonts(NSString *prefix)
@@ -500,6 +500,11 @@ static void madeira_setup_cjk_fonts(NSString *prefix)
         [prefix stringByAppendingPathComponent:@"drive_c/windows/Fonts"],
         [prefix stringByAppendingPathComponent:@"drive_c/windows/fonts"]
     ];
+
+    // Clean up obsolete DroidSansFallback font files from prefix
+    for (NSString *dir in fontDirs) {
+        [fm removeItemAtPath:[dir stringByAppendingPathComponent:@"DroidSansFallback.ttf"] error:nil];
+    }
 
     // Sync all bundled fonts into drive_c/windows/Fonts
     if ([fm fileExistsAtPath:bundleFonts]) {
@@ -524,6 +529,7 @@ static void madeira_setup_cjk_fonts(NSString *prefix)
     NSArray<NSString *> *fontNames = @[
         @"simsun.ttc",
         @"simsun.ttf",
+        @"nsimsun.ttc",
         @"msyh.ttc",
         @"msyh.ttf",
         @"msyhbd.ttc",
@@ -531,8 +537,7 @@ static void madeira_setup_cjk_fonts(NSString *prefix)
         @"kaiti.ttf",
         @"fangsong.ttf",
         @"msgothic.ttc",
-        @"mingliu.ttc",
-        @"DroidSansFallback.ttf"
+        @"mingliu.ttc"
     ];
 
     for (NSString *dir in fontDirs) {
@@ -540,9 +545,10 @@ static void madeira_setup_cjk_fonts(NSString *prefix)
         int linked = 0;
         for (NSString *name in fontNames) {
             NSString *dst = [dir stringByAppendingPathComponent:name];
-            if ([fm fileExistsAtPath:dst]) continue;
+            if ([name isEqualToString:@"simsun.ttc"] && [fm fileExistsAtPath:dst]) continue;
             [fm removeItemAtPath:dst error:nil];
-            if ([fm createSymbolicLinkAtPath:dst withDestinationPath:foundFont error:nil]) {
+            if ([fm createSymbolicLinkAtPath:dst withDestinationPath:foundFont error:nil] ||
+                [fm copyItemAtPath:foundFont toPath:dst error:nil]) {
                 linked++;
             }
         }
@@ -550,10 +556,24 @@ static void madeira_setup_cjk_fonts(NSString *prefix)
     }
 }
 
+static NSString *madeira_clean_legacy_cjk_reg(NSString *content)
+{
+    if (!content || content.length == 0) return @"";
+    NSMutableString *s = [content mutableCopy];
+    [s replaceOccurrencesOfString:@"\"Droid Sans Fallback (TrueType)\"=\"DroidSansFallback.ttf\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"DroidSansFallback.ttf,Droid Sans Fallback\\0" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"SimSun\"=\"Droid Sans Fallback\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"NSimSun\"=\"Droid Sans Fallback\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"SimSun\"=\"SimSun\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"NSimSun\"=\"NSimSun\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"Droid Sans Fallback\"" withString:@"\"SimSun\"" options:0 range:NSMakeRange(0, s.length)];
+    return s;
+}
+
 static void madeira_setup_cjk_registry(NSString *prefix)
 {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v2"];
+    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v3"];
 
     NSString *systemReg = [prefix stringByAppendingPathComponent:@"system.reg"];
     NSString *userReg = [prefix stringByAppendingPathComponent:@"user.reg"];
@@ -561,91 +581,98 @@ static void madeira_setup_cjk_registry(NSString *prefix)
     NSString *cjkSystemReg =
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts] 1730000000\n"
-        @"\"Droid Sans Fallback (TrueType)\"=\"DroidSansFallback.ttf\"\n"
         @"\"SimSun & NSimSun (TrueType)\"=\"simsun.ttc\"\n"
-        @"\"Microsoft YaHei & Microsoft YaHei UI (TrueType)\"=\"msyh.ttc\"\n"
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontLink\\\\SystemLink] 1730000000\n"
-        @"\"Arial\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Courier New\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Lucida Console\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Lucida Sans Unicode\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Microsoft Sans Serif\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"MS Sans Serif\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Segoe UI\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"System\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Tahoma\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Times New Roman\"=str(7):\"DroidSansFallback.ttf,Droid Sans Fallback\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Arial\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Courier New\"=str(7):\"simsun.ttc,NSimSun\\0\"\n"
+        @"\"Lucida Console\"=str(7):\"simsun.ttc,NSimSun\\0\"\n"
+        @"\"Lucida Sans Unicode\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Microsoft Sans Serif\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"MS Sans Serif\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Segoe UI\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"System\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Tahoma\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Times New Roman\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes] 1730000000\n"
-        @"\"FangSong\"=\"Droid Sans Fallback\"\n"
-        @"\"KaiTi\"=\"Droid Sans Fallback\"\n"
-        @"\"Microsoft YaHei\"=\"Droid Sans Fallback\"\n"
-        @"\"Microsoft YaHei UI\"=\"Droid Sans Fallback\"\n"
-        @"\"MingLiU\"=\"Droid Sans Fallback\"\n"
-        @"\"MS Gothic\"=\"Droid Sans Fallback\"\n"
-        @"\"MS Mincho\"=\"Droid Sans Fallback\"\n"
-        @"\"MS PGothic\"=\"Droid Sans Fallback\"\n"
-        @"\"MS PMincho\"=\"Droid Sans Fallback\"\n"
+        @"\"FangSong\"=\"SimSun\"\n"
+        @"\"KaiTi\"=\"SimSun\"\n"
+        @"\"Microsoft YaHei\"=\"SimSun\"\n"
+        @"\"Microsoft YaHei UI\"=\"SimSun\"\n"
+        @"\"MingLiU\"=\"SimSun\"\n"
+        @"\"MS Gothic\"=\"SimSun\"\n"
+        @"\"MS Mincho\"=\"SimSun\"\n"
+        @"\"MS PGothic\"=\"SimSun\"\n"
+        @"\"MS PMincho\"=\"SimSun\"\n"
         @"\"MS Shell Dlg\"=\"SimSun\"\n"
         @"\"MS Shell Dlg 2\"=\"Tahoma\"\n"
-        @"\"MS UI Gothic\"=\"Droid Sans Fallback\"\n"
-        @"\"NSimSun\"=\"Droid Sans Fallback\"\n"
-        @"\"PMingLiU\"=\"Droid Sans Fallback\"\n"
-        @"\"SimHei\"=\"Droid Sans Fallback\"\n"
-        @"\"SimSun\"=\"Droid Sans Fallback\"\n"
+        @"\"MS UI Gothic\"=\"SimSun\"\n"
+        @"\"NSimSun\"=\"SimSun\"\n"
+        @"\"PMingLiU\"=\"SimSun\"\n"
+        @"\"SimHei\"=\"SimSun\"\n"
         @"\n"
         @"[Software\\\\Wine\\\\Fonts\\\\Replacements] 1730000000\n"
-        @"\"FangSong\"=\"Droid Sans Fallback\"\n"
-        @"\"KaiTi\"=\"Droid Sans Fallback\"\n"
-        @"\"Microsoft YaHei\"=\"Droid Sans Fallback\"\n"
-        @"\"Microsoft YaHei UI\"=\"Droid Sans Fallback\"\n"
-        @"\"MingLiU\"=\"Droid Sans Fallback\"\n"
-        @"\"MS Gothic\"=\"Droid Sans Fallback\"\n"
-        @"\"MS PGothic\"=\"Droid Sans Fallback\"\n"
-        @"\"MS UI Gothic\"=\"Droid Sans Fallback\"\n"
-        @"\"NSimSun\"=\"Droid Sans Fallback\"\n"
-        @"\"PMingLiU\"=\"Droid Sans Fallback\"\n"
-        @"\"SimHei\"=\"Droid Sans Fallback\"\n"
-        @"\"SimSun\"=\"Droid Sans Fallback\"\n";
+        @"\"FangSong\"=\"SimSun\"\n"
+        @"\"KaiTi\"=\"SimSun\"\n"
+        @"\"Microsoft YaHei\"=\"SimSun\"\n"
+        @"\"Microsoft YaHei UI\"=\"SimSun\"\n"
+        @"\"MingLiU\"=\"SimSun\"\n"
+        @"\"MS Gothic\"=\"SimSun\"\n"
+        @"\"MS Mincho\"=\"SimSun\"\n"
+        @"\"MS PGothic\"=\"SimSun\"\n"
+        @"\"MS UI Gothic\"=\"SimSun\"\n"
+        @"\"PMingLiU\"=\"SimSun\"\n"
+        @"\"SimHei\"=\"SimSun\"\n";
 
     NSString *cjkUserReg =
         @"\n"
         @"[Software\\\\Wine\\\\Fonts\\\\Replacements] 1730000000\n"
-        @"\"FangSong\"=\"Droid Sans Fallback\"\n"
-        @"\"KaiTi\"=\"Droid Sans Fallback\"\n"
-        @"\"Microsoft YaHei\"=\"Droid Sans Fallback\"\n"
-        @"\"Microsoft YaHei UI\"=\"Droid Sans Fallback\"\n"
-        @"\"MingLiU\"=\"Droid Sans Fallback\"\n"
-        @"\"MS Gothic\"=\"Droid Sans Fallback\"\n"
-        @"\"MS PGothic\"=\"Droid Sans Fallback\"\n"
-        @"\"MS UI Gothic\"=\"Droid Sans Fallback\"\n"
-        @"\"NSimSun\"=\"Droid Sans Fallback\"\n"
-        @"\"PMingLiU\"=\"Droid Sans Fallback\"\n"
-        @"\"SimHei\"=\"Droid Sans Fallback\"\n"
-        @"\"SimSun\"=\"Droid Sans Fallback\"\n";
+        @"\"FangSong\"=\"SimSun\"\n"
+        @"\"KaiTi\"=\"SimSun\"\n"
+        @"\"Microsoft YaHei\"=\"SimSun\"\n"
+        @"\"Microsoft YaHei UI\"=\"SimSun\"\n"
+        @"\"MingLiU\"=\"SimSun\"\n"
+        @"\"MS Gothic\"=\"SimSun\"\n"
+        @"\"MS Mincho\"=\"SimSun\"\n"
+        @"\"MS PGothic\"=\"SimSun\"\n"
+        @"\"MS UI Gothic\"=\"SimSun\"\n"
+        @"\"PMingLiU\"=\"SimSun\"\n"
+        @"\"SimHei\"=\"SimSun\"\n";
 
     if ([fm fileExistsAtPath:systemReg]) {
         NSError *err = nil;
         NSString *content = [NSString stringWithContentsOfFile:systemReg encoding:NSUTF8StringEncoding error:&err];
-        if (content && ![content containsString:@"Droid Sans Fallback"]) {
-            NSString *newContent = [content stringByAppendingString:cjkSystemReg];
-            [newContent writeToFile:systemReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            dprintf(STDERR_FILENO, "[cjk-reg] Injected CJK FontLink & FontSubstitutes into system.reg\n");
+        if (content) {
+            NSString *cleaned = madeira_clean_legacy_cjk_reg(content);
+            if (![cleaned containsString:@"\"SimSun & NSimSun (TrueType)\""]) {
+                cleaned = [cleaned stringByAppendingString:cjkSystemReg];
+            }
+            if (![cleaned isEqualToString:content]) {
+                [cleaned writeToFile:systemReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                dprintf(STDERR_FILENO, "[cjk-reg] Updated SimSun FontLink & FontSubstitutes in system.reg\n");
+            }
         }
     }
 
     if ([fm fileExistsAtPath:userReg]) {
         NSError *err = nil;
         NSString *content = [NSString stringWithContentsOfFile:userReg encoding:NSUTF8StringEncoding error:&err];
-        if (content && ![content containsString:@"Droid Sans Fallback"]) {
-            NSString *newContent = [content stringByAppendingString:cjkUserReg];
-            [newContent writeToFile:userReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            dprintf(STDERR_FILENO, "[cjk-reg] Injected CJK Replacements into user.reg\n");
+        if (content) {
+            NSString *cleaned = madeira_clean_legacy_cjk_reg(content);
+            if (![cleaned containsString:@"\"Microsoft YaHei\"=\"SimSun\""]) {
+                cleaned = [cleaned stringByAppendingString:cjkUserReg];
+            }
+            if (![cleaned isEqualToString:content]) {
+                [cleaned writeToFile:userReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                dprintf(STDERR_FILENO, "[cjk-reg] Updated SimSun Replacements in user.reg\n");
+            }
         }
     }
 
-    [@"cjk-v2" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    // Remove legacy v2 marker
+    [fm removeItemAtPath:[prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v2"] error:nil];
+    [@"cjk-v3" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 static void madeira_setup_proxy_registry(NSString *prefix)

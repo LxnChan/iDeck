@@ -31,8 +31,8 @@ This fork introduces critical enhancements for **iPad multitasking & screen layo
 ## What's New in this Fork
 
 ### 1. 🈲 Full CJK / Chinese Font Support (No More Tofu Boxes `□□□□`)
-- **Bundled TrueType/OpenType Fonts**: Ships directly with comprehensive CJK fonts including `DroidSansFallback.ttf` (49,775+ glyphs covering simplified/traditional Chinese, Japanese, and Korean) alongside core Wine fonts (`simsun.ttc`, `msyh.ttc`, `tahoma.ttf`, `system.ttf`).
-- **Automatic Wine Registry Injections**: Injects `FontLink\SystemLink`, `FontSubstitutes`, and `Wine\Fonts\Replacements` into `user.reg` and `system.reg`.
+- **Authentic Bundled SimSun Font (`simsun.ttc`)**: Integrates the complete Windows SimSun & NSimSun font (`simsun.ttc`), providing full ASCII/Latin support (resolving English letters turning into boxes in dialog Edit controls such as the "Run" dialog) and comprehensive GBK/GB2312 Chinese characters alongside core Wine fonts (`tahoma.ttf`, `system.ttf`).
+- **Automatic Wine Registry Injections**: Injects `FontLink\SystemLink`, `FontSubstitutes`, and `Wine\Fonts\Replacements` into `user.reg` and `system.reg` to map all common fonts (Microsoft YaHei, SimHei, KaiTi, FangSong) to SimSun.
 - **System-wide Fix**: Resolves missing font glyphs / tofu boxes in Wine configuration utilities, `regedit.exe`, Windows installer wizards, UI dialogs, and Chinese-localized PC games on iOS/iPadOS 18+.
 
 ### 2. 📱 iPad Screen & Safe Area Optimization

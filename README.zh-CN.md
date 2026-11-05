@@ -32,8 +32,8 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在 iPhone 与 iPad
 ## 本分支（Fork）核心新增特性与改进
 
 ### 1. 🈲 完整 CJK / 中文字体支持（彻底告别豆腐块 `□□□□` 乱码）
-- **内置完整字库**：打包内置包含 49,775+ 字形的 `DroidSansFallback.ttf`（全量覆盖 GBK / 简繁体中文、日文假名及韩文），并附带 Wine 核心字体库（`simsun.ttc` 宋体、`msyh.ttc` 微软雅黑、`tahoma.ttf`、`system.ttf` 等）。
-- **自动化注册表字体链接**：启动时自动在 `user.reg` 和 `system.reg` 中注入 `FontLink\SystemLink`、`FontSubstitutes` 与 `Wine\Fonts\Replacements`，将 Tahoma、宋体、微软雅黑等映射至内置 CJK 字体。
+- **直接集成经典宋体（`simsun.ttc`）**：开箱即用集成完整的 Windows 宋体与新宋体字库（`simsun.ttc`），完美覆盖全套 ASCII 英文与标点字符（彻底修复运行对话框等 Edit 编辑框中输入英文字母变成方块/框框的问题）以及全部 GBK / GB2312 常用中文字形，并保留 Wine 核心界面字体（`tahoma.ttf`、`system.ttf` 等）。
+- **自动化注册表字体链接**：启动时自动在 `user.reg` 和 `system.reg` 中注入 `FontLink\SystemLink`、`FontSubstitutes` 与 `Wine\Fonts\Replacements`，将微软雅黑、黑体、楷体、仿宋等一律映射至内置宋体。
 - **全局生效**：完美解决 iOS / iPadOS 18+ 环境下因沙盒限制导致注册表编辑器（`regedit.exe`）、配置程序、安装器向导、弹出对话框以及中文 PC 游戏中文字符全部变成方块（豆腐块）的问题。
 
 ### 2. 📱 iPad 大屏适配与状态栏安全区避让
