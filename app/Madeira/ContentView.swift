@@ -620,11 +620,12 @@ final class MetalBackedView: UIView {
         touchStartTime = now
         movedBeyondSlop = false
         relCarryX = 0; relCarryY = 0   // ml641: never carry motion across a lift
-        // long-press → drag: hold still for 0.5s, haptic confirms, then move
+        // long-press → drag: hold still for longPressDelay (default 0.25s, was 0.5s), haptic confirms, then move
         // the window; release drops. (Replaced double-tap-hold — it raced
         // Windows' double-click detection: wine saw WM_LBUTTONDBLCLK.)
         let gen = touchGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        let delay = max(0.1, InputSettings.shared.longPressDelay)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.touchGeneration == gen, !self.dragActive,
                   !self.movedBeyondSlop, !self.twoFingerActive,
                   // ml643: in mouse-look the finger is the CAMERA, not a pointer.
@@ -775,10 +776,11 @@ final class MetalBackedView: UIView {
             dragTouch = nil
             return
         }
-        // stationary release before the 0.5s drag threshold = click.
+        // stationary release before the drag threshold = click.
         // ml643: NOT in relative mode — every small aim adjustment would fire the
         // weapon. Left/right click are on-screen buttons there instead.
-        if !movedBeyondSlop && now - touchStartTime < 0.5 && !InputSettings.shared.relative {
+        let delay = max(0.1, InputSettings.shared.longPressDelay)
+        if !movedBeyondSlop && now - touchStartTime < delay && !InputSettings.shared.relative {
             fputs("[trackpad] ended: click\n", stderr)
             postPointer(F_LDOWN)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
@@ -1232,6 +1234,8 @@ final class InputSettings: ObservableObject {
     /// the finger is, hold or move to drag. Checked before `relative`; the
     /// library's pointer picker keeps the two mutually exclusive.
     @Published var touchMode = false { didSet { save() } }
+    /// Absolute mode long-press drag threshold in seconds. Default 0.25s (shortened by half from legacy 0.5s).
+    @Published var longPressDelay: Double = 0.25 { didSet { save() } }
     /// ml649: heavy diagnostics. Default OFF so the shipped default is the fast
     /// path; flip it on only when a run needs to be explainable.
     @Published var diagnostics = false { didSet { madeira_set_diag_enabled(diagnostics ? 1 : 0); save() } }
@@ -1264,6 +1268,7 @@ final class InputSettings: ObservableObject {
             sensAbs  = j["sensAbs"]  as? Double ?? 2.0
             sensRel  = j["sensRel"]  as? Double ?? 2.0
             touchMode = j["touchMode"] as? Bool ?? false
+            longPressDelay = j["longPressDelay"] as? Double ?? 0.25
             diagnostics = j["diagnostics"] as? Bool ?? false
             sensMouse = j["sensMouse"] as? Double ?? 1.0
             ignoreTouchesWithMouse = j["ignoreTouchesWithMouse"] as? Bool ?? true
@@ -1278,7 +1283,8 @@ final class InputSettings: ObservableObject {
         let j: [String: Any] = ["relative": relative, "sensAbs": sensAbs, "sensRel": sensRel, "diagnostics": diagnostics,
                                 "sensMouse": sensMouse, "ignoreTouchesWithMouse": ignoreTouchesWithMouse,
                                 "padRightStickMouse": padRightStickMouse,
-                                "touchMode": touchMode]
+                                "touchMode": touchMode,
+                                "longPressDelay": longPressDelay]
         guard let d = try? JSONSerialization.data(withJSONObject: j) else { return }
         try? d.write(to: Self.url, options: .atomic)
     }

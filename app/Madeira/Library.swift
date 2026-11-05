@@ -4023,6 +4023,17 @@ struct LibraryPointerSettings: View {
         LabeledContent("Touch sensitivity") {
             Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.1...8)
         }
+        if !input.relative && !input.touchMode {
+            LabeledContent("Long-press drag delay") {
+                HStack(spacing: 8) {
+                    Slider(value: $input.longPressDelay, in: 0.15...0.60, step: 0.05)
+                    Text(String(format: "%.2fs", input.longPressDelay))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+            }
+        }
     }
 }
 
