@@ -102,6 +102,28 @@ static void *wineserver_thread_func(void *arg) {
         setenv("WINEPREFIX", g_prefix_path, 1);
         setenv("HOME", g_prefix_path, 1);  // Fallback if WINEPREFIX not used
 
+        // Configure locale based on user's system language
+        {
+            NSString *preferredLang = [NSLocale preferredLanguages].firstObject;
+            if (preferredLang) {
+                if ([preferredLang hasPrefix:@"zh"]) {
+                    if ([preferredLang containsString:@"Hant"] || [preferredLang containsString:@"TW"] || [preferredLang containsString:@"HK"]) {
+                        setenv("LANG", "zh_TW.UTF-8", 0);
+                        setenv("LC_ALL", "zh_TW.UTF-8", 0);
+                    } else {
+                        setenv("LANG", "zh_CN.UTF-8", 0);
+                        setenv("LC_ALL", "zh_CN.UTF-8", 0);
+                    }
+                } else if ([preferredLang hasPrefix:@"ja"]) {
+                    setenv("LANG", "ja_JP.UTF-8", 0);
+                    setenv("LC_ALL", "ja_JP.UTF-8", 0);
+                } else if ([preferredLang hasPrefix:@"ko"]) {
+                    setenv("LANG", "ko_KR.UTF-8", 0);
+                    setenv("LC_ALL", "ko_KR.UTF-8", 0);
+                }
+            }
+        }
+
         wine_log_msg("WINEPREFIX=%s", g_prefix_path);
 
         // Create the Wine prefix directory if it doesn't exist

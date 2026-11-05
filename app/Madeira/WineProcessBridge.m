@@ -433,6 +433,182 @@ static void madeira_ensure_locallow(NSString *prefix)
     ws_log( "[profile] users/%s/AppData/LocalLow %s", name, made ? "created" : "could NOT be created" );
 }
 
+static NSString *madeira_find_host_cjk_font(void)
+{
+    static const char * const candidates[] = {
+        "/System/Library/Fonts/LanguageSupport/PingFang.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/CoreAddition/STHeiti-Light.ttc",
+        "/System/Library/Fonts/CoreAddition/STHeiti-Medium.ttc",
+        "/System/Library/Fonts/LanguageSupport/Songti.ttc",
+        "/System/Library/Fonts/Songti.ttc",
+        "/System/Library/Fonts/LanguageSupport/Kaiti.ttc",
+        NULL
+    };
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (int i = 0; candidates[i]; i++) {
+        NSString *cand = [NSString stringWithUTF8String:candidates[i]];
+        if ([fm fileExistsAtPath:cand]) return cand;
+    }
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *bundled = [bundlePath stringByAppendingPathComponent:@"fonts/simsun.ttc"];
+    if ([fm fileExistsAtPath:bundled]) return bundled;
+    return nil;
+}
+
+static NSString *madeira_host_cjk_family(NSString *fontPath)
+{
+    if (!fontPath) return @"PingFang SC";
+    if ([fontPath containsString:@"STHeiti"]) return @"STHeiti";
+    if ([fontPath containsString:@"Songti"]) return @"Songti SC";
+    if ([fontPath containsString:@"Kaiti"]) return @"Kaiti SC";
+    return @"PingFang SC";
+}
+
+static void madeira_setup_cjk_fonts(NSString *prefix)
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *foundFont = madeira_find_host_cjk_font();
+    if (!foundFont) {
+        LOG("[cjk-font] Warning: no host CJK font found on system");
+        return;
+    }
+    LOG("[cjk-font] Using host font: %{public}s", foundFont.UTF8String);
+
+    NSArray<NSString *> *fontDirs = @[
+        [prefix stringByAppendingPathComponent:@"drive_c/windows/Fonts"],
+        [prefix stringByAppendingPathComponent:@"drive_c/windows/fonts"]
+    ];
+
+    NSArray<NSString *> *fontNames = @[
+        @"simsun.ttc",
+        @"simsun.ttf",
+        @"msyh.ttc",
+        @"msyh.ttf",
+        @"msyhbd.ttc",
+        @"simhei.ttf",
+        @"kaiti.ttf",
+        @"fangsong.ttf",
+        @"msgothic.ttc",
+        @"mingliu.ttc",
+        @"PingFang.ttc",
+        @"PingFang.ttf"
+    ];
+
+    for (NSString *dir in fontDirs) {
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        int linked = 0;
+        for (NSString *name in fontNames) {
+            NSString *dst = [dir stringByAppendingPathComponent:name];
+            [fm removeItemAtPath:dst error:nil];
+            if ([fm createSymbolicLinkAtPath:dst withDestinationPath:foundFont error:nil]) {
+                linked++;
+            }
+        }
+        LOG("[cjk-font] Linked %d fonts to %{public}s", linked, dir.UTF8String);
+    }
+}
+
+static void madeira_setup_cjk_registry(NSString *prefix)
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v1"];
+    if ([fm fileExistsAtPath:marker]) return;
+
+    NSString *foundFont = madeira_find_host_cjk_font();
+    NSString *family = madeira_host_cjk_family(foundFont);
+
+    NSString *systemReg = [prefix stringByAppendingPathComponent:@"system.reg"];
+    NSString *userReg = [prefix stringByAppendingPathComponent:@"user.reg"];
+
+    NSString *cjkSystemRegTemplate =
+        @"\n"
+        @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontLink\\\\SystemLink] 1730000000\n"
+        @"\"Arial\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Courier New\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Lucida Console\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Lucida Sans Unicode\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Microsoft Sans Serif\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"MS Sans Serif\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Segoe UI\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"System\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Tahoma\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Times New Roman\"=str(7):\"simsun.ttc,TARGET_FONT\\0simsun.ttc,PingFang SC\\0simsun.ttc,STHeiti\\0simsun.ttc,Songti SC\\0simsun.ttc,SimSun\\0\"\n"
+        @"\n"
+        @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes] 1730000000\n"
+        @"\"FangSong\"=\"TARGET_FONT\"\n"
+        @"\"KaiTi\"=\"TARGET_FONT\"\n"
+        @"\"Microsoft YaHei\"=\"TARGET_FONT\"\n"
+        @"\"Microsoft YaHei UI\"=\"TARGET_FONT\"\n"
+        @"\"MingLiU\"=\"TARGET_FONT\"\n"
+        @"\"MS Gothic\"=\"TARGET_FONT\"\n"
+        @"\"MS Mincho\"=\"TARGET_FONT\"\n"
+        @"\"MS PGothic\"=\"TARGET_FONT\"\n"
+        @"\"MS PMincho\"=\"TARGET_FONT\"\n"
+        @"\"MS Shell Dlg\"=\"SimSun\"\n"
+        @"\"MS Shell Dlg 2\"=\"Tahoma\"\n"
+        @"\"MS UI Gothic\"=\"TARGET_FONT\"\n"
+        @"\"NSimSun\"=\"TARGET_FONT\"\n"
+        @"\"PMingLiU\"=\"TARGET_FONT\"\n"
+        @"\"SimHei\"=\"TARGET_FONT\"\n"
+        @"\"SimSun\"=\"TARGET_FONT\"\n"
+        @"\n"
+        @"[Software\\\\Wine\\\\Fonts\\\\Replacements] 1730000000\n"
+        @"\"FangSong\"=\"TARGET_FONT\"\n"
+        @"\"KaiTi\"=\"TARGET_FONT\"\n"
+        @"\"Microsoft YaHei\"=\"TARGET_FONT\"\n"
+        @"\"Microsoft YaHei UI\"=\"TARGET_FONT\"\n"
+        @"\"MingLiU\"=\"TARGET_FONT\"\n"
+        @"\"MS Gothic\"=\"TARGET_FONT\"\n"
+        @"\"MS PGothic\"=\"TARGET_FONT\"\n"
+        @"\"MS UI Gothic\"=\"TARGET_FONT\"\n"
+        @"\"NSimSun\"=\"TARGET_FONT\"\n"
+        @"\"PMingLiU\"=\"TARGET_FONT\"\n"
+        @"\"SimHei\"=\"TARGET_FONT\"\n"
+        @"\"SimSun\"=\"TARGET_FONT\"\n";
+
+    NSString *cjkUserRegTemplate =
+        @"\n"
+        @"[Software\\\\Wine\\\\Fonts\\\\Replacements] 1730000000\n"
+        @"\"FangSong\"=\"TARGET_FONT\"\n"
+        @"\"KaiTi\"=\"TARGET_FONT\"\n"
+        @"\"Microsoft YaHei\"=\"TARGET_FONT\"\n"
+        @"\"Microsoft YaHei UI\"=\"TARGET_FONT\"\n"
+        @"\"MingLiU\"=\"TARGET_FONT\"\n"
+        @"\"MS Gothic\"=\"TARGET_FONT\"\n"
+        @"\"MS PGothic\"=\"TARGET_FONT\"\n"
+        @"\"MS UI Gothic\"=\"TARGET_FONT\"\n"
+        @"\"NSimSun\"=\"TARGET_FONT\"\n"
+        @"\"PMingLiU\"=\"TARGET_FONT\"\n"
+        @"\"SimHei\"=\"TARGET_FONT\"\n"
+        @"\"SimSun\"=\"TARGET_FONT\"\n";
+
+    NSString *cjkSystemReg = [cjkSystemRegTemplate stringByReplacingOccurrencesOfString:@"TARGET_FONT" withString:family];
+    NSString *cjkUserReg = [cjkUserRegTemplate stringByReplacingOccurrencesOfString:@"TARGET_FONT" withString:family];
+
+    if ([fm fileExistsAtPath:systemReg]) {
+        NSError *err = nil;
+        NSString *content = [NSString stringWithContentsOfFile:systemReg encoding:NSUTF8StringEncoding error:&err];
+        if (content && ![content containsString:@"FontLink\\\\SystemLink"]) {
+            NSString *newContent = [content stringByAppendingString:cjkSystemReg];
+            [newContent writeToFile:systemReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            LOG("[cjk-reg] Injected CJK FontLink & FontSubstitutes into system.reg");
+        }
+    }
+
+    if ([fm fileExistsAtPath:userReg]) {
+        NSError *err = nil;
+        NSString *content = [NSString stringWithContentsOfFile:userReg encoding:NSUTF8StringEncoding error:&err];
+        if (content && ![content containsString:@"Fonts\\\\Replacements"]) {
+            NSString *newContent = [content stringByAppendingString:cjkUserReg];
+            [newContent writeToFile:userReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            LOG("[cjk-reg] Injected CJK Replacements into user.reg");
+        }
+    }
+
+    [@"cjk-v1" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 /***********************************************************************
  *           madeira_seed_prefix_if_needed
  *
@@ -488,6 +664,8 @@ void madeira_seed_prefix_if_needed(const char *prefix_path) {
         /* ml581: see madeira_undo_appdata_skeleton() above. */
         madeira_undo_appdata_skeleton( prefix );
         madeira_ensure_locallow( prefix );
+        madeira_setup_cjk_fonts( prefix );
+        madeira_setup_cjk_registry( prefix );
     }
 }
 
@@ -675,6 +853,24 @@ static void madeira_link_wine_mono(NSFileManager *fm, NSString *prefix, NSString
                 [source hasPrefix:bundle] ? "bundle" : "downloaded");
     else
         dprintf(STDERR_FILENO, "[wine-mono] ml1275 FAILED to link C:\\windows\\mono\\mono-2.0 errno=%d\n", errno);
+}
+
+static void madeira_link_nls(NSFileManager *fm, NSString *prefix, NSString *bundle)
+{
+    NSString *nlsSource = [bundle stringByAppendingPathComponent:@"nls"];
+    NSString *sys32Dir = [prefix stringByAppendingPathComponent:@"drive_c/windows/system32"];
+    [fm createDirectoryAtPath:sys32Dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSArray *files = [fm contentsOfDirectoryAtPath:nlsSource error:nil];
+    int linked = 0;
+    for (NSString *f in files) {
+        if (![f hasSuffix:@".nls"]) continue;
+        NSString *dst = [sys32Dir stringByAppendingPathComponent:f];
+        [fm removeItemAtPath:dst error:nil];
+        NSString *src = [nlsSource stringByAppendingPathComponent:f];
+        if ([fm createSymbolicLinkAtPath:dst withDestinationPath:src error:nil])
+            linked++;
+    }
+    LOG("[cjk-nls] Linked %d NLS files from %{public}s -> sys32", linked, nlsSource.UTF8String);
 }
 
 /* C:\windows\winsxs for 32-bit processes: the x86 side-by-side assemblies Wine
@@ -903,6 +1099,29 @@ static void *wine_process_thread(void *arg) {
         // Set environment for Wine
         setenv("WINEPREFIX", g_prefix_path, 1);
         setenv("HOME", g_prefix_path, 1);
+
+        // Configure locale based on user's system language
+        {
+            NSString *preferredLang = [NSLocale preferredLanguages].firstObject;
+            if (preferredLang) {
+                if ([preferredLang hasPrefix:@"zh"]) {
+                    if ([preferredLang containsString:@"Hant"] || [preferredLang containsString:@"TW"] || [preferredLang containsString:@"HK"]) {
+                        setenv("LANG", "zh_TW.UTF-8", 0);
+                        setenv("LC_ALL", "zh_TW.UTF-8", 0);
+                    } else {
+                        setenv("LANG", "zh_CN.UTF-8", 0);
+                        setenv("LC_ALL", "zh_CN.UTF-8", 0);
+                    }
+                    LOG("[cjk-locale] Set LANG and LC_ALL to zh (preferred=%{public}s)", preferredLang.UTF8String);
+                } else if ([preferredLang hasPrefix:@"ja"]) {
+                    setenv("LANG", "ja_JP.UTF-8", 0);
+                    setenv("LC_ALL", "ja_JP.UTF-8", 0);
+                } else if ([preferredLang hasPrefix:@"ko"]) {
+                    setenv("LANG", "ko_KR.UTF-8", 0);
+                    setenv("LC_ALL", "ko_KR.UTF-8", 0);
+                }
+            }
+        }
 
         // Skip check_command_line / reexec_loader
         setenv("WINELOADERNOEXEC", "1", 1);
@@ -1495,6 +1714,8 @@ static void *wine_process_thread(void *arg) {
                 madeira_seed_winsxs_x86(fm, prefix, bundlePath);
             }
             madeira_link_wine_mono(fm, prefix, bundlePath);
+            madeira_link_nls(fm, prefix, bundlePath);
+            madeira_setup_cjk_fonts(prefix);
 
             /* ml719: REPAIR THE SHELL FOLDERS. They ship as symlinks to the BUILD
              * MACHINE's home directory.
