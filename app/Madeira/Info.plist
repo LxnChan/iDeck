@@ -63,6 +63,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Madeira uses the local network to pair with this device for JIT, without a computer.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>iDeck requires microphone access for in-game voice chat.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIFileSharingEnabled</key>

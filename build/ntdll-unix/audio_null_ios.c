@@ -332,6 +332,7 @@ static const char IOS_DEVICE_NAME[] = "ios-null";
 struct ios_stream {
     int valid;
     int started;
+    int is_capture;              /* 1 = capture (mic input), 0 = render (speaker output) */
     uint64_t start_mach;        /* mach_absolute_time() at start() (null-mode clock) */
     uint64_t accumulated_frames; /* null-mode: frames "played" before last stop */
     UINT32 sample_rate;
@@ -418,6 +419,7 @@ struct ios_audio_device {
     int failed;                   /* setup failed once; do not retry */
     UINT32 rate;                  /* canonical output rate */
     UINT32 channels;              /* canonical output channel count */
+    int mic_enabled;              /* Element 1 capture active */
     _Atomic uint64_t cb_epoch;    /* ++ at the end of every render pass */
     _Atomic uint64_t clamped;     /* ml1230: output samples clamped to +-1 */
 };
@@ -425,6 +427,12 @@ static struct ios_audio_device g_dev;
 static pthread_mutex_t g_dev_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Published to the RT callback. Written with release, read with acquire. */
 static _Atomic(struct ios_stream *) g_mix[IOS_MAX_STREAMS];
+static _Atomic(struct ios_stream *) g_capture_mix[IOS_MAX_STREAMS];
+
+static int ios_mic_enabled(void) {
+    const char *e = getenv("MADEIRA_MIC");
+    return e && (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+}
 
 static struct ios_stream *stream_from_handle(stream_handle h)
 {
@@ -781,6 +789,76 @@ static OSStatus ios_audio_render_cb(void *refcon, AudioUnitRenderActionFlags *fl
     return noErr;
 }
 
+static float g_capture_scratch[4096 * 2];
+
+static OSStatus ios_audio_capture_cb(void *refcon, AudioUnitRenderActionFlags *flags,
+                                    const AudioTimeStamp *ts, UInt32 bus,
+                                    UInt32 nframes, AudioBufferList *iodata)
+{
+    (void)refcon; (void)bus; (void)iodata;
+    if (!g_dev.au || nframes == 0) return noErr;
+
+    UInt32 frames_to_pull = nframes > 4096 ? 4096 : nframes;
+    AudioBufferList bufs;
+    bufs.mNumberBuffers = 1;
+    bufs.mBuffers[0].mNumberChannels = 2;
+    bufs.mBuffers[0].mDataByteSize = frames_to_pull * 2 * sizeof(float);
+    bufs.mBuffers[0].mData = g_capture_scratch;
+
+    OSStatus err = AudioUnitRender(g_dev.au, flags, ts, 1, frames_to_pull, &bufs);
+    if (err) return noErr;
+
+    const float *in_pcm = g_capture_scratch;
+    int i;
+    for (i = 0; i < IOS_MAX_STREAMS; i++) {
+        struct ios_stream *s = atomic_load_explicit(&g_capture_mix[i], memory_order_acquire);
+        if (!s || !s->started || !s->ring || !s->buffer_frames) continue;
+
+        uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_relaxed);
+        uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_acquire);
+        uint64_t cap = s->buffer_frames;
+        uint64_t fb = s->frame_bytes;
+
+        if (wr >= rd && (wr - rd + frames_to_pull > cap)) {
+            atomic_store_explicit(&s->play_pos, wr + frames_to_pull - cap, memory_order_release);
+        }
+
+        for (UInt32 f = 0; f < frames_to_pull; f++) {
+            size_t ring_idx = (size_t)((wr + f) % cap) * fb;
+            BYTE *dst = s->ring + ring_idx;
+            float left = in_pcm[f * 2 + 0];
+            float right = in_pcm[f * 2 + 1];
+
+            if (s->is_float) {
+                if (s->channels >= 2) {
+                    memcpy(dst + 0, &left, 4);
+                    memcpy(dst + 4, &right, 4);
+                } else {
+                    float mono = (left + right) * 0.5f;
+                    memcpy(dst, &mono, 4);
+                }
+            } else if (s->sample_bits == 16) {
+                if (s->channels >= 2) {
+                    float cl = left < -1.0f ? -1.0f : (left > 1.0f ? 1.0f : left);
+                    float cr = right < -1.0f ? -1.0f : (right > 1.0f ? 1.0f : right);
+                    int16_t sl = (int16_t)(cl * 32767.0f);
+                    int16_t sr = (int16_t)(cr * 32767.0f);
+                    memcpy(dst + 0, &sl, 2);
+                    memcpy(dst + 2, &sr, 2);
+                } else {
+                    float avg = (left + right) * 0.5f;
+                    float cm = avg < -1.0f ? -1.0f : (avg > 1.0f ? 1.0f : avg);
+                    int16_t sm = (int16_t)(cm * 32767.0f);
+                    memcpy(dst, &sm, 2);
+                }
+            }
+        }
+        atomic_store_explicit(&s->write_pos, wr + frames_to_pull, memory_order_release);
+        if (s->event) NtSetEvent(s->event, NULL);
+    }
+    return noErr;
+}
+
 /* Parse the WASAPI format into "is float?" — tag 3 = IEEE float, tag
  * 0xFFFE = extensible (SubFormat GUID first byte: 1 PCM, 3 float). */
 static int ios_fmt_is_float(const struct WAVEFORMATEX_stub *fmt) {
@@ -847,6 +925,41 @@ static int ios_dev_create_locked(const struct ios_stream *s)
     err = AudioUnitSetProperty(g_dev.au, kAudioUnitProperty_SetRenderCallback,
                                kAudioUnitScope_Input, 0, &cb, sizeof(cb));
     if (err) { fprintf(stderr, "[ios_audio] ml1026 SetRenderCallback: %d\n", (int)err); goto fail; }
+
+    if (ios_mic_enabled()) {
+        UInt32 one = 1;
+        err = AudioUnitSetProperty(g_dev.au, kAudioOutputUnitProperty_EnableIO,
+                                   kAudioUnitScope_Input, 1, &one, sizeof(one));
+        if (err) {
+            fprintf(stderr, "[ios_audio] EnableIO input (bus 1) failed: %d\n", (int)err);
+        } else {
+            AudioStreamBasicDescription inAsbd = {0};
+            inAsbd.mSampleRate = g_dev.rate;
+            inAsbd.mFormatID = kAudioFormatLinearPCM;
+            inAsbd.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+            inAsbd.mFramesPerPacket = 1;
+            inAsbd.mChannelsPerFrame = 2;
+            inAsbd.mBitsPerChannel = 32;
+            inAsbd.mBytesPerFrame = 4 * inAsbd.mChannelsPerFrame;
+            inAsbd.mBytesPerPacket = inAsbd.mBytesPerFrame;
+            err = AudioUnitSetProperty(g_dev.au, kAudioUnitProperty_StreamFormat,
+                                       kAudioUnitScope_Output, 1, &inAsbd, sizeof(inAsbd));
+            if (err) {
+                fprintf(stderr, "[ios_audio] SetProperty StreamFormat input failed: %d\n", (int)err);
+            } else {
+                AURenderCallbackStruct inCb;
+                inCb.inputProc = ios_audio_capture_cb;
+                inCb.inputProcRefCon = NULL;
+                err = AudioUnitSetProperty(g_dev.au, kAudioOutputUnitProperty_SetInputCallback,
+                                           kAudioUnitScope_Global, 0, &inCb, sizeof(inCb));
+                if (err) fprintf(stderr, "[ios_audio] SetInputCallback failed: %d\n", (int)err);
+                else {
+                    g_dev.mic_enabled = 1;
+                    fprintf(stderr, "[ios_audio] RemoteIO capture (bus 1) ready: %u Hz, 2 ch, float32\n", g_dev.rate);
+                }
+            }
+        }
+    }
 
     if ((err = AudioUnitInitialize(g_dev.au))) {
         fprintf(stderr, "[ios_audio] ml1026 AudioUnitInitialize: %d\n", (int)err);
@@ -943,6 +1056,42 @@ static void ios_dev_detach(struct ios_stream *s)
     }
 }
 
+static int ios_dev_attach_capture(struct ios_stream *s, const struct WAVEFORMATEX_stub *fmt)
+{
+    int i, slot = -1, bits;
+
+    s->is_float = ios_fmt_is_float(fmt);
+    bits = (s->channels && s->frame_bytes)
+           ? (int)(s->frame_bytes / s->channels) * 8 : 0;
+    s->sample_bits = bits;
+    s->mixable = (s->is_float && bits == 32) || (!s->is_float && (bits == 16 || bits == 32));
+
+    pthread_mutex_lock(&g_dev_lock);
+    if (ios_dev_create_locked(s)) { pthread_mutex_unlock(&g_dev_lock); return -1; }
+    for (i = 0; i < IOS_MAX_STREAMS; i++)
+        if (!atomic_load_explicit(&g_capture_mix[i], memory_order_relaxed)) { slot = i; break; }
+    if (slot >= 0) atomic_store_explicit(&g_capture_mix[slot], s, memory_order_release);
+    pthread_mutex_unlock(&g_dev_lock);
+
+    if (slot < 0) {
+        fprintf(stderr, "[ios_audio] capture mixer full -- client rejected\n");
+        return -1;
+    }
+    fprintf(stderr, "[ios_audio] CAPTURE slot=%d rate=%u ch=%u fb=%u float=%d bits=%d\n",
+            slot, s->sample_rate, s->channels, s->frame_bytes, s->is_float, bits);
+    return 0;
+}
+
+static void ios_dev_detach_capture(struct ios_stream *s)
+{
+    int i;
+    for (i = 0; i < IOS_MAX_STREAMS; i++) {
+        if (atomic_load_explicit(&g_capture_mix[i], memory_order_relaxed) == s) {
+            atomic_store_explicit(&g_capture_mix[i], NULL, memory_order_release);
+        }
+    }
+}
+
 /* Start/stop the shared endpoint. It runs while at least one client is
  * started; with none it is stopped rather than rendering silence. */
 static void ios_dev_start(void)
@@ -964,6 +1113,8 @@ static void ios_dev_stop_if_idle(void)
     for (i = 0; i < IOS_MAX_STREAMS; i++) {
         struct ios_stream *m = atomic_load_explicit(&g_mix[i], memory_order_relaxed);
         if (m && m->started) { any = 1; break; }
+        struct ios_stream *c = atomic_load_explicit(&g_capture_mix[i], memory_order_relaxed);
+        if (c && c->started) { any = 1; break; }
     }
     if (!any && g_dev.au && g_dev.running) {
         AudioOutputUnitStop(g_dev.au);
@@ -1059,7 +1210,8 @@ static NTSTATUS ios_process_detach(void *args) {
              * leaving the memory is the safe trade. */
             s->valid = 0;
             s->started = 0;
-            ios_dev_detach(s);
+            if (s->is_capture) ios_dev_detach_capture(s);
+            else ios_dev_detach(s);
         }
     }
     return STATUS_SUCCESS;
@@ -1081,8 +1233,8 @@ static NTSTATUS ios_main_loop(void *args) {
 static NTSTATUS ios_get_endpoint_ids(void *args) {
     LOG_FN_CALL(3, "get_endpoint_ids");
     struct get_endpoint_ids_params *p = args;
-    /* Only render endpoints; refuse capture entirely. */
-    if (p->flow != eRender) {
+    /* Only render endpoints, or capture if mic mapping enabled. */
+    if (p->flow != eRender && (p->flow != eCapture || !ios_mic_enabled())) {
         p->num = 0;
         p->default_idx = 0;
         p->result = S_OK;
@@ -1092,8 +1244,12 @@ static NTSTATUS ios_get_endpoint_ids(void *args) {
      * and endpoint.device as char* (single-byte). Both stored as byte
      * offsets from the endpoints buffer base. */
     static const WCHAR dev_name_w[] = { 'i','O','S',' ','N','u','l','l', 0 };
-    unsigned int name_bytes = sizeof(dev_name_w);
-    unsigned int device_bytes = sizeof(IOS_DEVICE_NAME);
+    static const WCHAR mic_name_w[] = { 'i','O','S',' ','M','i','c','r','o','p','h','o','n','e', 0 };
+    static const char IOS_MIC_DEVICE[] = "ios-mic";
+    const WCHAR *name_w = (p->flow == eCapture) ? mic_name_w : dev_name_w;
+    const char *dev_name = (p->flow == eCapture) ? IOS_MIC_DEVICE : IOS_DEVICE_NAME;
+    unsigned int name_bytes = (p->flow == eCapture) ? sizeof(mic_name_w) : sizeof(dev_name_w);
+    unsigned int device_bytes = (p->flow == eCapture) ? sizeof(IOS_MIC_DEVICE) : sizeof(IOS_DEVICE_NAME);
     unsigned int needed = sizeof(struct endpoint) + name_bytes + device_bytes;
     if (p->size < needed) {
         p->num = 1;
@@ -1105,8 +1261,8 @@ static NTSTATUS ios_get_endpoint_ids(void *args) {
     unsigned int name_off = sizeof(struct endpoint);
     unsigned int device_off = name_off + name_bytes;
     char *buf = (char *)p->endpoints;
-    memcpy(buf + name_off, dev_name_w, name_bytes);
-    memcpy(buf + device_off, IOS_DEVICE_NAME, device_bytes);
+    memcpy(buf + name_off, name_w, name_bytes);
+    memcpy(buf + device_off, dev_name, device_bytes);
     p->endpoints[0].name = name_off;
     p->endpoints[0].device = device_off;
     p->num = 1;
@@ -1137,6 +1293,7 @@ static NTSTATUS ios_create_stream(void *args) {
     }
     s->valid = 1;
     s->started = 0;
+    s->is_capture = (p->flow == eCapture);
     s->start_mach = 0;
     s->accumulated_frames = 0;
     s->sample_rate = p->fmt && p->fmt->nSamplesPerSec ? p->fmt->nSamplesPerSec : IOS_AUDIO_SAMPLE_RATE;
@@ -1162,6 +1319,8 @@ static NTSTATUS ios_create_stream(void *args) {
 
     if (p->flow == eRender && s->ring)
         ios_dev_attach(s, p->fmt);   /* failure -> null-mode */
+    else if (p->flow == eCapture && s->ring)
+        ios_dev_attach_capture(s, p->fmt);
 
     if (p->channel_count) *p->channel_count = s->channels;
     if (p->stream) *p->stream = (stream_handle)(uintptr_t)s;
@@ -1170,7 +1329,8 @@ static NTSTATUS ios_create_stream(void *args) {
             s->frame_bytes);
     if (stream_register(s)) {
         fprintf(stderr, "[ios-astream] ml739 too many streams -- refusing\n");
-        ios_dev_detach(s);
+        if (s->is_capture) ios_dev_detach_capture(s);
+        else ios_dev_detach(s);
         ios_audio_free_scratch(s->render_scratch, s->scratch_guest); free(s->ring); free(s);
         /* the handle was published above; it now points at freed memory */
         if (p->stream) *p->stream = 0;
@@ -1197,7 +1357,8 @@ static NTSTATUS ios_release_stream(void *args) {
         NtWaitForSingleObject(p->timer_thread, FALSE, NULL);
         NtClose(p->timer_thread);
     }
-    ios_dev_detach(s);
+    if (s->is_capture) ios_dev_detach_capture(s);
+    else ios_dev_detach(s);
     ios_dev_stop_if_idle();
     stream_unregister(s);
     ios_audio_free_scratch(s->render_scratch, s->scratch_guest);
@@ -1325,6 +1486,13 @@ static NTSTATUS ios_timer_loop(void *args) {
     while (s->valid) {
         UINT32 rate = s->sample_rate ? s->sample_rate : IOS_AUDIO_SAMPLE_RATE;
         uint64_t period = rate / 100, lead, play, wr, pad, now, sleep_ns, deadline, t;
+
+        if (s->is_capture) {
+            usleep(10000);
+            if (s->event && s->started)
+                NtSetEvent(s->event, NULL);
+            continue;
+        }
 
         if (!s->event || !s->started || !ios_stream_is_live(s) || !ios_audio_lead_ms()) {
             /* null-mode, nothing to drive yet, or MADEIRA_AUDIO_LEAD_MS=0: the plain 10 ms beat */
@@ -1521,15 +1689,62 @@ static NTSTATUS ios_release_render_buffer(void *args) {
 
 static NTSTATUS ios_get_capture_buffer(void *args) {
     struct get_capture_buffer_params *p = args;
-    if (p->frames) *p->frames = 0;
-    if (p->data) *p->data = NULL;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) {
+        if (p->data) *p->data = NULL;
+        if (p->frames) *p->frames = 0;
+        if (p->flags) *p->flags = 0;
+        p->result = AUDCLNT_E_NOT_INITIALIZED;
+        return STATUS_SUCCESS;
+    }
+
+    uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_acquire);
+    uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+    UINT32 avail = (UINT32)(wr > rd ? wr - rd : 0);
+
+    if (avail == 0) {
+        if (p->frames) *p->frames = 0;
+        if (p->data) *p->data = NULL;
+        if (p->flags) *p->flags = 0;
+        p->result = (HRESULT)0x88890001L; /* AUDCLNT_S_BUFFER_EMPTY */
+        return STATUS_SUCCESS;
+    }
+
+    UINT32 to_give = avail;
+    if (to_give > s->scratch_frames) to_give = s->scratch_frames;
+
+    UINT32 fb = s->frame_bytes;
+    UINT32 cap = s->buffer_frames;
+    UINT32 i = 0;
+    while (i < to_give) {
+        UINT32 idx = (UINT32)((rd + i) % cap);
+        UINT32 chunk = cap - idx;
+        if (chunk > to_give - i) chunk = to_give - i;
+        memcpy(s->render_scratch + (size_t)i * fb,
+               s->ring + (size_t)idx * fb, (size_t)chunk * fb);
+        i += chunk;
+    }
+
+    s->pending_frames = to_give;
+    if (p->data) *p->data = s->render_scratch;
+    if (p->frames) *p->frames = to_give;
     if (p->flags) *p->flags = 0;
+    if (p->devpos) *p->devpos = rd;
+    if (p->qpcpos) *p->qpcpos = mach_to_ns(mach_absolute_time()) / 100;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ios_release_capture_buffer(void *args) {
     struct release_capture_buffer_params *p = args;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    UINT32 done = p->done ? p->done : s->pending_frames;
+    if (done) {
+        uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+        atomic_store_explicit(&s->play_pos, rd + done, memory_order_release);
+    }
+    s->pending_frames = 0;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -1609,7 +1824,12 @@ static NTSTATUS ios_get_current_padding(void *args) {
     struct ios_stream *s = stream_from_handle(p->stream);
     if (!s) { if (p->padding) *p->padding = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     if (p->padding) {
-        if (ios_stream_is_live(s)) {
+        if (s->is_capture) {
+            uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_acquire);
+            uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+            uint64_t pad = wr > rd ? wr - rd : 0;
+            *p->padding = (UINT32)(pad > s->buffer_frames ? s->buffer_frames : pad);
+        } else if (ios_stream_is_live(s)) {
             uint64_t pad = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
             *p->padding = (UINT32)(pad > s->buffer_frames ? s->buffer_frames : pad);
         } else {
@@ -1622,7 +1842,15 @@ static NTSTATUS ios_get_current_padding(void *args) {
 
 static NTSTATUS ios_get_next_packet_size(void *args) {
     struct get_next_packet_size_params *p = args;
-    if (p->frames) *p->frames = 0;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->frames) *p->frames = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (p->frames) {
+        uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_acquire);
+        uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+        UINT32 avail = (UINT32)(wr > rd ? wr - rd : 0);
+        if (avail > s->scratch_frames) avail = s->scratch_frames;
+        *p->frames = avail;
+    }
     p->result = S_OK;
     return STATUS_SUCCESS;
 }

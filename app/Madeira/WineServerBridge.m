@@ -108,18 +108,18 @@ static void *wineserver_thread_func(void *arg) {
             if (preferredLang) {
                 if ([preferredLang hasPrefix:@"zh"]) {
                     if ([preferredLang containsString:@"Hant"] || [preferredLang containsString:@"TW"] || [preferredLang containsString:@"HK"]) {
-                        setenv("LANG", "zh_TW.UTF-8", 0);
-                        setenv("LC_ALL", "zh_TW.UTF-8", 0);
+                        setenv("LANG", "zh_TW.UTF-8", 1);
+                        setenv("LC_ALL", "zh_TW.UTF-8", 1);
                     } else {
-                        setenv("LANG", "zh_CN.UTF-8", 0);
-                        setenv("LC_ALL", "zh_CN.UTF-8", 0);
+                        setenv("LANG", "zh_CN.UTF-8", 1);
+                        setenv("LC_ALL", "zh_CN.UTF-8", 1);
                     }
                 } else if ([preferredLang hasPrefix:@"ja"]) {
-                    setenv("LANG", "ja_JP.UTF-8", 0);
-                    setenv("LC_ALL", "ja_JP.UTF-8", 0);
+                    setenv("LANG", "ja_JP.UTF-8", 1);
+                    setenv("LC_ALL", "ja_JP.UTF-8", 1);
                 } else if ([preferredLang hasPrefix:@"ko"]) {
-                    setenv("LANG", "ko_KR.UTF-8", 0);
-                    setenv("LC_ALL", "ko_KR.UTF-8", 0);
+                    setenv("LANG", "ko_KR.UTF-8", 1);
+                    setenv("LC_ALL", "ko_KR.UTF-8", 1);
                 }
             }
         }

@@ -1,6 +1,21 @@
 import Foundation
 import SwiftUI
 import UIKit
+import AVFoundation
+
+enum MicrophoneManager {
+    static func requestPermission() {
+        if #available(iOS 17.0, *) {
+            AVAudioApplication.requestRecordPermission { granted in
+                fputs("[audio] microphone permission: \(granted ? "granted" : "denied")\n", stderr)
+            }
+        } else {
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                fputs("[audio] microphone permission: \(granted ? "granted" : "denied")\n", stderr)
+            }
+        }
+    }
+}
 
 @MainActor
 final class MadeiraAppDelegate: NSObject, UIApplicationDelegate {
@@ -56,6 +71,7 @@ struct MadeiraApp: App {
                 .onAppear {
                     GamepadInput.shared.start()
                     HardwareInput.shared.start()
+                    MicrophoneManager.requestPermission()
                     JITNetworkShortcut.shared.restoreLeftover()   // also starts its network path monitor
                 }
                 // madeira://jit-network/... (the Madeira JIT shortcut returning, JITNetwork.swift),

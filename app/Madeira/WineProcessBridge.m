@@ -592,16 +592,16 @@ static void madeira_setup_cjk_registry(NSString *prefix)
         @"\"Microsoft YaHei Bold & Microsoft YaHei UI Bold (TrueType)\"=\"msyhbd.ttc\"\n"
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontLink\\\\SystemLink] 1730000000\n"
-        @"\"Arial\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Arial\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
         @"\"Courier New\"=str(7):\"simsun.ttc,NSimSun\\0\"\n"
         @"\"Lucida Console\"=str(7):\"simsun.ttc,NSimSun\\0\"\n"
-        @"\"Lucida Sans Unicode\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Microsoft Sans Serif\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"MS Sans Serif\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Segoe UI\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Lucida Sans Unicode\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Microsoft Sans Serif\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"MS Sans Serif\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Segoe UI\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
         @"\"System\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
-        @"\"Tahoma\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
-        @"\"Times New Roman\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Tahoma\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Times New Roman\"=str(7):\"msyh.ttc,Microsoft YaHei UI\\0msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes] 1730000000\n"
         @"\"FangSong\"=\"SimSun\"\n"
@@ -647,7 +647,8 @@ static void madeira_setup_cjk_registry(NSString *prefix)
         NSString *content = [NSString stringWithContentsOfFile:systemReg encoding:NSUTF8StringEncoding error:&err];
         if (content) {
             NSString *cleaned = madeira_clean_legacy_cjk_reg(content);
-            if (![cleaned containsString:@"\"Microsoft YaHei & Microsoft YaHei UI (TrueType)\""]) {
+            if (![cleaned containsString:@"FontLink\\\\SystemLink"] ||
+                ![cleaned containsString:@"\"Tahoma\"=str(7):\"msyh.ttc,Microsoft YaHei UI"]) {
                 cleaned = [cleaned stringByAppendingString:cjkSystemReg];
             }
             if (![cleaned isEqualToString:content]) {
@@ -1245,19 +1246,19 @@ static void *wine_process_thread(void *arg) {
             if (preferredLang) {
                 if ([preferredLang hasPrefix:@"zh"]) {
                     if ([preferredLang containsString:@"Hant"] || [preferredLang containsString:@"TW"] || [preferredLang containsString:@"HK"]) {
-                        setenv("LANG", "zh_TW.UTF-8", 0);
-                        setenv("LC_ALL", "zh_TW.UTF-8", 0);
+                        setenv("LANG", "zh_TW.UTF-8", 1);
+                        setenv("LC_ALL", "zh_TW.UTF-8", 1);
                     } else {
-                        setenv("LANG", "zh_CN.UTF-8", 0);
-                        setenv("LC_ALL", "zh_CN.UTF-8", 0);
+                        setenv("LANG", "zh_CN.UTF-8", 1);
+                        setenv("LC_ALL", "zh_CN.UTF-8", 1);
                     }
                     LOG("[cjk-locale] Set LANG and LC_ALL to zh (preferred=%{public}s)", preferredLang.UTF8String);
                 } else if ([preferredLang hasPrefix:@"ja"]) {
-                    setenv("LANG", "ja_JP.UTF-8", 0);
-                    setenv("LC_ALL", "ja_JP.UTF-8", 0);
+                    setenv("LANG", "ja_JP.UTF-8", 1);
+                    setenv("LC_ALL", "ja_JP.UTF-8", 1);
                 } else if ([preferredLang hasPrefix:@"ko"]) {
-                    setenv("LANG", "ko_KR.UTF-8", 0);
-                    setenv("LC_ALL", "ko_KR.UTF-8", 0);
+                    setenv("LANG", "ko_KR.UTF-8", 1);
+                    setenv("LC_ALL", "ko_KR.UTF-8", 1);
                 }
             }
         }
@@ -1388,19 +1389,37 @@ static void *wine_process_thread(void *arg) {
 
         /* 2026-07-05 audio: activate the AVAudioSession before Wine boots
          * so the RemoteIO unit in the mmdevapi driver can start. Playback
-         * category = ignores silent switch (it's a game). */
+         * category = ignores silent switch (it's a game). When MADEIRA_MIC=1,
+         * PlayAndRecord is used with AllowBluetoothA2DP and DefaultToSpeaker. */
         {
             NSError *aerr = nil;
             AVAudioSession *session = [AVAudioSession sharedInstance];
-            [session setCategory:AVAudioSessionCategoryPlayback error:&aerr];
-            if (aerr) LOG("AVAudioSession setCategory failed: %{public}s",
-                          aerr.localizedDescription.UTF8String);
+            const char *micEnv = getenv("MADEIRA_MIC");
+            BOOL micEnabled = (micEnv && (strcmp(micEnv, "1") == 0 || strcmp(micEnv, "true") == 0));
+            if (micEnabled) {
+                AVAudioSessionCategoryOptions opts = AVAudioSessionCategoryOptionDefaultToSpeaker
+                                                   | AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+                [session setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:opts error:&aerr];
+                if (aerr) LOG("AVAudioSession setCategory PlayAndRecord failed: %{public}s",
+                              aerr.localizedDescription.UTF8String);
+                // Prefer built-in microphone so Bluetooth headphones remain in A2DP high-fidelity stereo output
+                for (AVAudioSessionPortDescription *port in session.availableInputs) {
+                    if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]) {
+                        [session setPreferredInput:port error:nil];
+                        break;
+                    }
+                }
+            } else {
+                [session setCategory:AVAudioSessionCategoryPlayback error:&aerr];
+                if (aerr) LOG("AVAudioSession setCategory Playback failed: %{public}s",
+                              aerr.localizedDescription.UTF8String);
+            }
             aerr = nil;
             [session setActive:YES error:&aerr];
             if (aerr) LOG("AVAudioSession setActive failed: %{public}s",
                           aerr.localizedDescription.UTF8String);
-            else LOG("AVAudioSession active: rate=%.0f latency=%.1fms",
-                     session.sampleRate, session.outputLatency * 1000.0);
+            else LOG("AVAudioSession active: rate=%.0f latency=%.1fms mic=%d",
+                     session.sampleRate, session.outputLatency * 1000.0, micEnabled ? 1 : 0);
         }
 
         /* 2026-07-04 BISECT RESULT: arm A (this env set, all handler fixes
@@ -1855,6 +1874,7 @@ static void *wine_process_thread(void *arg) {
             madeira_link_wine_mono(fm, prefix, bundlePath);
             madeira_link_nls(fm, prefix, bundlePath);
             madeira_setup_cjk_fonts(prefix);
+            madeira_setup_cjk_registry(prefix);
 
             /* ml719: REPAIR THE SHELL FOLDERS. They ship as symlinks to the BUILD
              * MACHINE's home directory.
@@ -2270,7 +2290,10 @@ static void *wine_process_thread(void *arg) {
 
 int wine_process_start(const char *prefix_path) {
     if (prefix_path) {
-        madeira_setup_proxy_registry([NSString stringWithUTF8String:prefix_path]);
+        NSString *pfx = [NSString stringWithUTF8String:prefix_path];
+        madeira_setup_proxy_registry(pfx);
+        madeira_setup_cjk_fonts(pfx);
+        madeira_setup_cjk_registry(pfx);
     }
     if (g_wine_running) {
         LOG("Wine process already running");

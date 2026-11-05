@@ -314,12 +314,15 @@ struct LibraryEntry: Codable, Identifiable {
     /// MetalFX spatial upscaling factor (Display › MetalFX upscaling: 1.5 or 2;
     /// nil = off), passed on as this game's `metalfx-upscale` line.
     var metalFXUpscale: Double?
+    /// Microphone mapping for in-game voice chat (env.MADEIRA_MIC = 1); nil = off.
+    var microphone: Bool?
 
     /// What MadeiraConfig.applyGame writes for this game: the lines its pickers
     /// stand for, then its own config, which wins where both set a key.
     var gameConfigText: String? {
         var lines: [String] = []
         if let metalFXUpscale { lines.append("metalfx-upscale = \(metalFXUpscale)") }
+        if let microphone { lines.append("env.MADEIRA_MIC = \(microphone ? "1" : "0")") }
         if let config, !config.isEmpty { lines.append(config) }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
@@ -555,6 +558,7 @@ struct LibraryEntry: Codable, Identifiable {
         // Set or unset, so a previous session's choice never stays.
         if avx == true { setenv("MADEIRA_FEX_AVX", "1", 1) } else { unsetenv("MADEIRA_FEX_AVX") }
         if frameGeneration == true { setenv("MADEIRA_FRAMEGEN", "1", 1) } else { unsetenv("MADEIRA_FRAMEGEN") }
+        if microphone == true { setenv("MADEIRA_MIC", "1", 1) } else { unsetenv("MADEIRA_MIC") }
         // "Report an NVIDIA GPU": DXMT's vendor extension (DXGI vendor 10DE,
         // NVAPI), with DXGI's output carrying user32's monitor and mode list so
         // the game finds its monitor on the adapter. The device id goes into
@@ -3379,6 +3383,13 @@ struct LibraryDetail: View {
                 } header: { Text("Display") } footer: {
                     Text("MetalFX upscaling renders at the resolution above and scales the picture up with Apple's MetalFX spatial scaler before it reaches the screen (Direct3D 11 and 12 programs). Use it with a small resolution for frame rate.")
                 }
+                Section {
+                    Toggle("Microphone mapping", isOn: Binding(get: { entry.microphone ?? false }, set: { entry.microphone = $0 ? true : nil }))
+                    if entry.microphone == true {
+                        Text("Maps iPad microphone into Windows for in-game voice chat. With Bluetooth headphones, audio output remains in full A2DP stereo fidelity by utilizing the iPad's built-in microphone array.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: { Text("Audio & Voice") }
                 // ml1163: how the program starts. Not for the Desktop entry, nor for a Steam
                 // game started through Madeira Dock, whose desktop and command are Dock's:
                 // there these choices would do nothing.
