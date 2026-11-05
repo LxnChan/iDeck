@@ -1713,7 +1713,7 @@ enum SteamCatalog {
         var url = URLComponents(string: "https://store.steampowered.com/api/storesearch/")!
         url.queryItems = [URLQueryItem(name: "term", value: text), URLQueryItem(name: "l", value: "english"), URLQueryItem(name: "cc", value: "US")]
         var request = URLRequest(url: url.url!); request.timeoutInterval = 15
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxySettings.session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count < 2_000_000 else {
             throw LibraryError.message("Steam search is unavailable. You can still edit the title and artwork manually.")
         }
@@ -2081,7 +2081,7 @@ enum AmbientArtwork {
     }
 
     private static func fetch(_ url: URL) async -> UIImage? {
-        guard let (data, response) = try? await URLSession.shared.data(from: url),
+        guard let (data, response) = try? await NetworkProxySettings.session.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return UIImage(data: data)
     }
@@ -2736,6 +2736,9 @@ struct LibraryView: View {
             }
             if settingsShow("JIT", "StikDebug", "built-in", "pairing", "LocalDevVPN") {
                 JITSettingsSection()
+            }
+            if settingsShow("proxy", "network", "socks", "socks5", "http", "shadowsocks", "代理") {
+                NetworkProxySettingsSection()
             }
             if settingsShow("diagnostics", "extended logging", "logging", "log") {
                 Section {

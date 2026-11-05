@@ -53,15 +53,16 @@ final class DepotDownloader {
     private let attemptsPerChunk = 5
     private let hostPoolSize = 6
 
-    private nonisolated static let http: URLSession = {
+    private nonisolated static var http: URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
         config.httpMaximumConnectionsPerHost = 8
+        NetworkProxySettings.shared.apply(to: config)
         return URLSession(configuration: config)
-    }()
+    }
 
     /// Replaces the content server directory (host tests only): the servers
     /// to fetch from, as `https://host` or `http://host:port` URLs.

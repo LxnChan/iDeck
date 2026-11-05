@@ -94,7 +94,7 @@ actor CMServerList {
             throw SteamError.connectionFailed("Invalid CM directory URL")
         }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await NetworkProxySettings.session.data(from: url)
 
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {

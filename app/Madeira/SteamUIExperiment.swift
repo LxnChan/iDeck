@@ -154,7 +154,7 @@ enum SteamUIExperiment {
             if externalCrashpad {
                 lines += ["C:\\iDeckCEF64Crashpad\\config_guard.exe --protect >> C:\\madeira-cef64-config-guard-results.txt 2>&1", "if errorlevel 1 exit /b 1"]
             }
-            lines += ["\"\(windowsDirectory)\\steam.exe\" -no-cef-sandbox -cef-disable-gpu -nocrashmonitor\((frozenX86 || frozenSourceCEF) ? " -nobootstrapperupdate -skipinitialbootstrap" : "")\(bigPicture ? " -bigpicture" : "")\(accountChooser ? " steam://changeuser" : "")\(ratatanThreadTest ? " -applaunch 2949320 -job-worker-count 2 -background-job-worker-count 2" : "")"]
+            lines += ["\"\(windowsDirectory)\\steam.exe\" -no-cef-sandbox -cef-disable-gpu -nocrashmonitor\(NetworkProxySettings.shared.cefArguments)\((frozenX86 || frozenSourceCEF) ? " -nobootstrapperupdate -skipinitialbootstrap" : "")\(bigPicture ? " -bigpicture" : "")\(accountChooser ? " steam://changeuser" : "")\(ratatanThreadTest ? " -applaunch 2949320 -job-worker-count 2 -background-job-worker-count 2" : "")"]
             if externalCrashpad { lines += ["C:\\iDeckCEF64Crashpad\\config_guard.exe --restore >> C:\\madeira-cef64-config-guard-results.txt 2>&1"] }
             return lines.joined(separator: "\r\n") + "\r\n"
         }

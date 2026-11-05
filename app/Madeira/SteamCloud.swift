@@ -401,12 +401,13 @@ enum SteamCloudTransfer {
     /// Saves are small; anything larger than this is refused.
     static let maxFileBytes = 256 << 20
 
-    private static let http: URLSession = {
+    private static var http: URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 60
         config.urlCache = nil
+        NetworkProxySettings.shared.apply(to: config)
         return URLSession(configuration: config)
-    }()
+    }
 
     /// The first entry of a ZIP archive (Steam sends a compressed cloud file
     /// as a one-entry archive): stored or deflated. Sizes come from the
@@ -639,12 +640,13 @@ extension SteamCloudTransfer {
         return statuses
     }
 
-    private static let uploadSession: URLSession = {
+    private static var uploadSession: URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 120
         config.urlCache = nil
+        NetworkProxySettings.shared.apply(to: config)
         return URLSession(configuration: config)
-    }()
+    }
 }
 
 // MARK: - State the interface shows

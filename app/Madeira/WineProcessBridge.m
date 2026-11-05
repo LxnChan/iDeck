@@ -648,6 +648,75 @@ static void madeira_setup_cjk_registry(NSString *prefix)
     [@"cjk-v2" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static void madeira_setup_proxy_registry(NSString *prefix)
+{
+    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+    BOOL enabled = [defs boolForKey:@"networkProxyEnabled"];
+    BOOL wineEnabled = [defs objectForKey:@"networkProxyWineEnabled"] ? [defs boolForKey:@"networkProxyWineEnabled"] : YES;
+    NSString *type = [defs stringForKey:@"networkProxyType"] ?: @"HTTP";
+    NSString *host = [[defs stringForKey:@"networkProxyHost"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
+    NSInteger port = [defs integerForKey:@"networkProxyPort"];
+
+    BOOL active = enabled && wineEnabled && host.length > 0 && port > 0;
+
+    if (active) {
+        NSString *scheme = [type isEqualToString:@"SOCKS5"] ? @"socks5" : @"http";
+        NSString *proxyUrl = [NSString stringWithFormat:@"%@://%@:%ld", scheme, host, (long)port];
+        setenv("http_proxy", proxyUrl.UTF8String, 1);
+        setenv("https_proxy", proxyUrl.UTF8String, 1);
+        setenv("all_proxy", proxyUrl.UTF8String, 1);
+        setenv("HTTP_PROXY", proxyUrl.UTF8String, 1);
+        setenv("HTTPS_PROXY", proxyUrl.UTF8String, 1);
+        setenv("ALL_PROXY", proxyUrl.UTF8String, 1);
+        dprintf(STDERR_FILENO, "[proxy] Wine proxy active: %s\n", proxyUrl.UTF8String);
+    } else {
+        unsetenv("http_proxy");
+        unsetenv("https_proxy");
+        unsetenv("all_proxy");
+        unsetenv("HTTP_PROXY");
+        unsetenv("HTTPS_PROXY");
+        unsetenv("ALL_PROXY");
+        dprintf(STDERR_FILENO, "[proxy] Wine proxy disabled\n");
+    }
+
+    NSString *userReg = [prefix stringByAppendingPathComponent:@"user.reg"];
+    NSString *systemReg = [prefix stringByAppendingPathComponent:@"system.reg"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    NSString *proxyRegChunk;
+    if (active) {
+        NSString *serverVal;
+        if ([type isEqualToString:@"SOCKS5"]) {
+            serverVal = [NSString stringWithFormat:@"socks=%@:%ld", host, (long)port];
+        } else {
+            serverVal = [NSString stringWithFormat:@"http=%@:%ld;https=%@:%ld", host, (long)port, host, (long)port];
+        }
+        proxyRegChunk = [NSString stringWithFormat:
+            @"\n"
+            @"[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Internet Settings] 1730000000\n"
+            @"\"ProxyEnable\"=dword:00000001\n"
+            @"\"ProxyServer\"=\"%@\"\n"
+            @"\"ProxyOverride\"=\"<local>;127.0.0.1;localhost\"\n",
+            serverVal];
+    } else {
+        proxyRegChunk =
+            @"\n"
+            @"[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Internet Settings] 1730000000\n"
+            @"\"ProxyEnable\"=dword:00000000\n";
+    }
+
+    for (NSString *regFile in @[userReg, systemReg]) {
+        if (![fm fileExistsAtPath:regFile]) continue;
+        NSError *err = nil;
+        NSString *content = [NSString stringWithContentsOfFile:regFile encoding:NSUTF8StringEncoding error:&err];
+        if (content) {
+            NSString *newContent = [content stringByAppendingString:proxyRegChunk];
+            [newContent writeToFile:regFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            dprintf(STDERR_FILENO, "[proxy] Injected Internet Settings into %s (active=%d)\n", regFile.lastPathComponent.UTF8String, active);
+        }
+    }
+}
+
 /***********************************************************************
  *           madeira_seed_prefix_if_needed
  *
@@ -705,6 +774,7 @@ void madeira_seed_prefix_if_needed(const char *prefix_path) {
         madeira_ensure_locallow( prefix );
         madeira_setup_cjk_fonts( prefix );
         madeira_setup_cjk_registry( prefix );
+        madeira_setup_proxy_registry( prefix );
     }
 }
 
@@ -2169,6 +2239,9 @@ static void *wine_process_thread(void *arg) {
 }
 
 int wine_process_start(const char *prefix_path) {
+    if (prefix_path) {
+        madeira_setup_proxy_registry([NSString stringWithUTF8String:prefix_path]);
+    }
     if (g_wine_running) {
         LOG("Wine process already running");
         return 0;

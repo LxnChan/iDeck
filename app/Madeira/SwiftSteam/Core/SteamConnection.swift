@@ -110,7 +110,7 @@ actor SteamConnection {
         // The delegate tells us what protocol the server actually negotiated.
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 20
-        // Delegate queue nil → URLSession creates an internal serial queue (correct for our actor model)
+        NetworkProxySettings.shared.apply(to: config)
         let session = URLSession(configuration: config, delegate: wsDelegate, delegateQueue: nil)
         urlSession = session
 

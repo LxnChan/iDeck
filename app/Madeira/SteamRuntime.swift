@@ -221,6 +221,7 @@ actor SteamRuntimeInstaller {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
         configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 900
+        NetworkProxySettings.shared.apply(to: configuration)
         let session = URLSession(configuration: configuration, delegate: SteamRuntimeRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var names = Set<String>(), files: [String] = []

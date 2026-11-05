@@ -39,7 +39,7 @@ enum SteamAuthAPI {
         request.timeoutInterval = 20
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxySettings.session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw SteamError.authenticationFailed("Steam did not respond. Check your internet connection.")
         }
