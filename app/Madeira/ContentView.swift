@@ -1365,11 +1365,7 @@ struct ContentView: View {
             .navigationTitle(IDeckState.enabled ? "iDeck" : "Madeira")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.regularMaterial, for: .navigationBar)
-            // The library keeps a material bar only before iOS 26. From iOS 26 the
-            // system draws its soft scroll edge effect instead: content scrolls
-            // under the title, the buttons and the search field behind a
-            // progressive blur (as in the App Store), with no hard edge.
-            .toolbarBackground(library.enabled && !Self.systemScrollEdge ? .visible : .automatic, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             // Confirmed launch/preflight failures only. Observed child failures
             // are nonmodal diagnostics in iDeck options, not a global alert.
             .alert("Steam startup failed", isPresented: Binding(get: { ideck.startupFailure != nil }, set: { if !$0 { ideck.startupFailure = nil } })) {
