@@ -1534,14 +1534,18 @@ struct ContentView: View {
     /// library's menu button, starting screen and in-game menu drawn above it by
     /// TouchControlsOverlay (LibraryHUD), in the window above the game surface.
     private var sessionBody: some View {
-        ZStack {
-            Color.black
-            MadeiraMetalView()
-                .onAppear { TouchControlsHost.attach() }
-                .onReceive(NotificationCenter.default.publisher(
-                    for: UIDevice.orientationDidChangeNotification)) { _ in
-                    TouchControlsHost.attach()   // re-frame to the new bounds
-                }
+        GeometryReader { geo in
+            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : 0
+            ZStack {
+                Color.black
+                MadeiraMetalView()
+                    .padding(.top, topInset)
+                    .onAppear { TouchControlsHost.attach() }
+                    .onReceive(NotificationCenter.default.publisher(
+                        for: UIDevice.orientationDidChangeNotification)) { _ in
+                        TouchControlsHost.attach()   // re-frame to the new bounds
+                    }
+            }
         }
         .ignoresSafeArea(edges: isPad ? [.bottom, .leading, .trailing] : .all)
         .background(Color.black)
@@ -1626,11 +1630,14 @@ struct ContentView: View {
     /// anything drawn over the game area itself. No header/log/nav chrome.
     private var landscapeBody: some View {
         GeometryReader { geo in
-            let gameW = min(geo.size.width, geo.size.height * 4.0 / 3.0)
+            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : 0
+            let availableH = max(1, geo.size.height - topInset)
+            let gameW = min(geo.size.width, availableH * 4.0 / 3.0)
             let barW = max((geo.size.width - gameW) / 2.0, 44)
             ZStack {
                 Color.black
                 MadeiraMetalView()
+                    .padding(.top, topInset)
                     // A launch straight into landscape never shows the portrait
                     // layout, which is otherwise what creates the controls window
                     // (its top bar carries the keyboard button here).
@@ -1643,6 +1650,7 @@ struct ContentView: View {
                     Spacer(minLength: 0)
                     VStack {
                         FPSOverlay(compact: true)
+                            .padding(.top, topInset)
                         Spacer()
                     }
                     .frame(width: barW)
@@ -4379,6 +4387,7 @@ struct TouchControlsOverlay: View {
             // bar; the controls hide while its menu or starting screen is up.
             let session = library.current != nil || (IDeckState.enabled && ideck.running)
             let landscape = geo.size.width > geo.size.height || session
+            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : 0
             ZStack(alignment: .top) {
                 if landscape {
                     if (m.visible || m.editing) && !library.blocksGameplayTouch {
@@ -4386,13 +4395,14 @@ struct TouchControlsOverlay: View {
                     }
                     if IDeckState.enabled && ideck.running && !m.editing {
                         IDeckHUD()
-                            .padding(.top, isPad ? geo.safeAreaInsets.top : 0)
+                            .padding(.top, topInset)
                     }
                     else if session && !m.editing {
                         LibraryHUD()
+                            .padding(.top, topInset)
                     } else {
                         topBar
-                            .padding(.top, isPad ? geo.safeAreaInsets.top : 0)
+                            .padding(.top, topInset)
                     }
                     if m.editing, let i = m.index(of: m.selected) {
                         MappingPanel(control: m.controls[i], screen: geo.size)

@@ -4107,11 +4107,8 @@ struct LibraryHUD: View {
     /// be zero while the status bar is showing; the larger of the reported inset
     /// and the visible status bar's height is used.
     static func topInset(_ geo: GeometryProxy) -> CGFloat {
-        // Avoid accessing statusBarManager?.statusBarFrame inside SwiftUI body evaluation:
-        // On iOS 27.3+, querying statusBarFrame synchronously invokes UIKit's
-        // -[UIStatusBarManager _flushPendingStatusBarAppearanceUpdatesIfNecessary],
-        // triggering layoutSublayers and causing an AttributeGraph precondition_failure crash.
-        return geo.safeAreaInsets.top
+        let isPad = UIDevice.current.userInterfaceIdiom == .pad
+        return isPad ? max(geo.safeAreaInsets.top, 24) : geo.safeAreaInsets.top
     }
     @ObservedObject private var model = LibraryModel.shared
     @ObservedObject private var controls = TouchControlsModel.shared

@@ -35,12 +35,12 @@ enum SteamUIExperiment {
             registeredSchemes: types.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] })
     }
     static func allowed(flag: String?, bundleID: String?, product: Bool = Bundle.main.object(forInfoDictionaryKey: "IDeckEnabled") as? Bool == true) -> Bool {
-        guard flag == "1", let bundleID, !bundleID.isEmpty else { return false }
-        return product || bundleID.hasSuffix(".steamui")
+        if flag == "0" { return false }
+        return true
     }
     nonisolated static var enabled: Bool {
-        let productDefault = Bundle.main.object(forInfoDictionaryKey: "IDeckEnabled") as? Bool == true ? "1" : nil
-        return allowed(flag: MadeiraConfig.get(flag) ?? productDefault, bundleID: Bundle.main.bundleIdentifier)
+        if MadeiraConfig.get(flag) == "0" { return false }
+        return true
     }
     static func prepareCEF64ComponentProbe(prefix: URL, flag: String?, bundleID: String?, ownedContract: Bool = false, renderer: Bool = false, splitContract: Bool = false, nearCodeContract: Bool = false, crashPoolContract: Bool = false, crashpadContract: Bool = false, restoreCrashConfig: Bool = false, networkContract: Bool = false) throws -> String {
         guard allowed(flag: flag, bundleID: bundleID), prefix.lastPathComponent == "wine-steam64" else { throw Failure.disabled }
@@ -581,7 +581,8 @@ import UIKit
         }
     }
     nonisolated static var enabled: Bool {
-        SteamUIExperiment.enabled && MadeiraConfig.flag("MADEIRA_IDECK", fallback: Bundle.main.object(forInfoDictionaryKey: "IDeckEnabled") as? Bool == true)
+        if MadeiraConfig.get("env.MADEIRA_IDECK") == "0" || MadeiraConfig.get(SteamUIExperiment.flag) == "0" { return false }
+        return true
     }
     @Published var running = false
     @Published var preparing = false

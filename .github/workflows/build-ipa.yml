@@ -201,6 +201,7 @@ jobs:
                    app/Madeira/i386-windows \
                    app/Madeira/d3d12 \
                    app/Madeira/nls \
+                   app/Madeira/fonts \
                    app/Madeira/legal \
                    app/Madeira/licenses
 
