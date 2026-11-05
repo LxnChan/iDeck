@@ -64,9 +64,6 @@ public final class NetworkProxySettings: ObservableObject {
             dict[kCFNetworkProxiesHTTPEnable] = true
             dict[kCFNetworkProxiesHTTPProxy] = cleanHost
             dict[kCFNetworkProxiesHTTPPort] = port
-            dict[kCFNetworkProxiesHTTPSEnable] = true
-            dict[kCFNetworkProxiesHTTPSProxy] = cleanHost
-            dict[kCFNetworkProxiesHTTPSPort] = port
             dict["HTTPEnable"] = true
             dict["HTTPProxy"] = cleanHost
             dict["HTTPPort"] = port
