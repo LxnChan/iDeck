@@ -38,7 +38,7 @@ enum SteamUIExperiment {
         guard flag == "1", let bundleID, !bundleID.isEmpty else { return false }
         return product || bundleID.hasSuffix(".steamui")
     }
-    static var enabled: Bool {
+    nonisolated static var enabled: Bool {
         let productDefault = Bundle.main.object(forInfoDictionaryKey: "IDeckEnabled") as? Bool == true ? "1" : nil
         return allowed(flag: MadeiraConfig.get(flag) ?? productDefault, bundleID: Bundle.main.bundleIdentifier)
     }
@@ -580,7 +580,7 @@ import UIKit
             UserDefaults.standard.set(true, forKey: "iDeckAccountLauncherV1")
         }
     }
-    static var enabled: Bool {
+    nonisolated static var enabled: Bool {
         SteamUIExperiment.enabled && MadeiraConfig.flag("MADEIRA_IDECK", fallback: Bundle.main.object(forInfoDictionaryKey: "IDeckEnabled") as? Bool == true)
     }
     @Published var running = false
