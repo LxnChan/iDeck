@@ -14,9 +14,9 @@ on:
         default: 'com.kuschqin.madeira.steamui'
         type: string
       build_number:
-        description: 'Build number (CFBundleVersion, must be > 144 to upgrade over Build 144)'
+        description: 'Build number (CFBundleVersion, leave empty to auto-increment from 150 + run_number)'
         required: false
-        default: '145'
+        default: ''
         type: string
       configuration:
         description: 'Build configuration (Debug or Release)'
@@ -264,7 +264,11 @@ jobs:
           set -e
           CONFIG="${{ inputs.configuration || 'Debug' }}"
           BUNDLE_ID="${{ inputs.bundle_id || 'com.kuschqin.madeira.steamui' }}"
-          BUILD_NUMBER="${{ inputs.build_number || '148' }}"
+          if [ -n "${{ inputs.build_number }}" ]; then
+            BUILD_NUMBER="${{ inputs.build_number }}"
+          else
+            BUILD_NUMBER=$(( 150 + ${{ github.run_number }} ))
+          fi
 
           echo "==> Building Madeira with configuration=$CONFIG, bundle_id=$BUNDLE_ID, build_number=$BUILD_NUMBER"
           xcodebuild -project app/Madeira.xcodeproj -scheme Madeira \
@@ -280,6 +284,7 @@ jobs:
           HELPER_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/PlugIns/MadeiraJITHelper.appex/Info.plist"
           FRAMEWORK_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/Frameworks/StikJIT.framework/Info.plist"
           if [ -f "$APP_PLIST" ] && [ -f "$HELPER_PLIST" ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" "$APP_PLIST"
             APP_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PLIST")
             HELPER_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$HELPER_PLIST")
             APP_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
