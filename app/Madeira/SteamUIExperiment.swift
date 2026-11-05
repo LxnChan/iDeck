@@ -1043,6 +1043,18 @@ struct IDeckLauncher: View {
             Text((["Check prerequisites"] + IDeckPrerequisite.allCases.map(\.title) + ["Launch Steam", "Steam account", "Auto-start"])[selection])
                 .font(.caption).padding(8).background(.regularMaterial, in: Capsule()).padding(8).allowsHitTesting(false)
         }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    diagnostics()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Library")
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showSetupHelp, onDismiss: { state.checkPrerequisites() }) {
             NavigationStack {
                 Form {

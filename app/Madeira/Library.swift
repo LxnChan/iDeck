@@ -459,6 +459,8 @@ struct LibraryEntry: Codable, Identifiable {
     }
 
     static let desktopID = UUID(uuidString: "AF046C35-C32A-497B-92BC-0BBD14F8CB61")!
+    static let steamLauncherID = UUID(uuidString: "B0F46C35-C32A-497B-92BC-0BBD14F8CB62")!
+    static let steamBigPictureID = UUID(uuidString: "C0F46C35-C32A-497B-92BC-0BBD14F8CB63")!
     static var desktopEntry: LibraryEntry {
         var entry = LibraryEntry(title: "Desktop", relativePath: "windows/system32/explorer.exe", bits: 64)
         entry.id = desktopID; entry.desktop = true; entry.graphicsAPI = "Wine desktop"
@@ -2558,9 +2560,11 @@ struct LibraryView: View {
     @ObservedObject private var jitState = LibraryJITState.shared
     /// Madeira Dock's start, for Settings › Steam (Onboarding.swift).
     var startDock: (DockGame, Bool) -> Void = { _, _ in }
+    var startSteam: ((Bool) -> Void)? = nil
     /// First-run setup (Onboarding.swift).
     @ObservedObject private var onboarding = OnboardingModel.shared
     @ObservedObject private var jit = JITCoordinator.shared
+    @ObservedObject private var ideck = IDeckState.shared
     /// The library's error is a JIT connection problem with a fix to offer.
     private var jitProblem: JITCoordinator.ConnectionProblem? {
         jit.connectionProblem.flatMap { model.error == $0.message ? $0 : nil }
@@ -2700,7 +2704,20 @@ struct LibraryView: View {
     @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
         if IDeckState.enabled {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { ideckAdvanced = false } label: {
+                Menu {
+                    Button {
+                        ideck.bigPictureMode = false
+                        ideckAdvanced = false
+                    } label: {
+                        Label("Steam Launcher", systemImage: "gamecontroller")
+                    }
+                    Button {
+                        ideck.bigPictureMode = true
+                        ideckAdvanced = false
+                    } label: {
+                        Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
+                    }
+                } label: {
                     Label("Steam Launcher", systemImage: "gamecontroller")
                 }
             }
@@ -2776,6 +2793,24 @@ struct LibraryView: View {
                     RuntimeMemorySyncSettings(open: { settingsSheet = $0 }, refresh: settingsRefresh)
                 }
             }
+            if IDeckState.enabled, settingsShow("Steam", "iDeck", "big picture", "launcher", "client", "mode", "大屏", "模式") {
+                Section {
+                    Picker("Launch mode", selection: $ideck.bigPictureMode) {
+                        Text("Desktop Mode (Normal)").tag(false)
+                        Text("Big Picture Mode").tag(true)
+                    }
+                    Toggle("Open Steam automatically", isOn: $ideck.autoStart)
+                    Button {
+                        ideckAdvanced = false
+                    } label: {
+                        Label("Open Steam Launcher", systemImage: "gamecontroller")
+                    }
+                } header: {
+                    Text("Steam Client")
+                } footer: {
+                    Text("Desktop mode runs genuine Windows Steam without the gamepad UI overhead. Big Picture mode provides the controller-optimized interface.")
+                }
+            }
             if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup") {
                 SteamSettingsSection(open: { settingsSheet = $0 })
             }
@@ -2839,45 +2874,110 @@ struct LibraryView: View {
         ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(spacing: 12) {
-                    Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {
-                        if liquidMetal.on {
-                            // On the chrome's middle band (dark, or light in light mode), with a soft
-                            // halo of the other tone for the moments a highlight passes under it.
-                            let light = colorScheme == .light
-                            Label("Desktop", systemImage: "desktopcomputer")
-                                .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
-                                .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
-                                .padding(.horizontal, 14).frame(minHeight: 44)
-                                .background(LiquidMetalFill())
-                                .contentShape(Capsule())
-                        } else {
-                            Label("Desktop", systemImage: "desktopcomputer")
-                                .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
-                                .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
-                        }
-                    }.buttonStyle(.plain)
-                        .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
-                        .id(LibraryEntry.desktopID)
-                        .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.desktopID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
-
-                    if IDeckState.enabled {
-                        Button { ideckAdvanced = false } label: {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {
                             if liquidMetal.on {
+                                // On the chrome's middle band (dark, or light in light mode), with a soft
+                                // halo of the other tone for the moments a highlight passes under it.
                                 let light = colorScheme == .light
-                                Label("Steam Launcher", systemImage: "gamecontroller")
+                                Label("Desktop", systemImage: "desktopcomputer")
+                                    .lineLimit(1)
                                     .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
                                     .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
                                     .padding(.horizontal, 14).frame(minHeight: 44)
                                     .background(LiquidMetalFill())
                                     .contentShape(Capsule())
                             } else {
-                                Label("Steam Launcher", systemImage: "gamecontroller")
+                                Label("Desktop", systemImage: "desktopcomputer")
+                                    .lineLimit(1)
                                     .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
                                     .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
                             }
                         }.buttonStyle(.plain)
                             .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                            .id(LibraryEntry.desktopID)
+                            .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.desktopID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+
+                        if IDeckState.enabled {
+                            Button {
+                                ideck.bigPictureMode = false
+                                ideckAdvanced = false
+                            } label: {
+                                if liquidMetal.on {
+                                    let light = colorScheme == .light
+                                    Label("Steam Launcher", systemImage: "gamecontroller")
+                                        .lineLimit(1)
+                                        .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
+                                        .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
+                                        .padding(.horizontal, 14).frame(minHeight: 44)
+                                        .background(LiquidMetalFill())
+                                        .contentShape(Capsule())
+                                } else {
+                                    Label("Steam Launcher", systemImage: "gamecontroller")
+                                        .lineLimit(1)
+                                        .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
+                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                                }
+                            }.buttonStyle(.plain)
+                                .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                                .id(LibraryEntry.steamLauncherID)
+                                .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.steamLauncherID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+                                .contextMenu {
+                                    if let startSteam {
+                                        Button {
+                                            startSteam(false)
+                                        } label: {
+                                            Label("Launch Steam (Desktop Mode)", systemImage: "play.fill")
+                                        }
+                                    }
+                                    Button {
+                                        ideck.bigPictureMode = false
+                                        ideckAdvanced = false
+                                    } label: {
+                                        Label("Open Steam Launcher", systemImage: "checklist")
+                                    }
+                                }
+
+                            Button {
+                                ideck.bigPictureMode = true
+                                ideckAdvanced = false
+                            } label: {
+                                if liquidMetal.on {
+                                    let light = colorScheme == .light
+                                    Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
+                                        .lineLimit(1)
+                                        .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
+                                        .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
+                                        .padding(.horizontal, 14).frame(minHeight: 44)
+                                        .background(LiquidMetalFill())
+                                        .contentShape(Capsule())
+                                } else {
+                                    Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
+                                        .lineLimit(1)
+                                        .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
+                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                                }
+                            }.buttonStyle(.plain)
+                                .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                                .id(LibraryEntry.steamBigPictureID)
+                                .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.steamBigPictureID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+                                .contextMenu {
+                                    if let startSteam {
+                                        Button {
+                                            startSteam(true)
+                                        } label: {
+                                            Label("Launch Steam Big Picture", systemImage: "play.fill")
+                                        }
+                                    }
+                                    Button {
+                                        ideck.bigPictureMode = true
+                                        ideckAdvanced = false
+                                    } label: {
+                                        Label("Open Steam Launcher", systemImage: "checklist")
+                                    }
+                                }
+                        }
                     }
                 }
                 // The library's sections, as in the fork: Steam (installed and downloading
@@ -2936,12 +3036,26 @@ struct LibraryView: View {
         .onReceive(controller.commands) { command in
             guard tab == 0, selected == nil, !browser, !onboarding.presented else { return }
             let items = focusOrder
-            let ids = [LibraryEntry.desktopID] + items.map(\.id)
+            var topIDs = [LibraryEntry.desktopID]
+            if IDeckState.enabled {
+                topIDs.append(LibraryEntry.steamLauncherID)
+                topIDs.append(LibraryEntry.steamBigPictureID)
+            }
+            let ids = topIDs + items.map(\.id)
             let index = ids.firstIndex(where: { $0 == focused }) ?? 0
             if command == "add" { browser = true }
             else if command == "accept" {
-                if index == 0 { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry }
-                else { selected = items[index - 1] }
+                if focused == LibraryEntry.desktopID {
+                    selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry
+                } else if focused == LibraryEntry.steamLauncherID {
+                    ideck.bigPictureMode = false
+                    ideckAdvanced = false
+                } else if focused == LibraryEntry.steamBigPictureID {
+                    ideck.bigPictureMode = true
+                    ideckAdvanced = false
+                } else if let game = items.first(where: { $0.id == focused }) {
+                    selected = game
+                }
             }
             else if ["left", "right", "up", "down"].contains(command) {
                 let delta = command == "left" || command == "up" ? -1 : 1

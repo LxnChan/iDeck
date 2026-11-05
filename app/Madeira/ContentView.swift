@@ -1357,7 +1357,11 @@ struct ContentView: View {
                         .navigationBarHidden(true)
                 } else if library.enabled {
                     LibraryView(play: launchLibraryEntry, enableJIT: enableJIT,
-                                startDock: { startDock($0, compactPool: $1) })
+                                startDock: { startDock($0, compactPool: $1) },
+                                startSteam: { bigPicture in
+                                    ideck.bigPictureMode = bigPicture
+                                    startIDeck()
+                                })
                 } else {
                     developerBody
                 }
