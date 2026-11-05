@@ -1541,11 +1541,9 @@ struct ContentView: View {
     /// TouchControlsOverlay (LibraryHUD), in the window above the game surface.
     private var sessionBody: some View {
         GeometryReader { geo in
-            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : 0
             ZStack {
                 Color.black
                 MadeiraMetalView()
-                    .padding(.top, topInset)
                     .onAppear { TouchControlsHost.attach() }
                     .onReceive(NotificationCenter.default.publisher(
                         for: UIDevice.orientationDidChangeNotification)) { _ in
@@ -1553,9 +1551,9 @@ struct ContentView: View {
                     }
             }
         }
-        .ignoresSafeArea(edges: isPad ? [.bottom, .leading, .trailing] : .all)
+        .ignoresSafeArea(edges: .all)
         .background(Color.black)
-        .statusBarHidden(!isPad)
+        .statusBarHidden(true)
     }
 
     /// Portrait: classic tooling layout — header, badges, 240pt game strip,
@@ -1636,14 +1634,12 @@ struct ContentView: View {
     /// anything drawn over the game area itself. No header/log/nav chrome.
     private var landscapeBody: some View {
         GeometryReader { geo in
-            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : 0
-            let availableH = max(1, geo.size.height - topInset)
+            let availableH = max(1, geo.size.height)
             let gameW = min(geo.size.width, availableH * 4.0 / 3.0)
             let barW = max((geo.size.width - gameW) / 2.0, 44)
             ZStack {
                 Color.black
                 MadeiraMetalView()
-                    .padding(.top, topInset)
                     // A launch straight into landscape never shows the portrait
                     // layout, which is otherwise what creates the controls window
                     // (its top bar carries the keyboard button here).
@@ -1656,14 +1652,13 @@ struct ContentView: View {
                     Spacer(minLength: 0)
                     VStack {
                         FPSOverlay(compact: true)
-                            .padding(.top, topInset)
                         Spacer()
                     }
                     .frame(width: barW)
                 }
             }
         }
-        .ignoresSafeArea(edges: isPad ? [.bottom, .leading, .trailing] : .all)
+        .ignoresSafeArea(edges: .all)
         .background(Color.black)
     }
 
@@ -4393,7 +4388,7 @@ struct TouchControlsOverlay: View {
             // bar; the controls hide while its menu or starting screen is up.
             let session = library.current != nil || (IDeckState.enabled && ideck.running)
             let landscape = geo.size.width > geo.size.height || session
-            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : 0
+            let topInset: CGFloat = session ? max(geo.safeAreaInsets.top, 8) : (isPad ? max(geo.safeAreaInsets.top, 24) : 0)
             ZStack(alignment: .top) {
                 if landscape {
                     if (m.visible || m.editing) && !library.blocksGameplayTouch {

@@ -542,13 +542,17 @@ static void madeira_setup_cjk_fonts(NSString *prefix)
 
     for (NSString *dir in fontDirs) {
         [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *msyhDst = [dir stringByAppendingPathComponent:@"msyh.ttc"];
+        NSString *yaheiSource = [fm fileExistsAtPath:msyhDst] ? msyhDst : foundFont;
         int linked = 0;
         for (NSString *name in fontNames) {
             NSString *dst = [dir stringByAppendingPathComponent:name];
             if ([name isEqualToString:@"simsun.ttc"] && [fm fileExistsAtPath:dst]) continue;
+            if ([name isEqualToString:@"msyh.ttc"] && [fm fileExistsAtPath:dst]) continue;
             [fm removeItemAtPath:dst error:nil];
-            if ([fm createSymbolicLinkAtPath:dst withDestinationPath:foundFont error:nil] ||
-                [fm copyItemAtPath:foundFont toPath:dst error:nil]) {
+            NSString *src = ([name hasPrefix:@"msyh"]) ? yaheiSource : foundFont;
+            if ([fm createSymbolicLinkAtPath:dst withDestinationPath:src error:nil] ||
+                [fm copyItemAtPath:src toPath:dst error:nil]) {
                 linked++;
             }
         }
@@ -567,13 +571,15 @@ static NSString *madeira_clean_legacy_cjk_reg(NSString *content)
     [s replaceOccurrencesOfString:@"\"SimSun\"=\"SimSun\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
     [s replaceOccurrencesOfString:@"\"NSimSun\"=\"NSimSun\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
     [s replaceOccurrencesOfString:@"\"Droid Sans Fallback\"" withString:@"\"SimSun\"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"Microsoft YaHei\"=\"SimSun\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"\"Microsoft YaHei UI\"=\"SimSun\"\n" withString:@"" options:0 range:NSMakeRange(0, s.length)];
     return s;
 }
 
 static void madeira_setup_cjk_registry(NSString *prefix)
 {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v3"];
+    NSString *marker = [prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v4"];
 
     NSString *systemReg = [prefix stringByAppendingPathComponent:@"system.reg"];
     NSString *userReg = [prefix stringByAppendingPathComponent:@"user.reg"];
@@ -582,75 +588,71 @@ static void madeira_setup_cjk_registry(NSString *prefix)
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Fonts] 1730000000\n"
         @"\"SimSun & NSimSun (TrueType)\"=\"simsun.ttc\"\n"
+        @"\"Microsoft YaHei & Microsoft YaHei UI (TrueType)\"=\"msyh.ttc\"\n"
+        @"\"Microsoft YaHei Bold & Microsoft YaHei UI Bold (TrueType)\"=\"msyhbd.ttc\"\n"
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontLink\\\\SystemLink] 1730000000\n"
-        @"\"Arial\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Arial\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
         @"\"Courier New\"=str(7):\"simsun.ttc,NSimSun\\0\"\n"
         @"\"Lucida Console\"=str(7):\"simsun.ttc,NSimSun\\0\"\n"
-        @"\"Lucida Sans Unicode\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
-        @"\"Microsoft Sans Serif\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
-        @"\"MS Sans Serif\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
-        @"\"Segoe UI\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Lucida Sans Unicode\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Microsoft Sans Serif\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"MS Sans Serif\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Segoe UI\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
         @"\"System\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
-        @"\"Tahoma\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
-        @"\"Times New Roman\"=str(7):\"simsun.ttc,SimSun\\0\"\n"
+        @"\"Tahoma\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
+        @"\"Times New Roman\"=str(7):\"msyh.ttc,Microsoft YaHei\\0simsun.ttc,SimSun\\0\"\n"
         @"\n"
         @"[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes] 1730000000\n"
         @"\"FangSong\"=\"SimSun\"\n"
         @"\"KaiTi\"=\"SimSun\"\n"
-        @"\"Microsoft YaHei\"=\"SimSun\"\n"
-        @"\"Microsoft YaHei UI\"=\"SimSun\"\n"
         @"\"MingLiU\"=\"SimSun\"\n"
         @"\"MS Gothic\"=\"SimSun\"\n"
         @"\"MS Mincho\"=\"SimSun\"\n"
         @"\"MS PGothic\"=\"SimSun\"\n"
         @"\"MS PMincho\"=\"SimSun\"\n"
-        @"\"MS Shell Dlg\"=\"SimSun\"\n"
+        @"\"MS Shell Dlg\"=\"Microsoft YaHei\"\n"
         @"\"MS Shell Dlg 2\"=\"Tahoma\"\n"
         @"\"MS UI Gothic\"=\"SimSun\"\n"
         @"\"NSimSun\"=\"SimSun\"\n"
         @"\"PMingLiU\"=\"SimSun\"\n"
-        @"\"SimHei\"=\"SimSun\"\n"
+        @"\"SimHei\"=\"Microsoft YaHei\"\n"
         @"\n"
         @"[Software\\\\Wine\\\\Fonts\\\\Replacements] 1730000000\n"
         @"\"FangSong\"=\"SimSun\"\n"
         @"\"KaiTi\"=\"SimSun\"\n"
-        @"\"Microsoft YaHei\"=\"SimSun\"\n"
-        @"\"Microsoft YaHei UI\"=\"SimSun\"\n"
         @"\"MingLiU\"=\"SimSun\"\n"
         @"\"MS Gothic\"=\"SimSun\"\n"
         @"\"MS Mincho\"=\"SimSun\"\n"
         @"\"MS PGothic\"=\"SimSun\"\n"
         @"\"MS UI Gothic\"=\"SimSun\"\n"
         @"\"PMingLiU\"=\"SimSun\"\n"
-        @"\"SimHei\"=\"SimSun\"\n";
+        @"\"SimHei\"=\"Microsoft YaHei\"\n";
 
     NSString *cjkUserReg =
         @"\n"
         @"[Software\\\\Wine\\\\Fonts\\\\Replacements] 1730000000\n"
         @"\"FangSong\"=\"SimSun\"\n"
         @"\"KaiTi\"=\"SimSun\"\n"
-        @"\"Microsoft YaHei\"=\"SimSun\"\n"
-        @"\"Microsoft YaHei UI\"=\"SimSun\"\n"
         @"\"MingLiU\"=\"SimSun\"\n"
         @"\"MS Gothic\"=\"SimSun\"\n"
         @"\"MS Mincho\"=\"SimSun\"\n"
         @"\"MS PGothic\"=\"SimSun\"\n"
         @"\"MS UI Gothic\"=\"SimSun\"\n"
         @"\"PMingLiU\"=\"SimSun\"\n"
-        @"\"SimHei\"=\"SimSun\"\n";
+        @"\"SimHei\"=\"Microsoft YaHei\"\n";
 
     if ([fm fileExistsAtPath:systemReg]) {
         NSError *err = nil;
         NSString *content = [NSString stringWithContentsOfFile:systemReg encoding:NSUTF8StringEncoding error:&err];
         if (content) {
             NSString *cleaned = madeira_clean_legacy_cjk_reg(content);
-            if (![cleaned containsString:@"\"SimSun & NSimSun (TrueType)\""]) {
+            if (![cleaned containsString:@"\"Microsoft YaHei & Microsoft YaHei UI (TrueType)\""]) {
                 cleaned = [cleaned stringByAppendingString:cjkSystemReg];
             }
             if (![cleaned isEqualToString:content]) {
                 [cleaned writeToFile:systemReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
-                dprintf(STDERR_FILENO, "[cjk-reg] Updated SimSun FontLink & FontSubstitutes in system.reg\n");
+                dprintf(STDERR_FILENO, "[cjk-reg] Updated SimSun & YaHei FontLink & FontSubstitutes in system.reg\n");
             }
         }
     }
@@ -660,19 +662,20 @@ static void madeira_setup_cjk_registry(NSString *prefix)
         NSString *content = [NSString stringWithContentsOfFile:userReg encoding:NSUTF8StringEncoding error:&err];
         if (content) {
             NSString *cleaned = madeira_clean_legacy_cjk_reg(content);
-            if (![cleaned containsString:@"\"Microsoft YaHei\"=\"SimSun\""]) {
+            if (![cleaned containsString:@"\"SimHei\"=\"Microsoft YaHei\""]) {
                 cleaned = [cleaned stringByAppendingString:cjkUserReg];
             }
             if (![cleaned isEqualToString:content]) {
                 [cleaned writeToFile:userReg atomically:YES encoding:NSUTF8StringEncoding error:nil];
-                dprintf(STDERR_FILENO, "[cjk-reg] Updated SimSun Replacements in user.reg\n");
+                dprintf(STDERR_FILENO, "[cjk-reg] Updated SimSun & YaHei Replacements in user.reg\n");
             }
         }
     }
 
-    // Remove legacy v2 marker
+    // Remove legacy markers
     [fm removeItemAtPath:[prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v2"] error:nil];
-    [@"cjk-v3" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [fm removeItemAtPath:[prefix stringByAppendingPathComponent:@".madeira-cjk-registry-v3"] error:nil];
+    [@"cjk-v4" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 static void madeira_setup_proxy_registry(NSString *prefix)
