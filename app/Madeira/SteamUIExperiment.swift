@@ -1137,7 +1137,7 @@ struct IDeckHUD: View {
                     }
                 } else {
                     Button { state.menu=true } label: {
-                        Image(systemName:"line.3.horizontal").font(.title3.bold()).frame(width:48,height:48)
+                        Image(systemName:"line.3.horizontal").font(.title3.bold()).foregroundStyle(.white).frame(width:48,height:48)
                     }.buttonStyle(.plain).background(.regularMaterial,in:Circle())
                         .accessibilityLabel("iDeck options — drag to move")
                         .onGeometryChange(for:CGRect.self) { $0.frame(in:.global) } action: { state.menuRect=$0 }

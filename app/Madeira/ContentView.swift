@@ -201,13 +201,28 @@ final class MetalBackedView: UIView {
     /// drawableAspect); LibraryModel.begin sets it.
     static var presentCountAtLaunch: UInt64 = 0
 
+    /// On iPad, full-screen sessions leave the top status bar band (at least 24pt)
+    /// clear so neither the Metal game surface nor the Windows desktop compositor
+    /// collides with the iPadOS status bar.
+    private func presentationBounds() -> CGRect {
+        guard UIDevice.current.userInterfaceIdiom == .pad,
+              let w = window else { return bounds }
+        let inWindow = convert(bounds, to: w)
+        let statusH = max(w.safeAreaInsets.top, 24)
+        let overlap = max(0, statusH - inWindow.minY)
+        guard overlap > 0, bounds.height > overlap + 1 else { return bounds }
+        return CGRect(x: bounds.minX, y: bounds.minY + overlap,
+                      width: bounds.width, height: bounds.height - overlap)
+    }
+
     /// The rect (view-local points) the guest surface occupies. The
     /// window-level host view gets THIS frame, not our full bounds, and touch
     /// mapping uses the same rect, so letterboxing, cropping and stretching
     /// never skew input.
     private func gameRect() -> CGRect {
+        let area = presentationBounds()
         let r = GameSurfaceLayout.rect(guest: guestSize(), aspect: drawableAspect(),
-                                       bounds: bounds, mode: effectiveDisplayMode())
+                                       bounds: area, mode: effectiveDisplayMode())
         return CGRect(x: r.minX, y: r.minY, width: max(r.width, 1), height: max(r.height, 1))
     }
 
@@ -219,14 +234,17 @@ final class MetalBackedView: UIView {
     /// is logged when the result changes.
     private func applyDisplayMode(reason: String) {
         guard let w = window else { return }
+        let area = presentationBounds()
         let r = gameRect()
         MetalHostView.shared.frame = convert(r, to: w)
+        let full = convert(area, to: w)
+        winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
         // The desktop compositor lays the guest display out in the same rect,
         // so Aspect / Fill / Stretch / Fit apply to desktop sessions as well.
-        winios_set_desktop_rect(r.minX - bounds.minX, r.minY - bounds.minY, r.width, r.height, 1)
+        winios_set_desktop_rect(r.minX - area.minX, r.minY - area.minY, r.width, r.height, 1)
         let guest = guestSize(), mode = effectiveDisplayMode()
         let line = String(format: "mode=%@ guest=%.0fx%.0f bounds=%.0fx%.0f -> rect=(%.0f,%.0f %.0fx%.0f)",
-                          mode.rawValue, guest.width, guest.height, bounds.width, bounds.height,
+                          mode.rawValue, guest.width, guest.height, area.width, area.height,
                           r.minX, r.minY, r.width, r.height)
         if line != Self.lastApplied {
             Self.lastApplied = line
@@ -283,7 +301,7 @@ final class MetalBackedView: UIView {
         // S2 desktop mode: the winios compositor renders the wine virtual
         // desktop aspect-fit inside THIS placeholder's area, exactly like
         // the games' Metal layer — never over the whole phone screen.
-        let full = convert(bounds, to: w)
+        let full = convert(presentationBounds(), to: w)
         winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
         if !Self.layerRegistered {
             Self.layerRegistered = true
@@ -301,7 +319,7 @@ final class MetalBackedView: UIView {
         super.layoutSubviews()
         if let w = window {
             applyDisplayMode(reason: "layout")
-            let full = convert(bounds, to: w)
+            let full = convert(presentationBounds(), to: w)
             winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
         }
     }
@@ -326,7 +344,7 @@ final class MetalBackedView: UIView {
             return (px, py)
         }
         let g = GameSurfaceLayout.map(point: p, guest: guestSize(), aspect: drawableAspect(),
-                                      bounds: bounds, mode: effectiveDisplayMode())
+                                      bounds: presentationBounds(), mode: effectiveDisplayMode())
         return (Int32(g.x), Int32(g.y))
     }
 
@@ -1528,7 +1546,7 @@ struct ContentView: View {
             .navigationBarHidden(landscape)
             // ml1157: landscape is the desktop, edge to edge -- no status bar
             // over its top rows, and the home indicator fades out.
-            .statusBarHidden(landscape)
+            .statusBarHidden(landscape && !isPad)
             .persistentSystemOverlays(landscape ? .hidden : .automatic)
             // The landscape controls window re-frames to the rotated scene.
             .onChange(of: landscape) { _, _ in TouchControlsHost.attach() }
@@ -1545,6 +1563,7 @@ struct ContentView: View {
                 Color.black
                 MadeiraMetalView()
                     .onAppear { TouchControlsHost.attach() }
+                    .onChange(of: geo.size) { _, _ in TouchControlsHost.attach() }
                     .onReceive(NotificationCenter.default.publisher(
                         for: UIDevice.orientationDidChangeNotification)) { _ in
                         TouchControlsHost.attach()   // re-frame to the new bounds
@@ -1553,7 +1572,7 @@ struct ContentView: View {
         }
         .ignoresSafeArea(edges: .all)
         .background(Color.black)
-        .statusBarHidden(true)
+        .statusBarHidden(!isPad)
     }
 
     /// Portrait: classic tooling layout — header, badges, 240pt game strip,
@@ -4278,7 +4297,7 @@ final class TouchControlsModel: ObservableObject {
         let buttons: CGFloat = (TouchControlsOverlay.showsLayoutMenu(self) ? 3 : 2) + 1
         let barW: CGFloat = buttons * 44 + (buttons - 1) * 10
         if topBar, CGRect(x: bounds.midX - barW / 2 - 10, y: 0,
-                          width: barW + 20, height: 68).contains(p) { return true }
+                          width: barW + 20, height: 96).contains(p) { return true }
         guard visible else { return false }
         for c in controls {
             let r = Self.diameter(c) / 2
@@ -4323,15 +4342,15 @@ final class ControlsWindow: UIWindow {
                 let rb = root?.bounds ?? bounds
                 LogStore.shared.log("[ideck-hit] sample=\(steam64HitSamples) window=\(Int(bounds.width))x\(Int(bounds.height)) root=\(Int(rb.width))x\(Int(rb.height)) window-control=\(m.hitsInteractive(point, in: bounds, topBar: false) ? 1 : 0) root-control=\(m.hitsInteractive(rp, in: rb, topBar: false) ? 1 : 0) visible=\(m.visible ? 1 : 0)")
             }
-            if IDeckState.shared.menu || IDeckState.shared.menuRect.contains(point) {
+            if IDeckState.shared.menu || IDeckState.shared.menuRect.insetBy(dx: -8, dy: -8).contains(point) {
                 return super.hitTest(point, with: event)
             }
             guard m.hitsInteractive(point, in: bounds, topBar: false) else { return nil }
             return super.hitTest(point, with: event)
         }
         if library.current != nil {
-            if library.menu || library.launching || library.menuButtonRect.contains(point) ||
-                (library.performance && library.performanceRect.contains(point)) {
+            if library.menu || library.launching || library.menuButtonRect.insetBy(dx: -8, dy: -8).contains(point) ||
+                (library.performance && library.performanceRect.insetBy(dx: -8, dy: -8).contains(point)) {
                 return super.hitTest(point, with: event)
             }
             guard m.hitsInteractive(point, in: bounds, topBar: false) else { return nil }
@@ -4361,8 +4380,10 @@ enum TouchControlsHost {
             // ordering nothing inside the app window can undo.
             w.windowLevel = .normal + 101
             w.backgroundColor = .clear
+            w.overrideUserInterfaceStyle = .dark
             w.isHidden = false        // deliberately never made key
-            let host = UIHostingController(rootView: TouchControlsOverlay())
+            let host = UIHostingController(rootView: TouchControlsOverlay().environment(\.colorScheme, .dark))
+            host.overrideUserInterfaceStyle = .dark
             host.view.backgroundColor = .clear
             w.rootViewController = host
             window = w
@@ -4388,7 +4409,7 @@ struct TouchControlsOverlay: View {
             // bar; the controls hide while its menu or starting screen is up.
             let session = library.current != nil || (IDeckState.enabled && ideck.running)
             let landscape = geo.size.width > geo.size.height || session
-            let topInset: CGFloat = session ? max(geo.safeAreaInsets.top, 8) : (isPad ? max(geo.safeAreaInsets.top, 24) : 0)
+            let topInset: CGFloat = isPad ? max(geo.safeAreaInsets.top, 24) : geo.safeAreaInsets.top
             ZStack(alignment: .top) {
                 if landscape {
                     if (m.visible || m.editing) && !library.blocksGameplayTouch {
@@ -4400,8 +4421,7 @@ struct TouchControlsOverlay: View {
                     }
                     else if session && !m.editing {
                         LibraryHUD()
-                            .padding(.top, topInset)
-                    } else {
+                    } else if !library.enabled || session || m.editing {
                         topBar
                             .padding(.top, topInset)
                     }

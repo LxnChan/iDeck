@@ -4189,7 +4189,6 @@ struct LibraryPillGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
         if reduceTransparency { content.background(Color(uiColor: .secondarySystemBackground), in: Capsule()) }
-        else if #available(iOS 26, *) { content.glassEffect(.regular.interactive(), in: Capsule()) }
         else { content.background(.regularMaterial, in: Capsule()) }
     }
 }
@@ -4211,14 +4210,16 @@ struct LibraryFloatingItem: View {
 
     init(isMenu: Bool, viewport: CGSize, insets: EdgeInsets) {
         self.isMenu = isMenu; self.viewport = viewport; self.insets = insets
-        _nx = AppStorage(wrappedValue: isMenu ? 0.92 : 0.25, isMenu ? "madeiraLibraryMenuX" : "madeiraLibraryMetricsX")
-        _ny = AppStorage(wrappedValue: isMenu ? 0.12 : 0.08, isMenu ? "madeiraLibraryMenuY" : "madeiraLibraryMetricsY")
+        _nx = AppStorage(wrappedValue: isMenu ? 0.95 : 0.25, isMenu ? "madeiraLibraryMenuX" : "madeiraLibraryMetricsX")
+        _ny = AppStorage(wrappedValue: isMenu ? 0.07 : 0.08, isMenu ? "madeiraLibraryMenuY" : "madeiraLibraryMetricsY")
     }
     private func position(_ translation: CGSize) -> CGPoint {
+        let safeNX = (nx.isFinite && nx > 0.02 && nx <= 1.0) ? nx : (isMenu ? 0.95 : 0.25)
+        let safeNY = (ny.isFinite && ny > 0.02 && ny <= 1.0) ? ny : (isMenu ? 0.07 : 0.08)
         let left = insets.leading + measured.width / 2 + 8
         let top = insets.top + measured.height / 2 + 8
-        return CGPoint(x: min(max(left, viewport.width * nx + translation.width), max(left, viewport.width - insets.trailing - measured.width / 2 - 8)),
-                       y: min(max(top, viewport.height * ny + translation.height), max(top, viewport.height - insets.bottom - measured.height / 2 - 8)))
+        return CGPoint(x: min(max(left, viewport.width * safeNX + translation.width), max(left, viewport.width - insets.trailing - measured.width / 2 - 8)),
+                       y: min(max(top, viewport.height * safeNY + translation.height), max(top, viewport.height - insets.bottom - measured.height / 2 - 8)))
     }
     private func record(_ rect: CGRect) {
         if isMenu { model.menuButtonRect = rect } else { model.performanceRect = rect }
@@ -4229,16 +4230,28 @@ struct LibraryFloatingItem: View {
         Group {
             if isMenu {
                 Button { touched += 1; model.showMenu() } label: {
-                    Image(systemName: "line.3.horizontal").font(.title3.weight(.semibold)).frame(width: 48, height: 48)
+                    Image(systemName: "line.3.horizontal")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
                 }.buttonStyle(.plain).modifier(LibraryPillGlass())
-                    .opacity(faded && drag == .zero && !model.menu ? 0.3 : 1)
+                    .opacity(faded && drag == .zero && !model.menu ? 0.65 : 1)
                     .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
             } else { LibraryMetrics().accessibilityHint("Drag to move") }
         }
         .frame(maxWidth: isMenu ? 48 : max(48, min(390, viewport.width - insets.leading - insets.trailing - 16)))
         .fixedSize(horizontal: false, vertical: true)
         .background(GeometryReader { proxy in
-            Color.clear.onAppear { measured = proxy.size }.onChange(of: proxy.size) { _, size in measured = size }
+            Color.clear
+                .onAppear {
+                    measured = proxy.size
+                    let globalFrame = proxy.frame(in: .global)
+                    if globalFrame.width > 0 && globalFrame.height > 0 { record(globalFrame) }
+                }
+                .onChange(of: proxy.size) { _, size in measured = size }
+                .onChange(of: proxy.frame(in: .global)) { _, globalFrame in
+                    if globalFrame.width > 0 && globalFrame.height > 0 { record(globalFrame) }
+                }
         })
         .contentShape(Rectangle())
         .highPriorityGesture(DragGesture(minimumDistance: 6, coordinateSpace: .global).updating($drag) { value, state, transaction in
@@ -4291,6 +4304,8 @@ struct LibraryHUD: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         GeometryReader { geo in
+            let hudInsets = EdgeInsets(top: Self.topInset(geo), leading: geo.safeAreaInsets.leading,
+                                       bottom: geo.safeAreaInsets.bottom, trailing: geo.safeAreaInsets.trailing)
             ZStack(alignment: .topLeading) {
                 if model.launching, let entry = model.activeEntry {
                     launchBackdrop(entry).overlay(.black.opacity(0.65)).ignoresSafeArea()
@@ -4299,10 +4314,10 @@ struct LibraryHUD: View {
                         .opacity(launchVisible ? 1 : 0)
                         .scaleEffect(launchVisible || reduceMotion ? 1 : 0.96)
                 }
-                if !model.launching && model.performance { LibraryFloatingItem(isMenu: false, viewport: geo.size, insets: geo.safeAreaInsets) }
+                if !model.launching && model.performance { LibraryFloatingItem(isMenu: false, viewport: geo.size, insets: hudInsets) }
                 if model.liveLogs && !model.launching { LibraryLiveLogs().frame(maxWidth: 550, maxHeight: 140).padding(.top, Self.topInset(geo) + 60).padding(.horizontal, 12).allowsHitTesting(false) }
                 if !model.sessionMessage.isEmpty { Text(model.sessionMessage).font(.caption).padding(10).background(.regularMaterial, in: Capsule()).frame(maxWidth: .infinity).padding(.top, Self.topInset(geo) + 12).allowsHitTesting(false) }
-                if !model.launching { LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: geo.safeAreaInsets) }
+                if !model.launching { LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: hudInsets) }
                 if model.menu {
                     Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { model.menu = false }.transition(.opacity)
                     (bindsPage ? AnyView(bindsMenu) : AnyView(menu))

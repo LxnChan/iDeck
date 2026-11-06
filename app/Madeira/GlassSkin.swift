@@ -589,14 +589,24 @@ struct GlassEffectContainer<Content: View>: View {
 }
 
 struct GlassEffectStyle {
+    var tintColor: Color? = nil
     static let regular = GlassEffectStyle()
-    func tint(_ color: Color) -> GlassEffectStyle { self }
+    func tint(_ color: Color) -> GlassEffectStyle {
+        var copy = self
+        copy.tintColor = color
+        return copy
+    }
     func interactive() -> GlassEffectStyle { self }
 }
 
 extension View {
-    func glassEffect(_ style: GlassEffectStyle, in shape: some Shape) -> some View {
-        self
+    @ViewBuilder func glassEffect(_ style: GlassEffectStyle, in shape: some Shape) -> some View {
+        self.background {
+            shape.fill(.regularMaterial)
+            if let tint = style.tintColor {
+                shape.fill(tint)
+            }
+        }
     }
 }
 

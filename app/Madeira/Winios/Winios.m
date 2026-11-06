@@ -1007,6 +1007,14 @@ static void winios_layout_compositor(void) {
     if (!g_compositor_view) return;
     UIWindow *win = g_compositor_view.superview ? (UIWindow *)g_compositor_view.superview : nil;
     CGRect frame = g_comp_frame_set ? g_comp_frame : (win ? win.bounds : g_compositor_view.frame);
+    if (win && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        CGFloat top = MAX(win.safeAreaInsets.top, 24.0);
+        CGFloat overlap = MAX(0.0, top - frame.origin.y);
+        if (overlap > 0.0 && frame.size.height > overlap + 1.0) {
+            frame.origin.y += overlap;
+            frame.size.height -= overlap;
+        }
+    }
     g_compositor_view.frame = frame;
 
     /* The LIVE guest size, not MADEIRA_SCREEN_W/H. That environment pair is
