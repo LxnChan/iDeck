@@ -4235,12 +4235,26 @@ struct LibraryFloatingItem: View {
 
     init(isMenu: Bool, viewport: CGSize, insets: EdgeInsets) {
         self.isMenu = isMenu; self.viewport = viewport; self.insets = insets
-        _nx = AppStorage(wrappedValue: isMenu ? 0.95 : 0.25, isMenu ? "madeiraLibraryMenuX" : "madeiraLibraryMetricsX")
-        _ny = AppStorage(wrappedValue: isMenu ? 0.07 : 0.08, isMenu ? "madeiraLibraryMenuY" : "madeiraLibraryMetricsY")
+        _nx = AppStorage(wrappedValue: isMenu ? 0.95 : 0.25, isMenu ? "madeiraLibraryMenuX_v3" : "madeiraLibraryMetricsX_v3")
+        _ny = AppStorage(wrappedValue: isMenu ? 0.06 : 0.08, isMenu ? "madeiraLibraryMenuY_v3" : "madeiraLibraryMetricsY_v3")
     }
     private func position(_ translation: CGSize) -> CGPoint {
-        let safeNX = (nx.isFinite && nx > 0.02 && nx <= 1.0) ? nx : (isMenu ? 0.95 : 0.25)
-        let safeNY = (ny.isFinite && ny > 0.02 && ny <= 1.0) ? ny : (isMenu ? 0.07 : 0.08)
+        let defaultNX = isMenu ? 0.95 : 0.25
+        let defaultNY = isMenu ? 0.06 : 0.08
+        // If it's the menu button, never allow it to be placed lower than 30% of the screen
+        // or in the left half, ensuring it always stays easily reachable in the top-right corner.
+        let safeNX: Double
+        if isMenu {
+            safeNX = (nx.isFinite && nx >= 0.70 && nx <= 0.99) ? nx : defaultNX
+        } else {
+            safeNX = (nx.isFinite && nx > 0.02 && nx <= 1.0) ? nx : defaultNX
+        }
+        let safeNY: Double
+        if isMenu {
+            safeNY = (ny.isFinite && ny >= 0.02 && ny <= 0.30) ? ny : defaultNY
+        } else {
+            safeNY = (ny.isFinite && ny > 0.02 && ny <= 1.0) ? ny : defaultNY
+        }
         let left = insets.leading + measured.width / 2 + 8
         let top = insets.top + measured.height / 2 + 8
         return CGPoint(x: min(max(left, viewport.width * safeNX + translation.width), max(left, viewport.width - insets.trailing - measured.width / 2 - 8)),
@@ -4262,15 +4276,18 @@ struct LibraryFloatingItem: View {
                 }.buttonStyle(.plain).modifier(LibraryPillGlass())
                     .opacity(faded && drag == .zero && !model.menu ? 0.85 : 1)
                     .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
-            } else { LibraryMetrics().accessibilityHint("Drag to move") }
+            } else {
+                LibraryMetrics()
+                    .accessibilityHint("Drag to move")
+                    .background(GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { measured = proxy.size }
+                            .onChange(of: proxy.size) { _, size in measured = size }
+                    })
+            }
         }
         .frame(maxWidth: isMenu ? 48 : max(48, min(390, viewport.width - insets.leading - insets.trailing - 16)))
         .fixedSize(horizontal: false, vertical: true)
-        // Size only: the recorded hit rect is derived from `center` below, so it
-        // always matches where .position(center) actually draws the item.
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-            if size.width > 0 && size.height > 0 { measured = size }
-        }
         .contentShape(Rectangle())
         .highPriorityGesture(DragGesture(minimumDistance: 6, coordinateSpace: .global).updating($drag) { value, state, transaction in
             transaction.animation = nil; state = value.translation
@@ -4718,9 +4735,9 @@ struct IPadStatusBarHUD: View {
     @State private var cpu: Double?
     @State private var log = ""
     private let ticks = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    /// Room left for the system clock/date and the Wi-Fi/VPN/battery icons.
-    static let leadingClearance: CGFloat = 200
-    static let trailingClearance: CGFloat = 190
+    /// Room left for the system clock/date/breadcrumb on the left and Wi-Fi/VPN/battery on the right.
+    static let leadingClearance: CGFloat = 340
+    static let trailingClearance: CGFloat = 180
     private var showsLog: Bool {
         #if DEBUG
         return true
@@ -4730,20 +4747,21 @@ struct IPadStatusBarHUD: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text(metrics)
                 .fixedSize()
+                .foregroundStyle(.white.opacity(0.95))
             if showsLog, !log.isEmpty {
                 Text(log)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .foregroundStyle(.white.opacity(0.75))
+                    .foregroundStyle(.white.opacity(0.70))
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Spacer(minLength: 0)
             }
         }
-        .font(.system(size: 11, weight: .medium).monospacedDigit())
+        .font(.system(size: 11, weight: .semibold).monospacedDigit())
         .foregroundStyle(.white)
         .padding(.leading, Self.leadingClearance)
         .padding(.trailing, Self.trailingClearance)

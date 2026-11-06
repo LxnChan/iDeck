@@ -325,7 +325,7 @@ enum IDeckOverlayPosition {
     static func center(size: CGSize, saved: CGPoint, left: CGFloat, top: CGFloat, right: CGFloat, bottom: CGFloat) -> CGPoint {
         let minX=left+32, minY=top+32
         let maxX=max(minX,size.width-right-32), maxY=max(minY,size.height-bottom-32)
-        let candidate = saved.x >= 0 && saved.y >= 0 && saved.x.isFinite && saved.y.isFinite
+        let candidate = saved.x >= 0 && saved.y >= 0 && saved.x.isFinite && saved.y.isFinite && saved.y <= 0.35
             ? CGPoint(x:saved.x*size.width,y:saved.y*size.height) : CGPoint(x:maxX,y:minY)
         return CGPoint(x:min(maxX,max(minX,candidate.x)),y:min(maxY,max(minY,candidate.y)))
     }
@@ -1082,8 +1082,8 @@ struct IDeckHUD: View {
     @State private var selection = 0
     @State private var dragBase: CGPoint?
     @State private var drag = CGSize.zero
-    @AppStorage("iDeckHUDx") private var savedX = -1.0
-    @AppStorage("iDeckHUDy") private var savedY = -1.0
+    @AppStorage("iDeckHUDx_v2") private var savedX = -1.0
+    @AppStorage("iDeckHUDy_v2") private var savedY = -1.0
     private let labels=["Keyboard","Virtual controller","Arrange controls","Steam menu","Exit game → Steam","Auto-start","Settings","Done"]
     private func keyboard() { state.menu=false;MetalBackedView.toggleKeyboard() }
     private func activate() {
@@ -1144,7 +1144,12 @@ struct IDeckHUD: View {
                         .overlay(Circle().strokeBorder(Color.white.opacity(0.35),lineWidth:1))
                         .shadow(color:.black.opacity(0.55),radius:6,x:0,y:2)
                         .accessibilityLabel("iDeck options — drag to move")
-                        .onGeometryChange(for:CGRect.self) { $0.frame(in:.global) } action: { state.menuRect=$0 }
+                        .onAppear {
+                            state.menuRect = CGRect(x: current.x - 24, y: current.y - 24, width: 48, height: 48)
+                        }
+                        .onChange(of: current) { _, pos in
+                            state.menuRect = CGRect(x: pos.x - 24, y: pos.y - 24, width: 48, height: 48)
+                        }
                         .highPriorityGesture(DragGesture(minimumDistance:8).onChanged { value in
                             if dragBase==nil { dragBase=resting };drag=value.translation
                         }.onEnded { value in
