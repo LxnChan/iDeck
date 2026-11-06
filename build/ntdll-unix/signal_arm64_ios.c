@@ -4136,7 +4136,10 @@ static void *ios_mach_exception_thread( void *arg )
                         const uint64_t mask = size == 3 ? ~0ull : ((1ull << (8u << size)) - 1);
                         const uint64_t ea = rn == 31 ? state.__sp : state.__x[rn];
                         int ld_rt = -1, k, clobbered = 0;
-                        uint64_t delta = 0;   /* what in-place ADD/SUB immediates added to it */
+                        uint64_t delta = 0;   /* what in-place ADD/SUB immediates/registers added to it */
+                        int has_custom_expect = 0;
+                        uint64_t custom_expect = 0;
+                        int excl_failed_early = 0;
                         uint32_t prev;
 
                         for (k = 1; k <= 8 && ld_rt < 0 && !clobbered; k++)
@@ -4166,31 +4169,114 @@ static void *ios_mach_exception_thread( void *arg )
                                     delta += (prev & 0x40000000) ? (uint64_t)0 - imm : imm;
                                     continue;
                                 }
+                                /* ADD/SUB(S) shifted register: sf op S 01011 shift 0 Rm imm6 Rn Rd */
+                                if ((prev & 0x1f200000) == 0x0b000000 && (int)((prev >> 5) & 0x1f) == ld_rt
+                                    && (prev >> 31) == (size == 3))
+                                {
+                                    int rm = (prev >> 16) & 0x1f;
+                                    unsigned shift_t = (prev >> 22) & 3;
+                                    unsigned imm6 = (prev >> 10) & 0x3f;
+                                    uint64_t rm_val = (rm == 31 ? 0 : state.__x[rm]) & mask;
+                                    if (shift_t == 0) rm_val = (rm_val << imm6) & mask;
+                                    else if (shift_t == 1) rm_val = (rm_val >> imm6) & mask;
+                                    delta += (prev & 0x40000000) ? (uint64_t)0 - rm_val : rm_val;
+                                    continue;
+                                }
+                                /* Logical shifted register: AND, BIC, ORR, ORN, EOR, EON
+                                 * sf opc(2) 01010 shift(2) N Rm(5) imm6(6) Rn(5) Rd(5) */
+                                if ((prev & 0x1f000000) == 0x0a000000 && (int)((prev >> 5) & 0x1f) == ld_rt
+                                    && (prev >> 31) == (size == 3))
+                                {
+                                    int rm = (prev >> 16) & 0x1f;
+                                    unsigned opc = (prev >> 29) & 3;
+                                    unsigned n_bit = (prev >> 21) & 1;
+                                    unsigned shift_t = (prev >> 22) & 3;
+                                    unsigned imm6 = (prev >> 10) & 0x3f;
+                                    uint64_t rm_val = (rm == 31 ? 0 : state.__x[rm]) & mask;
+                                    if (shift_t == 0) rm_val = (rm_val << imm6) & mask;
+                                    else if (shift_t == 1) rm_val = (rm_val >> imm6) & mask;
+                                    if (n_bit) rm_val = (~rm_val) & mask;
+
+                                    if (opc == 2) /* EOR / EON: A ^ B = C <=> A = C ^ B */
+                                    {
+                                        has_custom_expect = 1;
+                                        custom_expect = (state.__x[ld_rt] ^ rm_val) & mask;
+                                        continue;
+                                    }
+                                    else if (rw_addr && (opc == 0 || opc == 1)) /* AND / BIC or ORR / ORN */
+                                    {
+                                        uint64_t cur_m = 0;
+                                        if (size == 0) cur_m = *(const uint8_t *)rw_addr;
+                                        else if (size == 1) cur_m = *(const uint16_t *)rw_addr;
+                                        else if (size == 2) cur_m = *(const uint32_t *)rw_addr;
+                                        else cur_m = *(const uint64_t *)rw_addr;
+                                        cur_m &= mask;
+
+                                        uint64_t expected_res = (opc == 0) ? (cur_m & rm_val) : (cur_m | rm_val);
+                                        if (expected_res == (state.__x[ld_rt] & mask))
+                                        {
+                                            has_custom_expect = 1;
+                                            custom_expect = cur_m;
+                                            continue;
+                                        }
+                                        else
+                                        {
+                                            excl_failed_early = 1;
+                                            break;
+                                        }
+                                    }
+                                }
                                 clobbered = 1;
                             }
                         }
-                        if (ld_rt >= 0 && ld_rt != 31 && !clobbered && rw_addr && !(ea & ((1u << size) - 1))
-                            && (uint64_t)fault_addr == ea)
+                        if (excl_failed_early)
                         {
-                            const uint64_t expect = (state.__x[ld_rt] - delta) & mask, val = IOS_STORE_SRC(rt) & mask;
-                            int ok = 0;
-                            switch (size)
-                            {
-                            case 0: { uint8_t  e = (uint8_t)expect;  ok = __atomic_compare_exchange_n( (uint8_t  *)rw_addr, &e, (uint8_t)val,  0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
-                            case 1: { uint16_t e = (uint16_t)expect; ok = __atomic_compare_exchange_n( (uint16_t *)rw_addr, &e, (uint16_t)val, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
-                            case 2: { uint32_t e = (uint32_t)expect; ok = __atomic_compare_exchange_n( (uint32_t *)rw_addr, &e, (uint32_t)val, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
-                            default:{ uint64_t e = expect;           ok = __atomic_compare_exchange_n( (uint64_t *)rw_addr, &e, val,           0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
-                            }
-                            if (rs != 31) state.__x[rs] = ok ? 0 : 1;
+                            if (rs != 31) state.__x[rs] = 1; /* concurrent conflict, retry */
                             emulated = 1;
+                        }
+                        else
+                        {
+                            /* General fallback for any remaining clobbered case:
+                             * if we found the matching LDXR/LDAXR, test against current memory */
+                            if (clobbered && ld_rt >= 0 && ld_rt != 31 && rw_addr)
+                            {
+                                uint64_t cur_m = 0;
+                                if (size == 0) cur_m = *(const uint8_t *)rw_addr;
+                                else if (size == 1) cur_m = *(const uint16_t *)rw_addr;
+                                else if (size == 2) cur_m = *(const uint32_t *)rw_addr;
+                                else cur_m = *(const uint64_t *)rw_addr;
+                                cur_m &= mask;
+                                has_custom_expect = 1;
+                                custom_expect = cur_m;
+                                clobbered = 0;
+                            }
+
+                            if (ld_rt >= 0 && ld_rt != 31 && !clobbered && rw_addr && !(ea & ((1u << size) - 1))
+                                && (uint64_t)fault_addr == ea)
+                            {
+                                const uint64_t expect = (has_custom_expect ? custom_expect : (state.__x[ld_rt] - delta)) & mask;
+                                const uint64_t val = IOS_STORE_SRC(rt) & mask;
+                                int ok = 0;
+                                switch (size)
+                                {
+                                case 0: { uint8_t  e = (uint8_t)expect;  ok = __atomic_compare_exchange_n( (uint8_t  *)rw_addr, &e, (uint8_t)val,  0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
+                                case 1: { uint16_t e = (uint16_t)expect; ok = __atomic_compare_exchange_n( (uint16_t *)rw_addr, &e, (uint16_t)val, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
+                                case 2: { uint32_t e = (uint32_t)expect; ok = __atomic_compare_exchange_n( (uint32_t *)rw_addr, &e, (uint32_t)val, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
+                                default:{ uint64_t e = expect;           ok = __atomic_compare_exchange_n( (uint64_t *)rw_addr, &e, val,           0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ); break; }
+                                }
+                                if (rs != 31) state.__x[rs] = ok ? 0 : 1;
+                                emulated = 1;
+                            }
                         }
                         {
                             static int excl_n;
-                            if (excl_n < 8)
+                            if (excl_n < 32)
                                 dprintf(STDERR_FILENO,
-                                    "[excl-store] ml1284 #%d insn=0x%08x size=%u ea=0x%llx load-reg=%d delta=%lld%s %s\n",
+                                    "[excl-store] ml1284 #%d insn=0x%08x size=%u ea=0x%llx load-reg=%d delta=%lld%s%s %s\n",
                                     ++excl_n, insn, 1u << size, (unsigned long long)ea, ld_rt,
-                                    (long long)delta, clobbered ? " (overwritten)" : "",
+                                    (long long)delta,
+                                    has_custom_expect ? " (custom-expect)" : "",
+                                    clobbered ? " (overwritten)" : "",
                                     emulated ? (rs != 31 && state.__x[rs] ? "emulated: value changed, retry" : "emulated")
                                              : "REFUSED: no matching LDXR/LDAXR");
                         }
