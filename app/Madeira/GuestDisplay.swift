@@ -72,6 +72,11 @@ enum GameSurfaceLayout {
         let useDrawable = mode == .aspect && aspect.width > 0 && aspect.height > 0
         let shape = useDrawable ? aspect : guest
         let sx = bounds.width / shape.width, sy = bounds.height / shape.height
+        // If the aspect ratio difference with bounds is negligible (<1.5%), snap to fill bounds
+        // to eliminate sub-pixel or rounding pillarbox black bars on the left/right.
+        if abs(sx / sy - 1.0) < 0.015 {
+            return bounds
+        }
         let scale = mode == .fill ? max(sx, sy) : min(sx, sy)
         let w = shape.width * scale, h = shape.height * scale
         return CGRect(x: bounds.minX + (bounds.width - w) / 2,
@@ -183,8 +188,20 @@ enum ResolutionChoices {
     static var screen: Screen = {
         #if canImport(UIKit)
         let b = UIScreen.main.bounds, n = UIScreen.main.nativeBounds
-        return Screen(points: CGSize(width: max(b.width, b.height), height: min(b.width, b.height)),
-                      pixels: CGSize(width: max(n.width, n.height), height: min(n.width, n.height)))
+        let w = max(b.width, b.height)
+        var h = min(b.width, b.height)
+        let nw = max(n.width, n.height)
+        var nh = min(n.width, n.height)
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            // In iPad landscape, the top status bar (at least 24pt) is preserved
+            // so the game/Wine desktop presentation area has available height h - statusH.
+            let statusH: CGFloat = 24.0
+            let scale = nw / max(w, 1)
+            h = max(h - statusH, 1)
+            nh = max(nh - statusH * scale, 1)
+        }
+        return Screen(points: CGSize(width: w, height: h),
+                      pixels: CGSize(width: nw, height: nh))
         #else
         // Hosts without UIKit (the host tests): an 11-inch iPad.
         return Screen(points: CGSize(width: 1180, height: 820), pixels: CGSize(width: 2360, height: 1640))

@@ -4346,14 +4346,14 @@ final class ControlsWindow: UIWindow {
                 let rb = root?.bounds ?? bounds
                 LogStore.shared.log("[ideck-hit] sample=\(steam64HitSamples) window=\(Int(bounds.width))x\(Int(bounds.height)) root=\(Int(rb.width))x\(Int(rb.height)) window-control=\(m.hitsInteractive(point, in: bounds, topBar: false) ? 1 : 0) root-control=\(m.hitsInteractive(rp, in: rb, topBar: false) ? 1 : 0) visible=\(m.visible ? 1 : 0)")
             }
-            if IDeckState.shared.menu || IDeckState.shared.menuRect.insetBy(dx: -8, dy: -8).contains(point) {
+            if IDeckState.shared.menu || IDeckState.shared.menuRect.insetBy(dx: -12, dy: -12).contains(point) {
                 return super.hitTest(point, with: event)
             }
             guard m.hitsInteractive(point, in: bounds, topBar: false) else { return nil }
             return super.hitTest(point, with: event)
         }
         if library.current != nil {
-            if library.menu || library.launching || library.menuButtonRect.insetBy(dx: -8, dy: -8).contains(point) ||
+            if library.menu || library.launching || library.menuButtonRect.insetBy(dx: -12, dy: -12).contains(point) ||
                 (library.performance && library.performanceRect.insetBy(dx: -8, dy: -8).contains(point)) {
                 return super.hitTest(point, with: event)
             }
@@ -4423,11 +4423,14 @@ struct TouchControlsOverlay: View {
                         IDeckHUD()
                             .padding(.top, topInset)
                     }
-                    else if session && !m.editing {
-                        LibraryHUD()
-                    } else if !library.enabled || session || m.editing {
-                        topBar
-                            .padding(.top, topInset)
+                    else if session && !m.editing { LibraryHUD() } else { topBar }
+                    // iPad: metrics (and in Debug the newest log line) in the
+                    // status-bar band the game leaves clear. Draw-only: it
+                    // never takes a touch, so the system pull-down still works.
+                    if isPad && session && !m.editing && !library.blocksGameplayTouch && !ideck.menu && !library.menu {
+                        IPadStatusBarHUD(height: topInset)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                            .allowsHitTesting(false)
                     }
                     if m.editing, let i = m.index(of: m.selected) {
                         MappingPanel(control: m.controls[i], screen: geo.size)
@@ -4502,7 +4505,17 @@ struct TouchControlsOverlay: View {
         ControlPresetsModel.enabled && m.visible && !m.editing
     }
 
-    private var topBar: some View {
+    /// The overlay's own top bar. Hidden behind the library's start page (it
+    /// has its own chrome); on iPad it sits below the 24 pt status bar band.
+    @ViewBuilder private var topBar: some View {
+        let session = library.current != nil || (IDeckState.enabled && ideck.running)
+        if !library.enabled || session || m.editing {
+            topBarContent
+                .padding(.top, isPad ? 24 : 0)
+        }
+    }
+
+    private var topBarContent: some View {
         HStack(spacing: 10) {
             if m.editing && Self.editorDone {
                 Button {

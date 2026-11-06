@@ -1138,7 +1138,11 @@ struct IDeckHUD: View {
                 } else {
                     Button { state.menu=true } label: {
                         Image(systemName:"line.3.horizontal").font(.title3.bold()).foregroundStyle(.white).frame(width:48,height:48)
-                    }.buttonStyle(.plain).background(.regularMaterial,in:Circle())
+                    }.buttonStyle(.plain)
+                        // Solid dark disc + hairline: stays visible over any game frame.
+                        .background(Circle().fill(Color.black.opacity(0.70)))
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.35),lineWidth:1))
+                        .shadow(color:.black.opacity(0.55),radius:6,x:0,y:2)
                         .accessibilityLabel("iDeck options — drag to move")
                         .onGeometryChange(for:CGRect.self) { $0.frame(in:.global) } action: { state.menuRect=$0 }
                         .highPriorityGesture(DragGesture(minimumDistance:8).onChanged { value in

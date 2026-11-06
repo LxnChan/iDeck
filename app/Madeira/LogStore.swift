@@ -7,6 +7,14 @@ final class LogStore: ObservableObject {
     /// One row per unique signature — semantically identical events bucket here.
     @Published var entries: [LogEntry] = []
 
+    /// Most recent log entry message for live status HUD displays.
+    var latestMessage: String? {
+        // Entries bucket by signature, so the newest line is the most recently
+        // updated bucket, not necessarily the last one appended.
+        guard let entry = entries.max(by: { $0.lastTimestamp < $1.lastTimestamp }) else { return nil }
+        return entry.lastRaw.isEmpty ? entry.signature : entry.lastRaw
+    }
+
     private let logFileURL: URL
     /// Read-only path for the bounded startup-failure observer.
     var runtimeLogURL: URL { logFileURL }

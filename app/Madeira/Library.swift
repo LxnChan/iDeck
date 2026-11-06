@@ -4205,8 +4205,16 @@ struct LibraryPointerSettings: View {
 struct LibraryPillGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
-        if reduceTransparency { content.background(Color(uiColor: .secondarySystemBackground), in: Capsule()) }
-        else { content.background(.regularMaterial, in: Capsule()) }
+        content
+            .background(
+                Capsule()
+                    .fill(Color.black.opacity(0.70))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.55), radius: 6, x: 0, y: 2)
     }
 }
 
@@ -4248,28 +4256,21 @@ struct LibraryFloatingItem: View {
             if isMenu {
                 Button { touched += 1; model.showMenu() } label: {
                     Image(systemName: "line.3.horizontal")
-                        .font(.title3.weight(.semibold))
+                        .font(.title3.weight(.bold))
                         .foregroundStyle(.white)
                         .frame(width: 48, height: 48)
                 }.buttonStyle(.plain).modifier(LibraryPillGlass())
-                    .opacity(faded && drag == .zero && !model.menu ? 0.65 : 1)
+                    .opacity(faded && drag == .zero && !model.menu ? 0.85 : 1)
                     .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
             } else { LibraryMetrics().accessibilityHint("Drag to move") }
         }
         .frame(maxWidth: isMenu ? 48 : max(48, min(390, viewport.width - insets.leading - insets.trailing - 16)))
         .fixedSize(horizontal: false, vertical: true)
-        .background(GeometryReader { proxy in
-            Color.clear
-                .onAppear {
-                    measured = proxy.size
-                    let globalFrame = proxy.frame(in: .global)
-                    if globalFrame.width > 0 && globalFrame.height > 0 { record(globalFrame) }
-                }
-                .onChange(of: proxy.size) { _, size in measured = size }
-                .onChange(of: proxy.frame(in: .global)) { _, globalFrame in
-                    if globalFrame.width > 0 && globalFrame.height > 0 { record(globalFrame) }
-                }
-        })
+        // Size only: the recorded hit rect is derived from `center` below, so it
+        // always matches where .position(center) actually draws the item.
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+            if size.width > 0 && size.height > 0 { measured = size }
+        }
         .contentShape(Rectangle())
         .highPriorityGesture(DragGesture(minimumDistance: 6, coordinateSpace: .global).updating($drag) { value, state, transaction in
             transaction.animation = nil; state = value.translation
@@ -4280,7 +4281,9 @@ struct LibraryFloatingItem: View {
             }
         })
         .position(center)
-        .onAppear { record(rect) }.onChange(of: rect) { _, value in record(value) }
+        .onAppear { record(rect) }
+        .onChange(of: rect) { _, value in record(value) }
+        .onChange(of: drag) { _, _ in record(rect) }
         .onDisappear { record(.zero) }
         .task(id: touched) {
             guard isMenu else { return }
@@ -4334,7 +4337,7 @@ struct LibraryHUD: View {
                 if !model.launching && model.performance { LibraryFloatingItem(isMenu: false, viewport: geo.size, insets: hudInsets) }
                 if model.liveLogs && !model.launching { LibraryLiveLogs().frame(maxWidth: 550, maxHeight: 140).padding(.top, Self.topInset(geo) + 60).padding(.horizontal, 12).allowsHitTesting(false) }
                 if !model.sessionMessage.isEmpty { Text(model.sessionMessage).font(.caption).padding(10).background(.regularMaterial, in: Capsule()).frame(maxWidth: .infinity).padding(.top, Self.topInset(geo) + 12).allowsHitTesting(false) }
-                if !model.launching { LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: hudInsets) }
+                LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: hudInsets)
                 if model.menu {
                     Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { model.menu = false }.transition(.opacity)
                     (bindsPage ? AnyView(bindsMenu) : AnyView(menu))
@@ -4696,6 +4699,76 @@ struct LibraryMetrics: View {
             }
         }
         return result
+    }
+}
+
+/// iPad only: the band the iPadOS status bar keeps clear above the game
+/// (GameSurfaceLayout leaves it free). Between the clock on the left and the
+/// status icons on the right it shows FPS, CPU and RAM, plus the newest log
+/// line in Debug builds or with live logs on. It never takes a touch, so the
+/// system's pull-down for Notification Center / Control Center keeps working.
+struct IPadStatusBarHUD: View {
+    let height: CGFloat
+    @ObservedObject private var model = LibraryModel.shared
+    @State private var lastCount: UInt64 = 0
+    @State private var lastTime = Date()
+    @State private var fps = 0.0
+    @State private var memory = 0
+    @State private var cpuMeter = CPUMeter()
+    @State private var cpu: Double?
+    @State private var log = ""
+    private let ticks = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    /// Room left for the system clock/date and the Wi-Fi/VPN/battery icons.
+    static let leadingClearance: CGFloat = 200
+    static let trailingClearance: CGFloat = 190
+    private var showsLog: Bool {
+        #if DEBUG
+        return true
+        #else
+        return model.liveLogs
+        #endif
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(metrics)
+                .fixedSize()
+            if showsLog, !log.isEmpty {
+                Text(log)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+        .font(.system(size: 11, weight: .medium).monospacedDigit())
+        .foregroundStyle(.white)
+        .padding(.leading, Self.leadingClearance)
+        .padding(.trailing, Self.trailingClearance)
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .center)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onAppear { lastCount = madeira_get_present_count(); lastTime = Date(); _ = cpuMeter.sample() }
+        .onReceive(ticks) { now in
+            let count = madeira_get_present_count(); let dt = now.timeIntervalSince(lastTime)
+            let frames = count >= lastCount ? count - lastCount : 0
+            fps = Double(frames) / max(0.001, dt); lastCount = count; lastTime = now
+            var info = task_vm_info_data_t(); var size = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &size) } }
+            if result == KERN_SUCCESS { memory = Int(info.phys_footprint / 1048576) }
+            cpu = cpuMeter.sample()?.total
+            if showsLog {
+                let line = LogStore.shared.latestMessage ?? ""
+                log = line.replacingOccurrences(of: "\n", with: " ")
+            }
+        }
+    }
+
+    private var metrics: String {
+        let cpuText = cpu.map { String(format: "CPU %.0f%%", $0) } ?? "CPU —"
+        return String(format: "%.0f FPS", fps) + "  ·  " + cpuText + "  ·  \(memory) MB"
     }
 }
 
