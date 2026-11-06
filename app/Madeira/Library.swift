@@ -4235,13 +4235,13 @@ struct LibraryFloatingItem: View {
 
     init(isMenu: Bool, viewport: CGSize, insets: EdgeInsets) {
         self.isMenu = isMenu; self.viewport = viewport; self.insets = insets
-        _nx = AppStorage(wrappedValue: isMenu ? 0.95 : 0.25, isMenu ? "madeiraLibraryMenuX_v3" : "madeiraLibraryMetricsX_v3")
-        _ny = AppStorage(wrappedValue: isMenu ? 0.06 : 0.08, isMenu ? "madeiraLibraryMenuY_v3" : "madeiraLibraryMetricsY_v3")
+        _nx = AppStorage(wrappedValue: isMenu ? 0.96 : 0.25, isMenu ? "madeiraLibraryMenuX_v4" : "madeiraLibraryMetricsX_v4")
+        _ny = AppStorage(wrappedValue: isMenu ? 0.06 : 0.08, isMenu ? "madeiraLibraryMenuY_v4" : "madeiraLibraryMetricsY_v4")
     }
     private func position(_ translation: CGSize) -> CGPoint {
-        let defaultNX = isMenu ? 0.95 : 0.25
+        let defaultNX = isMenu ? 0.96 : 0.25
         let defaultNY = isMenu ? 0.06 : 0.08
-        // If it's the menu button, never allow it to be placed lower than 30% of the screen
+        // If it's the menu button, never allow it to be placed lower than 25% of the screen
         // or in the left half, ensuring it always stays easily reachable in the top-right corner.
         let safeNX: Double
         if isMenu {
@@ -4251,7 +4251,7 @@ struct LibraryFloatingItem: View {
         }
         let safeNY: Double
         if isMenu {
-            safeNY = (ny.isFinite && ny >= 0.02 && ny <= 0.30) ? ny : defaultNY
+            safeNY = (ny.isFinite && ny >= 0.02 && ny <= 0.25) ? ny : defaultNY
         } else {
             safeNY = (ny.isFinite && ny > 0.02 && ny <= 1.0) ? ny : defaultNY
         }
@@ -4273,9 +4273,12 @@ struct LibraryFloatingItem: View {
                         .font(.title3.weight(.bold))
                         .foregroundStyle(.white)
                         .frame(width: 48, height: 48)
-                }.buttonStyle(.plain).modifier(LibraryPillGlass())
-                    .opacity(faded && drag == .zero && !model.menu ? 0.85 : 1)
-                    .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
+                }
+                .buttonStyle(.plain)
+                .modifier(LibraryPillGlass())
+                .frame(width: 48, height: 48)
+                .opacity(faded && drag == .zero && !model.menu ? 0.85 : 1)
+                .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
             } else {
                 LibraryMetrics()
                     .accessibilityHint("Drag to move")
@@ -4294,7 +4297,16 @@ struct LibraryFloatingItem: View {
         }.onEnded { value in
             let end = position(value.translation)
             withTransaction(Transaction(animation: nil)) {
-                nx = end.x / max(1, viewport.width); ny = end.y / max(1, viewport.height); touched += 1
+                let endNX = end.x / max(1, viewport.width)
+                let endNY = end.y / max(1, viewport.height)
+                if isMenu {
+                    nx = min(max(0.70, endNX), 0.98)
+                    ny = min(max(0.02, endNY), 0.25)
+                } else {
+                    nx = endNX
+                    ny = endNY
+                }
+                touched += 1
             }
         })
         .position(center)
@@ -4567,6 +4579,8 @@ struct LibraryHUD: View {
                 Text("Mouse & pointer").font(.headline)
                 LibraryPointerSettings()
                 Divider()
+                IPadStatusBarMenuSection()
+                Divider()
                 Toggle("Performance overlay", isOn: $model.performance)
                 if model.performance {
                     ForEach(["FPS", "Frame time", "CPU", "GPU", "RAM", "Battery", "Thermal"], id: \.self) { field in
@@ -4719,14 +4733,31 @@ struct LibraryMetrics: View {
     }
 }
 
+/// Display modes for the iPad status bar band above the game.
+/// Only one mode can be active at a time, or disabled completely.
+enum IPadStatusBarDisplayMode: String, CaseIterable, Identifiable {
+    case off = "off"
+    case metrics = "metrics"
+    case logs = "logs"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "关闭"
+        case .metrics: return "资源监控"
+        case .logs: return "运行日志"
+        }
+    }
+}
+
 /// iPad only: the band the iPadOS status bar keeps clear above the game
-/// (GameSurfaceLayout leaves it free). Between the clock on the left and the
-/// status icons on the right it shows FPS, CPU and RAM, plus the newest log
-/// line in Debug builds or with live logs on. It never takes a touch, so the
-/// system's pull-down for Notification Center / Control Center keeps working.
+/// (GameSurfaceLayout leaves it free). It can display either system metrics
+/// (FPS/CPU/RAM) or live runtime logs, or be turned off. It strictly shows only one item
+/// at a time and never captures touches, so Notification Center / Control Center work normally.
 struct IPadStatusBarHUD: View {
     let height: CGFloat
-    @ObservedObject private var model = LibraryModel.shared
+    @AppStorage("madeiraIPadStatusBarMode") private var modeRaw = IPadStatusBarDisplayMode.metrics.rawValue
     @State private var lastCount: UInt64 = 0
     @State private var lastTime = Date()
     @State private var fps = 0.0
@@ -4735,58 +4766,105 @@ struct IPadStatusBarHUD: View {
     @State private var cpu: Double?
     @State private var log = ""
     private let ticks = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
     /// Room left for the system clock/date/breadcrumb on the left and Wi-Fi/VPN/battery on the right.
     static let leadingClearance: CGFloat = 340
     static let trailingClearance: CGFloat = 180
-    private var showsLog: Bool {
-        #if DEBUG
-        return true
-        #else
-        return model.liveLogs
-        #endif
+
+    private var currentMode: IPadStatusBarDisplayMode {
+        IPadStatusBarDisplayMode(rawValue: modeRaw) ?? .metrics
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(metrics)
-                .fixedSize()
-                .foregroundStyle(.white.opacity(0.95))
-            if showsLog, !log.isEmpty {
-                Text(log)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(.white.opacity(0.70))
+        guard UIDevice.current.userInterfaceIdiom == .pad, currentMode != .off else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(
+            Group {
+                if currentMode == .metrics {
+                    Text(metrics)
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.black.opacity(0.55)))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else if currentMode == .logs {
+                    HStack(spacing: 6) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.cyan.opacity(0.9))
+                        Text(log.isEmpty ? "等待日志..." : log)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.black.opacity(0.55)))
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Spacer(minLength: 0)
+                }
             }
-        }
-        .font(.system(size: 11, weight: .semibold).monospacedDigit())
-        .foregroundStyle(.white)
-        .padding(.leading, Self.leadingClearance)
-        .padding(.trailing, Self.trailingClearance)
-        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .center)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        .onAppear { lastCount = madeira_get_present_count(); lastTime = Date(); _ = cpuMeter.sample() }
-        .onReceive(ticks) { now in
-            let count = madeira_get_present_count(); let dt = now.timeIntervalSince(lastTime)
-            let frames = count >= lastCount ? count - lastCount : 0
-            fps = Double(frames) / max(0.001, dt); lastCount = count; lastTime = now
-            var info = task_vm_info_data_t(); var size = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
-            let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &size) } }
-            if result == KERN_SUCCESS { memory = Int(info.phys_footprint / 1048576) }
-            cpu = cpuMeter.sample()?.total
-            if showsLog {
-                let line = LogStore.shared.latestMessage ?? ""
-                log = line.replacingOccurrences(of: "\n", with: " ")
+            .padding(.leading, Self.leadingClearance)
+            .padding(.trailing, Self.trailingClearance)
+            .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .center)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onAppear {
+                lastCount = madeira_get_present_count(); lastTime = Date(); _ = cpuMeter.sample()
+                updateLog()
             }
-        }
+            .onReceive(ticks) { now in
+                if currentMode == .metrics {
+                    let count = madeira_get_present_count(); let dt = now.timeIntervalSince(lastTime)
+                    let frames = count >= lastCount ? count - lastCount : 0
+                    fps = Double(frames) / max(0.001, dt); lastCount = count; lastTime = now
+                    var info = task_vm_info_data_t(); var size = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+                    let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &size) } }
+                    if result == KERN_SUCCESS { memory = Int(info.phys_footprint / 1048576) }
+                    cpu = cpuMeter.sample()?.total
+                } else if currentMode == .logs {
+                    updateLog()
+                }
+            }
+        )
+    }
+
+    private func updateLog() {
+        let line = LogStore.shared.latestMessage ?? ""
+        log = line.replacingOccurrences(of: "\n", with: " ")
     }
 
     private var metrics: String {
         let cpuText = cpu.map { String(format: "CPU %.0f%%", $0) } ?? "CPU —"
         return String(format: "%.0f FPS", fps) + "  ·  " + cpuText + "  ·  \(memory) MB"
+    }
+}
+
+/// Menu section to choose between showing metrics, live logs, or off on iPad status bar.
+/// Includes device detection notice when run on iPhone.
+struct IPadStatusBarMenuSection: View {
+    @AppStorage("madeiraIPadStatusBarMode") private var modeRaw = IPadStatusBarDisplayMode.metrics.rawValue
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("顶栏状态显示").font(.headline)
+            if isPad {
+                Picker("顶栏显示内容", selection: $modeRaw) {
+                    Text("关闭").tag(IPadStatusBarDisplayMode.off.rawValue)
+                    Text("资源监控").tag(IPadStatusBarDisplayMode.metrics.rawValue)
+                    Text("运行日志").tag(IPadStatusBarDisplayMode.logs.rawValue)
+                }
+                .pickerStyle(.segmented)
+                Text("在 iPad 顶部状态栏空白区域显示所选项目（同时仅显示一项，轻触完全穿透，不影响下拉通知栏）。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("当前检测为 iPhone 设备，屏幕顶部空间有限，顶栏监控与日志显示已自动停用（仅在 iPad 上可用）。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

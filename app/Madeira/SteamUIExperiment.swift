@@ -1129,6 +1129,8 @@ struct IDeckHUD: View {
                                         Text(notice).font(.caption).foregroundStyle(.secondary)
                                     }.accessibilityElement(children:.combine)
                                 }
+                                Divider()
+                                IPadStatusBarMenuSection()
                             }.padding(20)
                         }.frame(width:min(390,max(240,geo.size.width-32)),height:min(560,max(180,geo.size.height-insets.top-insets.bottom-24)))
                             .background(.regularMaterial,in:RoundedRectangle(cornerRadius:24))
