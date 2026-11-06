@@ -208,8 +208,9 @@ import UserNotifications
     }
 }
 
-// MARK: - Compatibility stubs for iOS 26 continued processing tasks
+// MARK: - Compatibility stubs for pre-iOS 26 SDKs (Xcode 16 / Swift < 6.2)
 
+#if !compiler(>=6.2)
 class BGContinuedProcessingTask: BGTask {
     var progress: Progress = Progress()
     func updateTitle(_ title: String, subtitle: String? = nil) {}
@@ -229,4 +230,5 @@ class BGContinuedProcessingTaskRequest: BGProcessingTaskRequest {
         super.init(identifier: identifier)
     }
 }
+#endif
 

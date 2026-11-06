@@ -572,8 +572,9 @@ final class GlassSkin: NSObject {
     }
 }
 
-// MARK: - Compatibility stubs for iOS 26 SwiftUI / UIKit features
+// MARK: - Compatibility stubs for pre-iOS 26 SDKs (Xcode 16 / Swift < 6.2)
 
+#if !compiler(>=6.2)
 struct GlassEffectContainer<Content: View>: View {
     var spacing: CGFloat? = nil
     @ViewBuilder var content: () -> Content
@@ -628,4 +629,5 @@ extension UINavigationItem {
         set {}
     }
 }
+#endif
 

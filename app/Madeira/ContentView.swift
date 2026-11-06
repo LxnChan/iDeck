@@ -1316,9 +1316,11 @@ struct MadeiraMetalView: UIViewRepresentable {
 }
 
 struct ContentView: View {
-    /// iOS 26 and later blur content under the navigation bar themselves.
+    /// iOS 26 and later blur content under the navigation bar themselves when built with the iOS 26+ SDK.
     private static var systemScrollEdge: Bool {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) { return true }
+        #endif
         return false
     }
     private var isPad: Bool {
@@ -1387,7 +1389,9 @@ struct ContentView: View {
             .navigationTitle(IDeckState.enabled ? "iDeck" : "Madeira")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.regularMaterial, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            // The library keeps a material bar only before iOS 26 (or when built with a pre-iOS 26 SDK).
+            // From iOS 26 with the native SDK, the system draws its soft scroll edge effect instead.
+            .toolbarBackground(library.enabled && !Self.systemScrollEdge ? .visible : .automatic, for: .navigationBar)
             // Confirmed launch/preflight failures only. Observed child failures
             // are nonmodal diagnostics in iDeck options, not a global alert.
             .alert("Steam startup failed", isPresented: Binding(get: { ideck.startupFailure != nil }, set: { if !$0 { ideck.startupFailure = nil } })) {

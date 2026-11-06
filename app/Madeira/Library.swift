@@ -1699,23 +1699,35 @@ struct LibraryNavSearch: UIViewControllerRepresentable {
                 item.searchBarPlacementAllowsToolbarIntegration = false
             }
 
-            // Ensure the navigation bar & stacked search controller have a frosted blur material background,
-            // preventing scrolled library cards and settings rows from bleeding transparently behind the header.
-            let appearance = UINavigationBarAppearance()
-            appearance.configureWithDefaultBackground()
-            appearance.backgroundEffect = UIBlurEffect(style: .systemMaterial)
-            item.standardAppearance = appearance
-            item.compactAppearance = appearance
-            item.scrollEdgeAppearance = appearance
-            if #available(iOS 15.0, *) {
-                item.compactScrollEdgeAppearance = appearance
-            }
-            if let navBar = target.navigationController?.navigationBar {
-                navBar.standardAppearance = appearance
-                navBar.compactAppearance = appearance
-                navBar.scrollEdgeAppearance = appearance
+            // On iOS 17/18 (or when built with a pre-iOS 26 SDK), ensure the navigation bar &
+            // stacked search controller have a frosted blur material background, preventing scrolled
+            // library cards and settings rows from bleeding transparently behind the header.
+            // On iOS 26/27 with the native SDK, the system draws its own soft scroll-edge blur and Liquid Glass.
+            #if compiler(>=6.2)
+            let needsLegacyBarBackground: Bool = {
+                if #available(iOS 26.0, *) { return false }
+                return true
+            }()
+            #else
+            let needsLegacyBarBackground = true
+            #endif
+            if needsLegacyBarBackground {
+                let appearance = UINavigationBarAppearance()
+                appearance.configureWithDefaultBackground()
+                appearance.backgroundEffect = UIBlurEffect(style: .systemMaterial)
+                item.standardAppearance = appearance
+                item.compactAppearance = appearance
+                item.scrollEdgeAppearance = appearance
                 if #available(iOS 15.0, *) {
-                    navBar.compactScrollEdgeAppearance = appearance
+                    item.compactScrollEdgeAppearance = appearance
+                }
+                if let navBar = target.navigationController?.navigationBar {
+                    navBar.standardAppearance = appearance
+                    navBar.compactAppearance = appearance
+                    navBar.scrollEdgeAppearance = appearance
+                    if #available(iOS 15.0, *) {
+                        navBar.compactScrollEdgeAppearance = appearance
+                    }
                 }
             }
         }
@@ -2677,7 +2689,12 @@ struct LibraryView: View {
             if tab == 0 { libraryToolbar } else { settingsToolbar }
         }
         .toolbarBackground(.regularMaterial, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarBackground({
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) { return Visibility.automatic }
+            #endif
+            return Visibility.visible
+        }(), for: .navigationBar)
         // On the tab view, not inside one tab's page: an alert attached to the Library
         // page cannot present while Settings is showing, so an error raised there (its
         // Enable JIT, for one) waited until the Library tab came back.
