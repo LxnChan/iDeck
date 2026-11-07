@@ -62,6 +62,7 @@ void winios_pointer(int x, int y, unsigned int flags, unsigned int data);
 /* Reposition the rendered cursor arrow (desktop px). Usually implied
  * by winios_pointer(MOVE); exposed for initial placement. */
 void winios_cursor_move(int x, int y);
+void winios_set_native_cursor_hidden(int hidden);
 
 /* Library front end hooks. How many GDI window images the desktop
  * compositor has shown (a desktop session's first frame); hide or show the

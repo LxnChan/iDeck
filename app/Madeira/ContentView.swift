@@ -587,7 +587,7 @@ final class MetalBackedView: UIView {
     private func tmgFilter(_ touches: Set<UITouch>, _ phase: UITouch.Phase) -> Set<UITouch>? {
         if phase == .began {
             _ = TouchMouseGate.mode   // logs the mode once
-            guard TouchMouseGate.suppressing(touchpad: touchPointerMode, desktop: desktopMode) else { return touches }
+            guard InputSettings.shared.mouseMode || TouchMouseGate.suppressing(touchpad: touchPointerMode, desktop: desktopMode) else { return touches }
             let direct = touches.filter { $0.type == .direct }
             guard !direct.isEmpty else { return touches }
             for t in direct { tmgSwallowed.insert(ObjectIdentifier(t)) }
@@ -607,6 +607,7 @@ final class MetalBackedView: UIView {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .began) { return }
         guard let touches = tmgFilter(touches, .began) else { return }
+        if InputSettings.shared.mouseMode { return }
         if touchPointerMode { touchModeBegan(touches); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -660,6 +661,7 @@ final class MetalBackedView: UIView {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .moved) { return }
         guard let touches = tmgFilter(touches, .moved) else { return }
+        if InputSettings.shared.mouseMode { return }
         if touchPointerMode { touchModeMoved(touches, event); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -750,6 +752,7 @@ final class MetalBackedView: UIView {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .ended) { return }
         guard let touches = tmgFilter(touches, .ended) else { return }
+        if InputSettings.shared.mouseMode { return }
         if touchPointerMode { touchModeEnded(touches, event); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -810,6 +813,7 @@ final class MetalBackedView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .cancelled) { return }
         guard let touches = tmgFilter(touches, .cancelled) else { return }
+        if InputSettings.shared.mouseMode { return }
         if touchPointerMode { touchModeCancelled(touches); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -1267,6 +1271,12 @@ final class InputSettings: ObservableObject {
     /// "Right stick controls mouse" (HardwareInput.swift, PadStickMouse). Off by
     /// default: a program that reads the controller already gets the stick.
     @Published var padRightStickMouse = false { didSet { save() } }
+    /// External hardware mouse mode: direct 1:1 mouse mapping, keeps the native
+    /// iOS cursor visible (unless pointer lock is toggled on), and ignores direct
+    /// finger touches on the game surface.
+    @Published var mouseMode = false { didSet { save(); HardwareInput.shared.settingsChanged("mouseMode") } }
+    /// Pointer lock switch in Settings (locks and hides the iOS cursor for 3D camera rotation).
+    @Published var mouseLock = false { didSet { save(); HardwareInput.shared.settingsChanged("mouseLock") } }
 
     /// didSet fires for assignments made in init() because the properties are
     /// already initialised by then; without this the first launch would write
@@ -1291,6 +1301,8 @@ final class InputSettings: ObservableObject {
             sensMouse = j["sensMouse"] as? Double ?? 1.0
             ignoreTouchesWithMouse = j["ignoreTouchesWithMouse"] as? Bool ?? true
             padRightStickMouse = j["padRightStickMouse"] as? Bool ?? false
+            mouseMode = j["mouseMode"] as? Bool ?? false
+            mouseLock = j["mouseLock"] as? Bool ?? false
         }
         loading = false
         madeira_set_diag_enabled(diagnostics ? 1 : 0)   // push the restored value down
@@ -1302,7 +1314,9 @@ final class InputSettings: ObservableObject {
                                 "sensMouse": sensMouse, "ignoreTouchesWithMouse": ignoreTouchesWithMouse,
                                 "padRightStickMouse": padRightStickMouse,
                                 "touchMode": touchMode,
-                                "longPressDelay": longPressDelay]
+                                "longPressDelay": longPressDelay,
+                                "mouseMode": mouseMode,
+                                "mouseLock": mouseLock]
         guard let d = try? JSONSerialization.data(withJSONObject: j) else { return }
         try? d.write(to: Self.url, options: .atomic)
     }
@@ -1737,26 +1751,32 @@ struct ContentView: View {
 
     private var pointerModeToggle: some View {
         Button {
-            // Touch mode is chosen in the library; this button leaves it for Absolute.
-            if input.touchMode { input.touchMode = false; input.relative = false }
-            else { input.relative.toggle() }
+            if input.mouseMode {
+                input.mouseMode = false; input.touchMode = false; input.relative = false
+            } else if input.touchMode {
+                input.touchMode = false; input.relative = false; input.mouseMode = true
+            } else if input.relative {
+                input.relative = false; input.touchMode = true; input.mouseMode = false
+            } else {
+                input.relative = true; input.touchMode = false; input.mouseMode = false
+            }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } label: {
-            Text(input.touchMode ? "Touch" : input.relative ? "Relative" : "Absolute")
+            Text(input.mouseMode ? "Mouse" : input.touchMode ? "Touch" : input.relative ? "Relative" : "Absolute")
                 .font(.system(size: 13, weight: .semibold))
                 .frame(minWidth: 82, minHeight: 32)
-                .background((input.relative ? Color.accentColor : Color.secondary).opacity(0.28))
+                .background(((input.relative || input.mouseMode) ? Color.accentColor : Color.secondary).opacity(0.28))
                 .cornerRadius(6)
         }
         .transition(.opacity)
     }
 
-    /// One slider bound to whichever mode is live, so the two values are edited
-    /// independently and both persist.
+    /// One slider bound to whichever mode is live, so the values are edited
+    /// independently and persist.
     private var pointerSensSlider: some View {
         HStack(spacing: 8) {
-            Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.10...8.0)
-            Text(String(format: "%.2f", input.relative ? input.sensRel : input.sensAbs))
+            Slider(value: input.mouseMode ? $input.sensMouse : (input.relative ? $input.sensRel : $input.sensAbs), in: 0.10...8.0)
+            Text(String(format: "%.2f", input.mouseMode ? input.sensMouse : (input.relative ? input.sensRel : input.sensAbs)))
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(.secondary)
                 .frame(width: 38, alignment: .trailing)
@@ -3814,7 +3834,9 @@ struct ContentView: View {
                 setenv("MADEIRA_INPUT_FOREGROUND", MadeiraConfig.get("env.MADEIRA_INPUT_FOREGROUND") ?? "1", 1)
                 winios_display_mode_changed(Int32(plan.width), Int32(plan.height))
                 if IDeckState.enabled {
-                    InputSettings.shared.touchMode = true
+                    if !InputSettings.shared.mouseMode {
+                        InputSettings.shared.touchMode = true
+                    }
                     TouchControlsModel.shared.visible = false
                     ideck.running = true
                     ideck.observeControl()
@@ -4495,6 +4517,7 @@ struct TouchControlsOverlay: View {
         let accepting = !m.editing && !library.blocksGameplayTouch && !(IDeckState.enabled && ideck.menu)
         GamepadInput.shared.configureTouch(controls: Set(ids), acceptingInput: accepting)
         TouchMouseGate.padOverlay = accepting && !ids.isEmpty
+        HardwareInput.shared.settingsChanged("overlay")
     }
 
     /// ml1970: with MADEIRA_CONTROLS_XBOX_DEFAULT=1, a user with no controls file gets the built-in controller

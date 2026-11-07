@@ -2271,6 +2271,8 @@ static CGPoint g_cursor_pos_px;
  * cursor. env.MADEIRA_GAME_DIALOG_CURSOR = 0 turns it off. */
 static BOOL g_game_cursor_seen;          /* a touch placed it since the overlay appeared */
 static BOOL g_game_cursor_prog_hidden;   /* the program hid its cursor */
+static BOOL g_desktop_cursor_prog_hidden;
+static BOOL g_native_cursor_hidden;      /* HardwareInput: native iOS cursor is visible in mouseMode */
 static _Atomic int g_game_cursor_drawn;  /* it is on screen; read off the main thread by winios_pointer */
 
 static int winios_game_cursor_enabled(void) {
@@ -2307,7 +2309,7 @@ static void winios_ensure_cursor_layer(void) {
     g_cursor_layer.contents = (id)img.CGImage;
     g_cursor_layer.bounds = CGRectMake(0, 0, img.size.width, img.size.height);
     g_cursor_layer.magnificationFilter = kCAFilterNearest;
-    if (g_comp_game) g_cursor_layer.hidden = YES;   /* winios_game_cursor_refresh shows it */
+    if (g_comp_game || g_native_cursor_hidden) g_cursor_layer.hidden = YES;   /* winios_game_cursor_refresh shows it */
     [g_compositor_view.layer addSublayer:g_cursor_layer];
 }
 
@@ -2393,7 +2395,21 @@ void winios_cursor_show(int show) {
             winios_game_cursor_refresh();
             return;
         }
-        if (g_cursor_layer) g_cursor_layer.hidden = !show;
+        g_desktop_cursor_prog_hidden = !show;
+        if (g_cursor_layer) g_cursor_layer.hidden = g_native_cursor_hidden || !show;
+    });
+}
+
+void winios_set_native_cursor_hidden(int hidden) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL h = hidden != 0;
+        if (g_native_cursor_hidden == h) return;
+        g_native_cursor_hidden = h;
+        if (g_comp_game) {
+            winios_game_cursor_refresh();
+        } else if (g_cursor_layer) {
+            g_cursor_layer.hidden = g_native_cursor_hidden || g_desktop_cursor_prog_hidden;
+        }
     });
 }
 
@@ -2412,7 +2428,7 @@ static BOOL winios_game_dialog_visible(void) {
  * a touch has placed it and the program shows its cursor. */
 static void winios_game_cursor_refresh(void) {
     if (!g_comp_game || !g_cursor_layer) return;
-    BOOL show = g_game_cursor_seen && !g_game_cursor_prog_hidden && winios_game_dialog_visible();
+    BOOL show = !g_native_cursor_hidden && g_game_cursor_seen && !g_game_cursor_prog_hidden && winios_game_dialog_visible();
     if (g_cursor_layer.hidden == !show) return;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];

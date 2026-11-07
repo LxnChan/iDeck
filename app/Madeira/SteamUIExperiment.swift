@@ -1144,6 +1144,9 @@ struct IDeckHUD: View {
                                     }.accessibilityElement(children:.combine)
                                 }
                                 Divider()
+                                Text("Mouse & pointer").font(.headline)
+                                LibraryPointerSettings()
+                                Divider()
                                 IPadStatusBarMenuSection()
                             }.padding(20)
                         }.frame(width:min(390,max(240,geo.size.width-32)),height:min(560,max(180,geo.size.height-insets.top-insets.bottom-24)))

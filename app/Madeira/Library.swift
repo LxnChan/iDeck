@@ -4171,10 +4171,11 @@ struct RuntimeMemorySyncSettings: View {
 
 struct LibraryPointerSettings: View {
     @ObservedObject private var input = InputSettings.shared
-    /// Absolute, Relative or Touch; `touchMode` and `relative` stay mutually exclusive.
+    @ObservedObject private var hw = HardwareInput.shared
+    /// Absolute, Relative, Touch or Mouse; `touchMode`, `relative` and `mouseMode` stay mutually exclusive.
     private var mode: Binding<String> {
-        Binding(get: { input.touchMode ? "touch" : (input.relative ? "relative" : "absolute") }, set: { value in
-            input.touchMode = value == "touch"; input.relative = value == "relative"
+        Binding(get: { input.mouseMode ? "mouse" : (input.touchMode ? "touch" : (input.relative ? "relative" : "absolute")) }, set: { value in
+            input.touchMode = value == "touch"; input.relative = value == "relative"; input.mouseMode = value == "mouse"
             fputs("[frontend-pointer] mode=\(value)\n", stderr)
         })
     }
@@ -4183,22 +4184,42 @@ struct LibraryPointerSettings: View {
             Text("Trackpad").tag("absolute")
             Text("Crosshair").tag("relative")
             Text("Direct touch").tag("touch")
+            Text("Mouse").tag("mouse")
         }.pickerStyle(.segmented)
-        Text(input.touchMode ? "Tap anywhere to position and left-click. Touch and hold to drag. Two-finger tap right-clicks, two-finger drag scrolls."
-             : (input.relative ? "Pan anywhere to steer (relative mouse moves), tap to left-click." : "Pan like a notebook trackpad, tap to left-click."))
+        Text(input.mouseMode ? "Direct hardware mouse input (buttons, wheel, 1:1 cursor) with the native iOS pointer shown and screen touches ignored."
+             : (input.touchMode ? "Tap anywhere to position and left-click. Touch and hold to drag. Two-finger tap right-clicks, two-finger drag scrolls."
+                : (input.relative ? "Pan anywhere to steer (relative mouse moves), tap to left-click." : "Pan like a notebook trackpad, tap to left-click.")))
             .font(.caption).foregroundStyle(.secondary)
-        LabeledContent("Touch sensitivity") {
-            Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.1...8)
-        }
-        if !input.relative && !input.touchMode {
-            LabeledContent("Hold delay") {
+        if input.mouseMode {
+            Toggle("Lock cursor (3D camera)", isOn: $input.mouseLock)
+            Text("Pins and hides the iOS pointer so the mouse can rotate 360° in 3D games (Ctrl+Alt+P). Keep off for point-and-click games.")
+                .font(.caption).foregroundStyle(.secondary)
+            LabeledContent("Mouse sensitivity") {
                 HStack(spacing: 8) {
-                    Slider(value: $input.longPressDelay, in: 0.15...0.60, step: 0.05)
-                    Text(String(format: "%.2fs", input.longPressDelay))
+                    Slider(value: $input.sensMouse, in: 0.1...8)
+                    Text(String(format: "%.2f", input.sensMouse))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+                        .frame(width: 40, alignment: .trailing)
                 }
+            }
+        } else {
+            LabeledContent("Touch sensitivity") {
+                Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.1...8)
+            }
+            if !input.relative && !input.touchMode {
+                LabeledContent("Hold delay") {
+                    HStack(spacing: 8) {
+                        Slider(value: $input.longPressDelay, in: 0.15...0.60, step: 0.05)
+                        Text(String(format: "%.2fs", input.longPressDelay))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+            if hw.mouseConnected {
+                Toggle("Lock cursor (3D camera)", isOn: $input.mouseLock)
             }
         }
     }

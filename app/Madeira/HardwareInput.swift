@@ -831,7 +831,7 @@ final class HardwareInput: ObservableObject {
         installTouchObserver()
         let base = computeBaseFocus()
         let keyboard = base && !typingElsewhere()
-        let over = hoverSeen ? pointerOver : clickFocus.onGame
+        let over = InputSettings.shared.mouseMode ? (!hoverSeen || pointerOver || clickFocus.onGame) : (hoverSeen ? pointerOver : clickFocus.onGame)
         let mouse = base && (!Self.focusEnabled || pointerLocked || over || !gameButtons.isEmpty)
         baseFocused = base
         if keyboard != keyboardFocused {
@@ -862,6 +862,10 @@ final class HardwareInput: ObservableObject {
     private func computeBaseFocus() -> Bool {
         guard appActive, UIApplication.shared.applicationState == .active else { return false }
         guard Self.focusEnabled else { return true }
+        if LibraryModel.shared.blocksGameplayTouch || TouchControlsModel.shared.editing
+            || (IDeckState.enabled && IDeckState.shared.menu) {
+            return false
+        }
         guard let v = MetalBackedView.keyboardTarget, let w = v.window,
               !v.isHidden, !w.isHidden, v.alpha > 0.01 else { return false }
         if let scene = w.windowScene {
@@ -896,6 +900,16 @@ final class HardwareInput: ObservableObject {
 
     /// Controllers come and go through PadStickMouse; the poll follows them.
     func controllersChanged() { refreshFocus("controllers") }
+
+    /// Pointer mode or pointer lock setting changed in InputSettings / in-game menu.
+    func settingsChanged(_ what: String) {
+        guard Self.enabled else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            PointerHider.invalidateAll()
+            self.refreshFocus(what)
+        }
+    }
 
     /// Every tap and click in the game view's window, for click focus.
     private func installTouchObserver() {
@@ -1278,6 +1292,7 @@ final class HardwareInput: ObservableObject {
     // MARK: - route, drawn cursor and automatic lock
 
     private var cursorShownForRoute: Bool {
+        if InputSettings.shared.mouseMode && !pointerLocked { return true }
         if Self.desktopMode { return true }
         return directCursorLive && cursorState.shown != 0
     }
@@ -1340,13 +1355,35 @@ final class HardwareInput: ObservableObject {
     }
 
     private func renderCursor() {
+        let nativeCursor = InputSettings.shared.mouseMode && !pointerLocked
+        winios_set_native_cursor_hidden(nativeCursor ? 1 : 0)
         guard directCursorLive else { return }
-        let visible = mouseInUse && mouseFocused && cursorState.shown != 0
+        let visible = !nativeCursor && mouseInUse && mouseFocused && cursorState.shown != 0
         let pos = lastAbsolute ?? (x: cursorState.x, y: cursorState.y)
         DirectCursorOverlay.shared.render(visible: visible, x: pos.x, y: pos.y)
     }
 
     private func updateAutoLock() {
+        if InputSettings.shared.mouseLock {
+            if baseFocused && mouseConnected && Self.pointerLockAvailable && mousePath != .uikit {
+                if !pointerLocked {
+                    setPointerLocked(true, byUs: false, why: "settings pointer lock")
+                }
+            } else if pointerLocked {
+                setPointerLocked(false, byUs: false, why: "menu or focus lost")
+            }
+            return
+        }
+        if InputSettings.shared.mouseMode {
+            if pointerLocked {
+                setPointerLocked(false, byUs: false, why: "pointer lock off in mouse mode")
+            }
+            return
+        }
+        if pointerLocked && !lockedByUs {
+            setPointerLocked(false, byUs: false, why: "settings pointer lock off")
+            return
+        }
         guard Self.autoLockEnabled, directCursorLive, Self.pointerLockAvailable, mousePath == .gcmouse else {
             if pointerLocked && lockedByUs { setPointerLocked(false, byUs: true, why: "automatic lock unavailable") }
             return
@@ -1496,6 +1533,7 @@ final class HardwareInput: ObservableObject {
             if pointerOver { pointerOver = false; refreshFocus("pointer left the game view") }
             return
         }
+        noteMousePresent()
         if !hoverSeen || !pointerOver {
             hoverSeen = true
             pointerOver = true
@@ -1553,10 +1591,12 @@ final class HardwareInput: ObservableObject {
     /// The lock button and Ctrl+Alt+P. Releasing an automatic lock keeps it
     /// off until the program's cursor next changes visibility.
     func togglePointerLock(why: String = "toggle") {
-        if pointerLocked {
+        if pointerLocked || InputSettings.shared.mouseLock {
             if lockedByUs { autoLockSuppressed = true }
+            if InputSettings.shared.mouseLock { InputSettings.shared.mouseLock = false }
             setPointerLocked(false, byUs: false, why: why)
         } else {
+            InputSettings.shared.mouseLock = true
             setPointerLocked(true, byUs: false, why: why)
         }
     }
@@ -1583,6 +1623,7 @@ final class HardwareInput: ObservableObject {
         pointerLocked = want
         lockedByUs = want && byUs
         PointerLock.refresh()
+        PointerHider.invalidateAll()
         log("pointer lock \(want ? "ON" : "OFF") (\(why)) path=\(mousePath.rawValue)")
         refreshFocus("pointer lock")
     }
@@ -1708,13 +1749,30 @@ enum PointerLock {
 }
 
 /// Hides the iOS system pointer over the game surface, whether or not the lock
-/// took: the program draws its own cursor at its own position.
+/// took: the program draws its own cursor at its own position. In `mouseMode`
+/// (while not pointer-locked), the native iOS system cursor stays visible.
 final class PointerHider: NSObject, UIPointerInteractionDelegate {
     static let shared = PointerHider()
+    private static let interactions = NSHashTable<UIPointerInteraction>.weakObjects()
+
+    static func register(_ interaction: UIPointerInteraction) {
+        interactions.add(interaction)
+    }
+
+    static func invalidateAll() {
+        DispatchQueue.main.async {
+            for interaction in interactions.allObjects {
+                interaction.invalidate()
+            }
+        }
+    }
 
     func pointerInteraction(_ interaction: UIPointerInteraction,
                             styleFor region: UIPointerRegion) -> UIPointerStyle? {
-        .hidden()
+        if InputSettings.shared.mouseMode && !HardwareInput.shared.pointerLocked {
+            return nil
+        }
+        return .hidden()
     }
 
     /// One region, the whole surface, so the hidden style never lapses back to
@@ -1792,7 +1850,9 @@ final class PointerFallback: NSObject {
         guard objc_getAssociatedObject(view, key) == nil else { return }
         let f = PointerFallback()
         objc_setAssociatedObject(view, key, f, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-        view.addInteraction(UIPointerInteraction(delegate: PointerHider.shared))
+        let pointer = UIPointerInteraction(delegate: PointerHider.shared)
+        PointerHider.register(pointer)
+        view.addInteraction(pointer)
 
         let indirect = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         let hover = UIHoverGestureRecognizer(target: f, action: #selector(onHover(_:)))
