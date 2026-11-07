@@ -2798,7 +2798,7 @@ struct LibraryView: View {
             if settingsShow("JIT", "StikDebug", "built-in", "pairing", "LocalDevVPN") {
                 JITSettingsSection()
             }
-            if settingsShow("proxy", "network", "socks", "socks5", "http", "shadowsocks", "代理") {
+            if settingsShow("proxy", "network", "socks", "socks5", "http", "shadowsocks") {
                 NetworkProxySettingsSection()
             }
             if settingsShow("diagnostics", "extended logging", "logging", "log") {
@@ -2815,7 +2815,7 @@ struct LibraryView: View {
                     RuntimeMemorySyncSettings(open: { settingsSheet = $0 }, refresh: settingsRefresh)
                 }
             }
-            if IDeckState.enabled, settingsShow("Steam", "iDeck", "big picture", "launcher", "client", "mode", "大屏", "模式") {
+            if IDeckState.enabled, settingsShow("Steam", "iDeck", "big picture", "launcher", "client", "mode") {
                 Section {
                     Picker("Launch mode", selection: $ideck.bigPictureMode) {
                         Text("Desktop Mode (Normal)").tag(false)
@@ -4180,16 +4180,18 @@ struct LibraryPointerSettings: View {
     }
     var body: some View {
         Picker("Pointer mode", selection: mode) {
-            Text("Absolute").tag("absolute"); Text("Relative").tag("relative"); Text("Touch").tag("touch")
+            Text("Trackpad").tag("absolute")
+            Text("Crosshair").tag("relative")
+            Text("Direct touch").tag("touch")
         }.pickerStyle(.segmented)
-        Text(input.touchMode ? "Tap the screen to position and click. Hold and move to drag. Two fingers: right click or scroll."
-             : (input.relative ? "Drag to send relative mouse movement for mouse-look. Tap to click." : "Drag the pointer like a trackpad. Tap to click."))
+        Text(input.touchMode ? "Tap anywhere to position and left-click. Touch and hold to drag. Two-finger tap right-clicks, two-finger drag scrolls."
+             : (input.relative ? "Pan anywhere to steer (relative mouse moves), tap to left-click." : "Pan like a notebook trackpad, tap to left-click."))
             .font(.caption).foregroundStyle(.secondary)
         LabeledContent("Touch sensitivity") {
             Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.1...8)
         }
         if !input.relative && !input.touchMode {
-            LabeledContent("Long-press drag delay") {
+            LabeledContent("Hold delay") {
                 HStack(spacing: 8) {
                     Slider(value: $input.longPressDelay, in: 0.15...0.60, step: 0.05)
                     Text(String(format: "%.2fs", input.longPressDelay))
@@ -4744,9 +4746,9 @@ enum IPadStatusBarDisplayMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .off: return "关闭"
-        case .metrics: return "资源监控"
-        case .logs: return "运行日志"
+        case .off: return "Off"
+        case .metrics: return "Metrics"
+        case .logs: return "Logs"
         }
     }
 }
@@ -4794,7 +4796,7 @@ struct IPadStatusBarHUD: View {
                         Image(systemName: "terminal.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(.cyan.opacity(0.9))
-                        Text(log.isEmpty ? "等待日志..." : log)
+                        Text(log.isEmpty ? "Waiting for logs…" : log)
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .foregroundStyle(.white.opacity(0.85))
@@ -4813,7 +4815,20 @@ struct IPadStatusBarHUD: View {
             .accessibilityHidden(true)
             .onAppear {
                 lastCount = madeira_get_present_count(); lastTime = Date(); _ = cpuMeter.sample()
+                if currentMode == .logs && IDeckState.enabled && IDeckState.shared.running {
+                    LogStore.shared.setDisplayActive(true)
+                }
                 updateLog()
+            }
+            .onChange(of: modeRaw) { _, newMode in
+                if IDeckState.enabled && IDeckState.shared.running {
+                    LogStore.shared.setDisplayActive(newMode == IPadStatusBarDisplayMode.logs.rawValue)
+                }
+            }
+            .onDisappear {
+                if IDeckState.enabled && IDeckState.shared.running {
+                    LogStore.shared.setDisplayActive(false)
+                }
             }
             .onReceive(ticks) { now in
                 if currentMode == .metrics {
@@ -4850,18 +4865,18 @@ struct IPadStatusBarMenuSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("顶栏状态显示").font(.headline)
+            Text("Status bar display").font(.headline)
             if isPad {
-                Picker("顶栏显示内容", selection: $modeRaw) {
-                    Text("关闭").tag(IPadStatusBarDisplayMode.off.rawValue)
-                    Text("资源监控").tag(IPadStatusBarDisplayMode.metrics.rawValue)
-                    Text("运行日志").tag(IPadStatusBarDisplayMode.logs.rawValue)
+                Picker("Status bar display", selection: $modeRaw) {
+                    Text("Off").tag(IPadStatusBarDisplayMode.off.rawValue)
+                    Text("Metrics").tag(IPadStatusBarDisplayMode.metrics.rawValue)
+                    Text("Logs").tag(IPadStatusBarDisplayMode.logs.rawValue)
                 }
                 .pickerStyle(.segmented)
-                Text("在 iPad 顶部状态栏空白区域显示所选项目（同时仅显示一项，轻触完全穿透，不影响下拉通知栏）。")
+                Text("Shows the selected item in the vacant iPad status bar space (one at a time, touches pass through to system gestures).")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("当前检测为 iPhone 设备，屏幕顶部空间有限，顶栏监控与日志显示已自动停用（仅在 iPad 上可用）。")
+                Text("iPhone detected: status bar overlay is disabled due to limited screen space (available on iPad only).")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

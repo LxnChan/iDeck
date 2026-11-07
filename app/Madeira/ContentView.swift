@@ -1433,6 +1433,15 @@ struct ContentView: View {
                     Button("Cancel", role: .cancel) { library.cloudNotice = nil; library.cloudRetry = nil }
                 }
             } message: { Text(library.cloudNotice?.message ?? "") }
+            // The full-screen Steam session has no visible log list. Keep raw
+            // capture, but avoid parsing every guest debug line and publishing
+            // SwiftUI list updates behind the Steam/game display.
+            .onChange(of: ideck.running, initial: true) { _, running in
+                if IDeckState.enabled {
+                    logStore.setDisplayActive(!running)
+                    logStore.log("[steam-ui-render] log-list-hidden=\(running ? 1 : 0); raw capture retained")
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                 library.refreshFlag()
                 if IDeckState.enabled {
@@ -3766,7 +3775,8 @@ struct ContentView: View {
                 flag: MadeiraConfig.get(SteamUIExperiment.flag) ?? (IDeckState.enabled ? "1" : nil), bundleID: Bundle.main.bundleIdentifier, x86Client: x86Client, bigPicture: bigPicture,
                 bigPictureFlag: MadeiraConfig.get(SteamUIExperiment.bigPictureFlag) ?? (IDeckState.enabled ? "1" : nil), accountChooser: accountChooser, loginFirst: loginFirst, ratatanThreadTest: ratatanThreadTest,
                 sourceCEFLayout: madeira_cef64_hold_state() == 1,
-                externalCrashpad: ProcessInfo.processInfo.environment["MADEIRA_CEF64_EXTERNAL_CRASHPAD"] == "1")
+                externalCrashpad: ProcessInfo.processInfo.environment["MADEIRA_CEF64_EXTERNAL_CRASHPAD"] == "1",
+                gpuAcceleration: SteamUIExperiment.steam64 && MadeiraConfig.get("steam64.gpu-acceleration") == "1")
             if IDeckState.enabled {
                 let relative = String(plan.windowsDirectory.dropFirst(3)).replacingOccurrences(of: "\\", with: "/")
                 ideck.beginLoginObservation(client: prefix.appendingPathComponent("drive_c/" + relative), enabled: accountChooser || loginFirst)
@@ -3794,7 +3804,10 @@ struct ContentView: View {
                 setenv("MADEIRA_DESKTOP", "1", 1)
                 setenv("MADEIRA_SCREEN_W", String(plan.width), 1)
                 setenv("MADEIRA_SCREEN_H", String(plan.height), 1)
-                setenv("MADEIRA_JITLESS", "1", 1)
+                let jitless = SteamUIExperiment.v8JitlessMode(environment: ProcessInfo.processInfo.environment,
+                    configuration: MadeiraConfig.all(), steam64: SteamUIExperiment.steam64)
+                setenv("MADEIRA_JITLESS", jitless, 1)
+                logStore.log("[steam-ui-render] gpu-request=\(plan.gpuAccelerated ? "hardware-auto" : "software-forced") v8=\(jitless == "0" ? "jit" : "jitless"); actual backend requires driver evidence")
                 // Genuine Steam bypasses LibraryEntry.applyEnvironment. Publish the
                 // same physical/touch XInput snapshot to WGI-only games as well.
                 setenv("MADEIRA_WGI_HOST_PADS", MadeiraConfig.get("env.MADEIRA_WGI_HOST_PADS") ?? "1", 1)
