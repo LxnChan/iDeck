@@ -4794,27 +4794,19 @@ struct LibraryMetrics: View {
 }
 
 /// Display modes for the iPad status bar band above the game.
-/// Only one mode can be active at a time, or disabled completely.
+/// Only metrics mode can be active, or disabled completely.
 enum IPadStatusBarDisplayMode: String, CaseIterable, Identifiable {
     case off = "off"
     case metrics = "metrics"
-    case logs = "logs"
 
     var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .off: return "Off"
-        case .metrics: return "Metrics"
-        case .logs: return "Logs"
-        }
-    }
 }
 
 /// iPad only: the band the iPadOS status bar keeps clear above the game
-/// (GameSurfaceLayout leaves it free). It can display either system metrics
-/// (FPS/CPU/RAM) or live runtime logs, or be turned off. It strictly shows only one item
-/// at a time and never captures touches, so Notification Center / Control Center work normally.
+/// (GameSurfaceLayout leaves it free). It displays real-time resource metrics
+/// (FPS, CPU, GPU, RAM, Thermal), perfectly centered horizontally to avoid
+/// the system clock on the left and Wi-Fi/battery on the right.
+/// Never captures touches, so Notification Center / Control Center work normally.
 struct IPadStatusBarHUD: View {
     let height: CGFloat
     @AppStorage("madeiraIPadStatusBarMode") private var modeRaw = IPadStatusBarDisplayMode.metrics.rawValue
@@ -4824,117 +4816,153 @@ struct IPadStatusBarHUD: View {
     @State private var memory = 0
     @State private var cpuMeter = CPUMeter()
     @State private var cpu: Double?
-    @State private var log = ""
+    @State private var lastGPUBusy: Double = 0
+    @State private var lastGPUBuffers: UInt64 = 0
+    @State private var gpu: Double = -1
+    @State private var thermal: ProcessInfo.ThermalState = .nominal
     private let ticks = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    /// Room left for the system clock/date/breadcrumb on the left and Wi-Fi/VPN/battery on the right.
-    static let leadingClearance: CGFloat = 340
-    static let trailingClearance: CGFloat = 180
-
-    private var currentMode: IPadStatusBarDisplayMode {
-        IPadStatusBarDisplayMode(rawValue: modeRaw) ?? .metrics
+    private var isEnabled: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && modeRaw != IPadStatusBarDisplayMode.off.rawValue
     }
 
     var body: some View {
-        guard UIDevice.current.userInterfaceIdiom == .pad, currentMode != .off else {
+        guard isEnabled else {
             return AnyView(EmptyView())
         }
         return AnyView(
-            Group {
-                if currentMode == .metrics {
-                    Text(metrics)
-                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    Text(String(format: "%.0f FPS", fps))
                         .foregroundStyle(.white.opacity(0.95))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.black.opacity(0.55)))
-                        .frame(maxWidth: .infinity, alignment: .center)
-                } else if currentMode == .logs {
-                    HStack(spacing: 6) {
-                        Image(systemName: "terminal.fill")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.cyan.opacity(0.9))
-                        Text(log.isEmpty ? "Waiting for logs…" : log)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .foregroundStyle(.white.opacity(0.85))
+
+                    bullet
+
+                    Text(cpu.map { String(format: "CPU %.0f%%", $0) } ?? "CPU —")
+                        .foregroundStyle(.white.opacity(0.95))
+
+                    bullet
+
+                    Text(gpu >= 0 ? String(format: "GPU %.0f%%", gpu) : "GPU —")
+                        .foregroundStyle(.white.opacity(0.95))
+
+                    bullet
+
+                    Text("\(memory) MB")
+                        .foregroundStyle(.white.opacity(0.95))
+
+                    bullet
+
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(thermalColor)
+                            .frame(width: 5, height: 5)
+                        Text(thermalText)
+                            .foregroundStyle(thermalColor)
                     }
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.black.opacity(0.55)))
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .padding(.horizontal, 12)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.black.opacity(0.60)))
+                Spacer(minLength: 0)
             }
-            .padding(.leading, Self.leadingClearance)
-            .padding(.trailing, Self.trailingClearance)
             .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .center)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .onAppear {
-                lastCount = madeira_get_present_count(); lastTime = Date(); _ = cpuMeter.sample()
-                if currentMode == .logs && IDeckState.enabled && IDeckState.shared.running {
-                    LogStore.shared.setDisplayActive(true)
-                }
-                updateLog()
-            }
-            .onChange(of: modeRaw) { _, newMode in
-                if IDeckState.enabled && IDeckState.shared.running {
-                    LogStore.shared.setDisplayActive(newMode == IPadStatusBarDisplayMode.logs.rawValue)
-                }
-            }
-            .onDisappear {
-                if IDeckState.enabled && IDeckState.shared.running {
-                    LogStore.shared.setDisplayActive(false)
-                }
+                lastCount = madeira_get_present_count()
+                lastTime = Date()
+                _ = cpuMeter.sample()
+                thermal = ProcessInfo.processInfo.thermalState
+                madeira_gpu_meter_enable(1)
+                lastGPUBusy = madeira_gpu_meter_busy_seconds()
+                lastGPUBuffers = madeira_gpu_meter_cmdbufs()
+                gpu = -1
             }
             .onReceive(ticks) { now in
-                if currentMode == .metrics {
-                    let count = madeira_get_present_count(); let dt = now.timeIntervalSince(lastTime)
-                    let frames = count >= lastCount ? count - lastCount : 0
-                    fps = Double(frames) / max(0.001, dt); lastCount = count; lastTime = now
-                    var info = task_vm_info_data_t(); var size = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
-                    let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &size) } }
-                    if result == KERN_SUCCESS { memory = Int(info.phys_footprint / 1048576) }
-                    cpu = cpuMeter.sample()?.total
-                } else if currentMode == .logs {
-                    updateLog()
+                let count = madeira_get_present_count()
+                let dt = now.timeIntervalSince(lastTime)
+                let frames = count >= lastCount ? count - lastCount : 0
+                fps = Double(frames) / max(0.001, dt)
+                lastCount = count
+                lastTime = now
+
+                var info = task_vm_info_data_t()
+                var size = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+                let result = withUnsafeMutablePointer(to: &info) {
+                    $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
+                        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &size)
+                    }
                 }
+                if result == KERN_SUCCESS {
+                    memory = Int(info.phys_footprint / 1048576)
+                }
+
+                cpu = cpuMeter.sample()?.total
+
+                let busy = madeira_gpu_meter_busy_seconds()
+                let buffers = madeira_gpu_meter_cmdbufs()
+                let used = max(0, busy - lastGPUBusy)
+                gpu = buffers > lastGPUBuffers ? min(100, used / max(0.001, dt) * 100) : -1
+                lastGPUBusy = busy
+                lastGPUBuffers = buffers
+
+                thermal = ProcessInfo.processInfo.thermalState
             }
         )
     }
 
-    private func updateLog() {
-        let line = LogStore.shared.latestMessage ?? ""
-        log = line.replacingOccurrences(of: "\n", with: " ")
+    private var bullet: some View {
+        Text("·")
+            .foregroundStyle(.white.opacity(0.4))
+            .font(.system(size: 11, weight: .bold))
     }
 
-    private var metrics: String {
-        let cpuText = cpu.map { String(format: "CPU %.0f%%", $0) } ?? "CPU —"
-        return String(format: "%.0f FPS", fps) + "  ·  " + cpuText + "  ·  \(memory) MB"
+    private var thermalText: String {
+        switch thermal {
+        case .nominal: return "Cool"
+        case .fair: return "Warm"
+        case .serious: return "Hot"
+        case .critical: return "Critical"
+        @unknown default: return "Nominal"
+        }
+    }
+
+    private var thermalColor: Color {
+        switch thermal {
+        case .nominal: return Color.green.opacity(0.95)
+        case .fair: return Color.yellow.opacity(0.95)
+        case .serious: return Color.orange.opacity(0.95)
+        case .critical: return Color.red.opacity(0.95)
+        @unknown default: return Color.white.opacity(0.95)
+        }
     }
 }
 
-/// Menu section to choose between showing metrics, live logs, or off on iPad status bar.
+/// Menu section to toggle the resource monitoring metrics on iPad status bar.
 /// Includes device detection notice when run on iPhone.
 struct IPadStatusBarMenuSection: View {
     @AppStorage("madeiraIPadStatusBarMode") private var modeRaw = IPadStatusBarDisplayMode.metrics.rawValue
     private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
+    private var isEnabled: Binding<Bool> {
+        Binding(
+            get: { modeRaw != IPadStatusBarDisplayMode.off.rawValue },
+            set: { modeRaw = $0 ? IPadStatusBarDisplayMode.metrics.rawValue : IPadStatusBarDisplayMode.off.rawValue }
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Status bar display").font(.headline)
+            Text("顶部状态栏 HUD").font(.headline)
             if isPad {
-                Picker("Status bar display", selection: $modeRaw) {
-                    Text("Off").tag(IPadStatusBarDisplayMode.off.rawValue)
-                    Text("Metrics").tag(IPadStatusBarDisplayMode.metrics.rawValue)
-                    Text("Logs").tag(IPadStatusBarDisplayMode.logs.rawValue)
-                }
-                .pickerStyle(.segmented)
-                Text("Shows the selected item in the vacant iPad status bar space (one at a time, touches pass through to system gestures).")
+                Toggle("资源监测 HUD", isOn: isEnabled)
+                Text("在 iPad 顶部状态栏居中显示 CPU、GPU、内存、帧率和 Thermal 状态。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("iPhone detected: status bar overlay is disabled due to limited screen space (available on iPad only).")
+                Text("仅在 iPad 上可用（iPhone 状态栏空间有限）。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
