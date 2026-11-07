@@ -1168,6 +1168,7 @@ final class HardwareInput: ObservableObject {
     /// Absolute route: put the program's cursor where the iOS pointer is on
     /// the game view. Main thread.
     private func postAbsolute(_ p: CGPoint, in view: UIView) {
+        if p == .zero && lastAbsolute != nil { return }
         let (sx, sy): (Int32, Int32)
         if let mbv = (view as? MetalBackedView) ?? MetalBackedView.keyboardTarget {
             let ptInMbv = view === mbv ? p : view.convert(p, to: mbv)
@@ -1183,6 +1184,9 @@ final class HardwareInput: ObservableObject {
                                        viewH: Double(view.bounds.height), screenW: sw, screenH: sh)
             sx = s.x
             sy = s.y
+        }
+        if sx == 0 && sy == 0, let last = lastAbsolute, hypot(Double(last.x), Double(last.y)) > 10 {
+            return
         }
         setMouseInUse(true)
         if let last = lastAbsolute, last.x == sx, last.y == sy { return }
@@ -1494,12 +1498,18 @@ final class HardwareInput: ObservableObject {
     /// pointer until the mouse moves again.
     func interceptTouches(_ touches: Set<UITouch>, _ event: UIEvent?, _ phase: TouchPhase) -> Bool {
         guard Self.enabled else { return false }
-        if touches.contains(where: { $0.type == .indirectPointer }) {
-            if let t = touches.first(where: { $0.type == .indirectPointer }) {
-                let v = MetalBackedView.keyboardTarget ?? t.view
-                if let v {
+        let hasIndirect = touches.contains(where: { $0.type == .indirectPointer })
+        let hasButtonMask = !(event?.buttonMask.isEmpty ?? true)
+        let isMouse = hasIndirect || hasButtonMask
+        if isMouse {
+            if phase == .began || phase == .moved {
+                let t = touches.first(where: { $0.type == .indirectPointer }) ?? touches.first
+                let v = MetalBackedView.keyboardTarget ?? t?.view
+                if let t, let v {
                     let p = t.location(in: v)
-                    pointerHovered(at: p, in: v, inside: v.bounds.contains(p))
+                    if p != .zero {
+                        pointerHovered(at: p, in: v, inside: v.bounds.contains(p))
+                    }
                 }
             }
             switch phase {
@@ -1507,6 +1517,10 @@ final class HardwareInput: ObservableObject {
             case .cancelled: uikitButtons([])       // no mask worth reading: drop all
             case .began, .ended: pointerButtons(event, ending: phase == .ended)
             }
+            return true
+        }
+        if InputSettings.shared.mouseMode {
+            // Mouse mode: screen touches from fingers do not control Wine.
             return true
         }
         let drop = shouldIgnore(touches, logging: phase == .began)
@@ -1518,9 +1532,10 @@ final class HardwareInput: ObservableObject {
         var mask = event?.buttonMask ?? []
         if ending {
             // A mask that still lists the button being released: if nothing
-            // indirect is still down, nothing is held.
+            // indirect or mouse touch is still down, nothing is held.
             let live = (event?.allTouches ?? []).filter {
-                $0.type == .indirectPointer && $0.phase != .ended && $0.phase != .cancelled
+                ($0.type == .indirectPointer || InputSettings.shared.mouseMode)
+                    && $0.phase != .ended && $0.phase != .cancelled
             }
             if live.isEmpty { mask = [] }
         }
@@ -1925,20 +1940,21 @@ final class PointerFallback: NSObject {
         let p = g.location(in: view)
         switch g.state {
         case .began:
-            hoverLast = p; hoverHasLast = true
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+            if p != .zero {
+                hoverLast = p; hoverHasLast = true
+                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+            }
         case .changed:
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
-            // No previous sample (re-entry, or a drag just ended): re-seed
-            // instead of posting a jump.
-            guard hoverHasLast else { hoverLast = p; hoverHasLast = true; return }
-            let d = CGPoint(x: p.x - hoverLast.x, y: p.y - hoverLast.y)
-            hoverLast = p
-            HardwareInput.shared.uikitMoved(d.x, d.y, src: "hover")
+            if p != .zero {
+                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                guard hoverHasLast else { hoverLast = p; hoverHasLast = true; return }
+                let d = CGPoint(x: p.x - hoverLast.x, y: p.y - hoverLast.y)
+                hoverLast = p
+                HardwareInput.shared.uikitMoved(d.x, d.y, src: "hover")
+            }
         default:
             hoverHasLast = false
-            let inside = view.bounds.contains(p)
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: inside)
+            HardwareInput.shared.pointerHovered(at: p, in: view, inside: false)
         }
     }
 
@@ -1952,19 +1968,22 @@ final class PointerFallback: NSObject {
         case .began:
             panLast = .zero
             hoverHasLast = false
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
-            HardwareInput.shared.pointerDragged(at: p, in: view)
+            if p != .zero {
+                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                HardwareInput.shared.pointerDragged(at: p, in: view)
+            }
         case .changed:
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
-            HardwareInput.shared.pointerDragged(at: p, in: view)
-            let d = CGPoint(x: t.x - panLast.x, y: t.y - panLast.y)
-            panLast = t
-            HardwareInput.shared.uikitMoved(d.x, d.y, src: "pan")
+            if p != .zero {
+                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                HardwareInput.shared.pointerDragged(at: p, in: view)
+                let d = CGPoint(x: t.x - panLast.x, y: t.y - panLast.y)
+                panLast = t
+                HardwareInput.shared.uikitMoved(d.x, d.y, src: "pan")
+            }
         default:
             panLast = .zero
             hoverHasLast = false
-            let inside = view.bounds.contains(p)
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: inside)
+            HardwareInput.shared.pointerHovered(at: p, in: view, inside: false)
         }
     }
 
