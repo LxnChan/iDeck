@@ -682,7 +682,7 @@ final class LibraryModel: ObservableObject {
     @Published var launchSlow = false
     @Published var launchLogs = false
     private var launchDismissLogged = false
-    var menuButtonRect = CGRect.zero
+    var menuButtonRect = CGRect(x: 1000, y: 32, width: 48, height: 48)
     var performanceRect = CGRect.zero
     /// The in-game menu and the starting screen take every touch.
     var blocksGameplayTouch: Bool { current != nil && (menu || launching) }
@@ -1144,6 +1144,9 @@ final class LibraryModel: ObservableObject {
         MetalBackedView.presentCountAtLaunch = launchPresent; laidOutAfterFirstPresent = false
         launching = true; overlayFields = entry.overlayFields ?? ["FPS", "Frame time", "RAM", "Battery"]
         displayMode = entry.displayMode
+        let screenBounds = UIScreen.main.bounds
+        let defaultW = max(screenBounds.width, screenBounds.height)
+        menuButtonRect = CGRect(x: max(100, (defaultW > 0 ? defaultW : 1180) - 64), y: 32, width: 48, height: 48)
         activeEntry = entry; current = entry.id; menu = false; performance = entry.performance; liveLogs = entry.liveLogs
         GameSessionOrientation.setLandscapeLocked(entry.landscapeOnly == true)
         LogStore.shared.setDisplayActive(entry.liveLogs)
@@ -1302,7 +1305,7 @@ final class LibraryModel: ObservableObject {
         controls.editing = false; controls.selected = nil
         controls.controls = savedControls; controls.visible = savedVisible; controls.sizeScale = savedSize
         if ControlPresetsModel.enabled { controls.layoutID = savedLayout }
-        current = nil; activeEntry = nil; menu = false; sessionMessage = ""
+        current = nil; activeEntry = nil; menu = false; sessionMessage = ""; menuButtonRect = .zero
         GameSessionOrientation.setLandscapeLocked(false)
         displayMode = .fit
         LogStore.shared.setDisplayActive(true)
@@ -4278,13 +4281,22 @@ struct LibraryFloatingItem: View {
         } else {
             safeNY = (ny.isFinite && ny > 0.02 && ny <= 1.0) ? ny : defaultNY
         }
+        let screenBounds = UIScreen.main.bounds
+        let screenW = max(screenBounds.width, screenBounds.height)
+        let screenH = min(screenBounds.width, screenBounds.height)
+        let vw = viewport.width > 0 ? viewport.width : (screenW > 0 ? screenW : 1180)
+        let vh = viewport.height > 0 ? viewport.height : (screenH > 0 ? screenH : 820)
         let left = insets.leading + measured.width / 2 + 8
         let top = insets.top + measured.height / 2 + 8
-        return CGPoint(x: min(max(left, viewport.width * safeNX + translation.width), max(left, viewport.width - insets.trailing - measured.width / 2 - 8)),
-                       y: min(max(top, viewport.height * safeNY + translation.height), max(top, viewport.height - insets.bottom - measured.height / 2 - 8)))
+        return CGPoint(x: min(max(left, vw * safeNX + translation.width), max(left, vw - insets.trailing - measured.width / 2 - 8)),
+                       y: min(max(top, vh * safeNY + translation.height), max(top, vh - insets.bottom - measured.height / 2 - 8)))
     }
     private func record(_ rect: CGRect) {
-        if isMenu { model.menuButtonRect = rect } else { model.performanceRect = rect }
+        if isMenu {
+            if rect.width > 0 && rect.height > 0 { model.menuButtonRect = rect }
+        } else {
+            model.performanceRect = rect
+        }
     }
     var body: some View {
         let center = position(drag)
@@ -4298,9 +4310,11 @@ struct LibraryFloatingItem: View {
                         .frame(width: 48, height: 48)
                 }
                 .buttonStyle(.plain)
-                .modifier(LibraryPillGlass())
+                .background(Circle().fill(Color.black.opacity(0.70)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                .shadow(color: .black.opacity(0.55), radius: 6, x: 0, y: 2)
                 .frame(width: 48, height: 48)
-                .opacity(faded && drag == .zero && !model.menu ? 0.85 : 1)
+                .opacity(1)
                 .accessibilityLabel("Game menu").accessibilityHint("Drag to move")
             } else {
                 LibraryMetrics()
@@ -4336,7 +4350,9 @@ struct LibraryFloatingItem: View {
         .onAppear { record(rect) }
         .onChange(of: rect) { _, value in record(value) }
         .onChange(of: drag) { _, _ in record(rect) }
-        .onDisappear { record(.zero) }
+        .onDisappear {
+            if !isMenu { record(.zero) }
+        }
         .task(id: touched) {
             guard isMenu else { return }
             faded = false
@@ -4390,6 +4406,7 @@ struct LibraryHUD: View {
                 if model.liveLogs && !model.launching { LibraryLiveLogs().frame(maxWidth: 550, maxHeight: 140).padding(.top, Self.topInset(geo) + 60).padding(.horizontal, 12).allowsHitTesting(false) }
                 if !model.sessionMessage.isEmpty { Text(model.sessionMessage).font(.caption).padding(10).background(.regularMaterial, in: Capsule()).frame(maxWidth: .infinity).padding(.top, Self.topInset(geo) + 12).allowsHitTesting(false) }
                 LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: hudInsets)
+                    .id("library-menu-floating-button")
                 if model.menu {
                     Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { model.menu = false }.transition(.opacity)
                     (bindsPage ? AnyView(bindsMenu) : AnyView(menu))
@@ -4402,6 +4419,7 @@ struct LibraryHUD: View {
                         .transition(reduceMotion ? .opacity : .scale(scale: 0.94).combined(with: .opacity))
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: model.menu)
             .onAppear {
                 withAnimation(.easeOut(duration: reduceMotion ? 0.15 : 0.35)) { launchVisible = true }

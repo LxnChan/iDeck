@@ -4381,15 +4381,22 @@ final class ControlsWindow: UIWindow {
                 let rb = root?.bounds ?? bounds
                 LogStore.shared.log("[ideck-hit] sample=\(steam64HitSamples) window=\(Int(bounds.width))x\(Int(bounds.height)) root=\(Int(rb.width))x\(Int(rb.height)) window-control=\(m.hitsInteractive(point, in: bounds, topBar: false) ? 1 : 0) root-control=\(m.hitsInteractive(rp, in: rb, topBar: false) ? 1 : 0) visible=\(m.visible ? 1 : 0)")
             }
-            if IDeckState.shared.menu || IDeckState.shared.menuRect.insetBy(dx: -12, dy: -12).contains(point) {
+            let fallbackTopRight = point.x >= max(0, bounds.width - 76) && point.y <= max(76, bounds.height * 0.25)
+            let hitsMenu = IDeckState.shared.menu ||
+                IDeckState.shared.menuRect.insetBy(dx: -14, dy: -14).contains(point) ||
+                (IDeckState.shared.menuRect.isEmpty && fallbackTopRight)
+            if hitsMenu {
                 return super.hitTest(point, with: event)
             }
             guard m.hitsInteractive(point, in: bounds, topBar: false) else { return nil }
             return super.hitTest(point, with: event)
         }
         if library.current != nil {
-            if library.menu || library.launching || library.menuButtonRect.insetBy(dx: -12, dy: -12).contains(point) ||
-                (library.performance && library.performanceRect.insetBy(dx: -8, dy: -8).contains(point)) {
+            let fallbackTopRight = point.x >= max(0, bounds.width - 76) && point.y <= max(76, bounds.height * 0.25)
+            let hitsMenu = library.menu || library.launching ||
+                library.menuButtonRect.insetBy(dx: -14, dy: -14).contains(point) ||
+                (library.menuButtonRect.isEmpty && fallbackTopRight)
+            if hitsMenu || (library.performance && library.performanceRect.insetBy(dx: -8, dy: -8).contains(point)) {
                 return super.hitTest(point, with: event)
             }
             guard m.hitsInteractive(point, in: bounds, topBar: false) else { return nil }
