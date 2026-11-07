@@ -142,10 +142,20 @@ public struct NetworkProxySettingsSection: View {
                 HStack {
                     Text("Port")
                     Spacer()
-                    TextField("7890", value: $proxy.port, format: .number)
-                        .multilineTextAlignment(.trailing)
-                        .keyboardType(.numberPad)
-                        .frame(maxWidth: 100)
+                    TextField("7890", text: Binding(
+                        get: { proxy.port > 0 ? String(proxy.port) : "" },
+                        set: { newValue in
+                            let digits = newValue.filter(\.isNumber)
+                            if digits.isEmpty {
+                                proxy.port = 0
+                            } else if let val = Int(digits) {
+                                proxy.port = min(val, 65535)
+                            }
+                        }
+                    ))
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+                    .frame(maxWidth: 100)
                 }
 
                 Toggle("App native proxy", isOn: $proxy.appEnabled)
@@ -179,8 +189,21 @@ public final class SteamNetworkChecker: ObservableObject {
     @Published public private(set) var alertMessage: String = ""
 
     private var checkTask: Task<Void, Never>?
+    private var hasCheckedOnLaunch: Bool = false
+
+    public var isChecking: Bool {
+        if case .checking = state { return true }
+        return false
+    }
 
     private init() {}
+
+    /// Runs the network check once when the app opens.
+    public func checkOnceOnLaunch() {
+        guard !hasCheckedOnLaunch else { return }
+        hasCheckedOnLaunch = true
+        check()
+    }
 
     public func check() {
         checkTask?.cancel()
@@ -318,122 +341,59 @@ public final class SteamNetworkChecker: ObservableObject {
     }
 }
 
-public struct SteamNetworkIndicatorBar: View {
+public struct SteamNetworkBadge: View {
     @ObservedObject private var checker = SteamNetworkChecker.shared
-    @ObservedObject private var proxy = NetworkProxySettings.shared
 
     public init() {}
 
-    private var barBackground: Color {
+    private var statusColor: Color {
         switch checker.state {
-        case .success:
-            return Color.green.opacity(0.14)
-        case .failure:
-            return Color.red.opacity(0.14)
         case .idle, .checking:
-            return Color(uiColor: .secondarySystemGroupedBackground)
-        }
-    }
-
-    private var barBorder: Color {
-        switch checker.state {
-        case .success:
-            return Color.green.opacity(0.55)
+            return .secondary
+        case .success(let latencyMs, _, _):
+            return latencyMs > 1000 ? .yellow : .green
         case .failure:
-            return Color.red.opacity(0.55)
-        case .idle, .checking:
-            return Color.secondary.opacity(0.25)
+            return .red
         }
     }
 
     public var body: some View {
-        Button {
-            checker.check()
-        } label: {
-            HStack(spacing: 8) {
-                switch checker.state {
-                case .idle, .checking:
-                    ProgressView()
-                        .controlSize(.mini)
-                case .success:
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 8, height: 8)
-                case .failure:
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                }
-
-                Text("steampowered.com")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Text(proxy.enabled ? "Proxy (\(proxy.type) \(proxy.cleanHost):\(proxy.port))" : "Direct")
-                    .font(.caption2)
+        HStack(spacing: 4) {
+            switch checker.state {
+            case .idle, .checking:
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Steam Connect …")
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            case .success(let latencyMs, _, _):
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(statusColor)
+                Text("Steam Connect \(latencyMs)ms")
+                    .monospacedDigit()
+                    .foregroundStyle(statusColor)
+            case .failure(let latencyMs, _, _, _):
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(Color.red)
+                Text("Steam Connect \(latencyMs)ms")
+                    .monospacedDigit()
+                    .foregroundStyle(Color.red)
+            }
 
-                Spacer(minLength: 6)
-
-                switch checker.state {
-                case .idle, .checking:
-                    Text("Checking…")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                case .success(let latencyMs, _, _):
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
-                        Text("\(latencyMs) ms")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                    }
-                    .foregroundStyle(.green)
-                case .failure(let latencyMs, _, _, let reason):
-                    HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
-                        Text("\(reason) · \(latencyMs) ms")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                    }
-                    .foregroundStyle(.red)
-                }
-
+            Button {
+                checker.check()
+            } label: {
                 Image(systemName: "arrow.clockwise")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(statusColor)
+                    .padding(.leading, 2)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(barBackground, in: Capsule())
-            .overlay(Capsule().strokeBorder(barBorder, lineWidth: 1))
+            .buttonStyle(.borderless)
+            .disabled(checker.isChecking)
         }
-        .buttonStyle(.plain)
-        .onAppear {
-            checker.check()
-        }
-        .onChange(of: proxy.enabled) { _, _ in
-            checker.check()
-        }
-        .onChange(of: proxy.type) { _, _ in
-            if proxy.enabled { checker.check() }
-        }
-        .onChange(of: proxy.host) { _, _ in
-            if proxy.enabled { checker.check() }
-        }
-        .onChange(of: proxy.port) { _, _ in
-            if proxy.enabled { checker.check() }
-        }
-        .alert("Proxy Connection Failed", isPresented: $checker.showDisableProxyAlert) {
-            Button("Disable Proxy", role: .destructive) {
-                checker.disableProxyAndRecheck()
-            }
-            Button("Keep Proxy", role: .cancel) {
-                checker.showDisableProxyAlert = false
-            }
-        } message: {
-            Text(checker.alertMessage)
-        }
+        .font(.footnote)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
     }
 }
