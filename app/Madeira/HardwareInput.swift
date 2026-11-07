@@ -605,6 +605,7 @@ final class HardwareInput: ObservableObject {
     private weak var observedWindow: UIWindow?
     private var refreshing = false
     private var refreshAgain = false
+    private var overlayBlocksFocus = false
 
     // MARK: held state (main thread)
 
@@ -862,8 +863,7 @@ final class HardwareInput: ObservableObject {
     private func computeBaseFocus() -> Bool {
         guard appActive, UIApplication.shared.applicationState == .active else { return false }
         guard Self.focusEnabled else { return true }
-        if LibraryModel.shared.blocksGameplayTouch || TouchControlsModel.shared.editing
-            || (IDeckState.enabled && IDeckState.shared.menu) {
+        if overlayBlocksFocus || LibraryModel.shared.blocksGameplayTouch || TouchControlsModel.shared.editing {
             return false
         }
         guard let v = MetalBackedView.keyboardTarget, let w = v.window,
@@ -900,6 +900,13 @@ final class HardwareInput: ObservableObject {
 
     /// Controllers come and go through PadStickMouse; the poll follows them.
     func controllersChanged() { refreshFocus("controllers") }
+
+    /// In-game overlay menu or control editor state changed.
+    func setOverlayBlocksFocus(_ blocked: Bool) {
+        guard overlayBlocksFocus != blocked else { return }
+        overlayBlocksFocus = blocked
+        settingsChanged("overlay")
+    }
 
     /// Pointer mode or pointer lock setting changed in InputSettings / in-game menu.
     func settingsChanged(_ what: String) {

@@ -4482,7 +4482,7 @@ struct TouchControlsOverlay: View {
             .onChange(of: m.editing) { _, _ in configureGamepad(landscape: landscape) }
             .onChange(of: library.blocksGameplayTouch) { _, _ in configureGamepad(landscape: landscape) }
             .onChange(of: ideck.menu) { _, _ in configureGamepad(landscape: landscape) }
-            .onDisappear { GamepadInput.shared.configureTouch(controls: []); TouchMouseGate.padOverlay = false }
+            .onDisappear { GamepadInput.shared.configureTouch(controls: []); TouchMouseGate.padOverlay = false; HardwareInput.shared.setOverlayBlocksFocus(false) }
         }
         .ignoresSafeArea()
     }
@@ -4517,7 +4517,7 @@ struct TouchControlsOverlay: View {
         let accepting = !m.editing && !library.blocksGameplayTouch && !(IDeckState.enabled && ideck.menu)
         GamepadInput.shared.configureTouch(controls: Set(ids), acceptingInput: accepting)
         TouchMouseGate.padOverlay = accepting && !ids.isEmpty
-        HardwareInput.shared.settingsChanged("overlay")
+        HardwareInput.shared.setOverlayBlocksFocus(!accepting)
     }
 
     /// ml1970: with MADEIRA_CONTROLS_XBOX_DEFAULT=1, a user with no controls file gets the built-in controller
