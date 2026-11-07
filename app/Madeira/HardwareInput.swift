@@ -1187,7 +1187,7 @@ final class HardwareInput: ObservableObject {
         setMouseInUse(true)
         if let last = lastAbsolute, last.x == sx, last.y == sy { return }
         lastAbsolute = (sx, sy)
-        if Self.desktopMode {
+        if Self.desktopMode || InputSettings.shared.mouseMode {
             // The touch trackpad continues from here; the compositor's arrow
             // follows the absolute move.
             MetalBackedView.cursor = CGPoint(x: Int(sx), y: Int(sy))
@@ -1244,7 +1244,7 @@ final class HardwareInput: ObservableObject {
             refreshFocus("button")
             if !baseFocused {
                 // nothing: the program does not have focus
-            } else if !Self.focusEnabled || pointerLocked || hoverSeen {
+            } else if !Self.focusEnabled || pointerLocked || hoverSeen || InputSettings.shared.mouseMode {
                 if mouseFocused { gameButtons.insert(b) }
             } else if let toGame = clickFocus.route(buttonAt: t, now: CACurrentMediaTime()) {
                 if toGame { gameButtons.insert(b) }
@@ -1280,8 +1280,20 @@ final class HardwareInput: ObservableObject {
 
     private func syncButtons() {
         let edges = buttonsPosted.update(gameButtons)
-        for b in edges.up { let e = b.event(down: false); winios_pointer(0, 0, e.flags, e.data) }
-        for b in edges.down { let e = b.event(down: true); winios_pointer(0, 0, e.flags, e.data) }
+        let (pos_x, pos_y): (Int32, Int32)
+        let flagsExtra: UInt32
+        if (currentRoute == .absolute || (InputSettings.shared.mouseMode && !pointerLocked)),
+           let last = lastAbsolute ?? (MetalBackedView.cursor != .zero ? (x: Int32(MetalBackedView.cursor.x), y: Int32(MetalBackedView.cursor.y)) : nil) {
+            pos_x = last.x
+            pos_y = last.y
+            flagsExtra = Self.moveFlag | Self.absoluteFlag
+        } else {
+            pos_x = 0
+            pos_y = 0
+            flagsExtra = 0
+        }
+        for b in edges.up { let e = b.event(down: false); winios_pointer(pos_x, pos_y, e.flags | flagsExtra, e.data) }
+        for b in edges.down { let e = b.event(down: true); winios_pointer(pos_x, pos_y, e.flags | flagsExtra, e.data) }
     }
 
     /// Reached from the mouse queue (GCMouse scroll) and from main (UIKit,
@@ -1292,7 +1304,19 @@ final class HardwareInput: ObservableObject {
         let notches = blocked ? [] : wheel.add(x, y)
         tickWheel += notches.count
         motionLock.unlock()
-        for n in notches { winios_pointer(0, 0, n.flags, UInt32(bitPattern: n.delta)) }
+        let (pos_x, pos_y): (Int32, Int32)
+        let flagsExtra: UInt32
+        if (currentRoute == .absolute || (InputSettings.shared.mouseMode && !pointerLocked)),
+           let last = lastAbsolute ?? (MetalBackedView.cursor != .zero ? (x: Int32(MetalBackedView.cursor.x), y: Int32(MetalBackedView.cursor.y)) : nil) {
+            pos_x = last.x
+            pos_y = last.y
+            flagsExtra = Self.moveFlag | Self.absoluteFlag
+        } else {
+            pos_x = 0
+            pos_y = 0
+            flagsExtra = 0
+        }
+        for n in notches { winios_pointer(pos_x, pos_y, n.flags | flagsExtra, UInt32(bitPattern: n.delta)) }
         if !notches.isEmpty { bumpTicker() }
     }
 
@@ -1305,7 +1329,8 @@ final class HardwareInput: ObservableObject {
     }
 
     private func updateRoute() {
-        let r = PointerPolicy.route(focused: mouseFocused, hover: hoverSeen, locked: pointerLocked,
+        let hover = (InputSettings.shared.mouseMode && !pointerLocked) ? true : hoverSeen
+        let r = PointerPolicy.route(focused: mouseFocused, hover: hover, locked: pointerLocked,
                                     cursorShown: cursorShownForRoute, absoluteAllowed: Self.absoluteEnabled)
         if r != currentRoute {
             currentRoute = r
@@ -1470,9 +1495,12 @@ final class HardwareInput: ObservableObject {
     func interceptTouches(_ touches: Set<UITouch>, _ event: UIEvent?, _ phase: TouchPhase) -> Bool {
         guard Self.enabled else { return false }
         if touches.contains(where: { $0.type == .indirectPointer }) {
-            if let t = touches.first(where: { $0.type == .indirectPointer }), let v = t.view {
-                let p = t.location(in: v)
-                pointerHovered(at: p, in: v, inside: v.bounds.contains(p))
+            if let t = touches.first(where: { $0.type == .indirectPointer }) {
+                let v = MetalBackedView.keyboardTarget ?? t.view
+                if let v {
+                    let p = t.location(in: v)
+                    pointerHovered(at: p, in: v, inside: v.bounds.contains(p))
+                }
             }
             switch phase {
             case .moved: break
@@ -1787,6 +1815,9 @@ final class PointerHider: NSObject, UIPointerInteractionDelegate {
     func pointerInteraction(_ interaction: UIPointerInteraction,
                             regionFor request: UIPointerRegionRequest,
                             defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+        if InputSettings.shared.mouseMode && !HardwareInput.shared.pointerLocked {
+            return nil
+        }
         guard let v = interaction.view else { return defaultRegion }
         return UIPointerRegion(rect: v.bounds)
     }
