@@ -2899,111 +2899,114 @@ struct LibraryView: View {
         ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {
-                            if liquidMetal.on {
-                                // On the chrome's middle band (dark, or light in light mode), with a soft
-                                // halo of the other tone for the moments a highlight passes under it.
-                                let light = colorScheme == .light
-                                Label("Desktop", systemImage: "desktopcomputer")
-                                    .lineLimit(1)
-                                    .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
-                                    .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
-                                    .padding(.horizontal, 14).frame(minHeight: 44)
-                                    .background(LiquidMetalFill())
-                                    .contentShape(Capsule())
-                            } else {
-                                Label("Desktop", systemImage: "desktopcomputer")
-                                    .lineLimit(1)
-                                    .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
-                                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                VStack(alignment: .leading, spacing: 10) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            Button { selected = model.entries.first(where: { $0.desktop == true }) ?? .desktopEntry } label: {
+                                if liquidMetal.on {
+                                    // On the chrome's middle band (dark, or light in light mode), with a soft
+                                    // halo of the other tone for the moments a highlight passes under it.
+                                    let light = colorScheme == .light
+                                    Label("Desktop", systemImage: "desktopcomputer")
+                                        .lineLimit(1)
+                                        .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
+                                        .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
+                                        .padding(.horizontal, 14).frame(minHeight: 44)
+                                        .background(LiquidMetalFill())
+                                        .contentShape(Capsule())
+                                } else {
+                                    Label("Desktop", systemImage: "desktopcomputer")
+                                        .lineLimit(1)
+                                        .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
+                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                                }
+                            }.buttonStyle(.plain)
+                                .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                                .id(LibraryEntry.desktopID)
+                                .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.desktopID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+
+                            if IDeckState.enabled {
+                                Button {
+                                    ideck.bigPictureMode = false
+                                    ideckAdvanced = false
+                                } label: {
+                                    if liquidMetal.on {
+                                        let light = colorScheme == .light
+                                        Label("Steam Launcher", systemImage: "gamecontroller")
+                                            .lineLimit(1)
+                                            .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
+                                            .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
+                                            .padding(.horizontal, 14).frame(minHeight: 44)
+                                            .background(LiquidMetalFill())
+                                            .contentShape(Capsule())
+                                    } else {
+                                        Label("Steam Launcher", systemImage: "gamecontroller")
+                                            .lineLimit(1)
+                                            .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
+                                            .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                                    }
+                                }.buttonStyle(.plain)
+                                    .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                                    .id(LibraryEntry.steamLauncherID)
+                                    .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.steamLauncherID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+                                    .contextMenu {
+                                        if let startSteam {
+                                            Button {
+                                                startSteam(false)
+                                            } label: {
+                                                Label("Launch Steam (Desktop Mode)", systemImage: "play.fill")
+                                            }
+                                        }
+                                        Button {
+                                            ideck.bigPictureMode = false
+                                            ideckAdvanced = false
+                                        } label: {
+                                            Label("Open Steam Launcher", systemImage: "checklist")
+                                        }
+                                    }
+
+                                Button {
+                                    ideck.bigPictureMode = true
+                                    ideckAdvanced = false
+                                } label: {
+                                    if liquidMetal.on {
+                                        let light = colorScheme == .light
+                                        Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
+                                            .lineLimit(1)
+                                            .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
+                                            .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
+                                            .padding(.horizontal, 14).frame(minHeight: 44)
+                                            .background(LiquidMetalFill())
+                                            .contentShape(Capsule())
+                                    } else {
+                                        Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
+                                            .lineLimit(1)
+                                            .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
+                                            .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
+                                    }
+                                }.buttonStyle(.plain)
+                                    .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
+                                    .id(LibraryEntry.steamBigPictureID)
+                                    .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.steamBigPictureID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
+                                    .contextMenu {
+                                        if let startSteam {
+                                            Button {
+                                                startSteam(true)
+                                            } label: {
+                                                Label("Launch Steam Big Picture", systemImage: "play.fill")
+                                            }
+                                        }
+                                        Button {
+                                            ideck.bigPictureMode = true
+                                            ideckAdvanced = false
+                                        } label: {
+                                            Label("Open Steam Launcher", systemImage: "checklist")
+                                        }
+                                    }
                             }
-                        }.buttonStyle(.plain)
-                            .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
-                            .id(LibraryEntry.desktopID)
-                            .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.desktopID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
-
-                        if IDeckState.enabled {
-                            Button {
-                                ideck.bigPictureMode = false
-                                ideckAdvanced = false
-                            } label: {
-                                if liquidMetal.on {
-                                    let light = colorScheme == .light
-                                    Label("Steam Launcher", systemImage: "gamecontroller")
-                                        .lineLimit(1)
-                                        .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
-                                        .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
-                                        .padding(.horizontal, 14).frame(minHeight: 44)
-                                        .background(LiquidMetalFill())
-                                        .contentShape(Capsule())
-                                } else {
-                                    Label("Steam Launcher", systemImage: "gamecontroller")
-                                        .lineLimit(1)
-                                        .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
-                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
-                                }
-                            }.buttonStyle(.plain)
-                                .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
-                                .id(LibraryEntry.steamLauncherID)
-                                .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.steamLauncherID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
-                                .contextMenu {
-                                    if let startSteam {
-                                        Button {
-                                            startSteam(false)
-                                        } label: {
-                                            Label("Launch Steam (Desktop Mode)", systemImage: "play.fill")
-                                        }
-                                    }
-                                    Button {
-                                        ideck.bigPictureMode = false
-                                        ideckAdvanced = false
-                                    } label: {
-                                        Label("Open Steam Launcher", systemImage: "checklist")
-                                    }
-                                }
-
-                            Button {
-                                ideck.bigPictureMode = true
-                                ideckAdvanced = false
-                            } label: {
-                                if liquidMetal.on {
-                                    let light = colorScheme == .light
-                                    Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
-                                        .lineLimit(1)
-                                        .font(.subheadline.weight(.semibold)).foregroundStyle(light ? .black : .white)
-                                        .shadow(color: (light ? Color.white : .black).opacity(0.75), radius: 2.5)
-                                        .padding(.horizontal, 14).frame(minHeight: 44)
-                                        .background(LiquidMetalFill())
-                                        .contentShape(Capsule())
-                                } else {
-                                    Label("Steam Big Picture Mode", systemImage: "gamecontroller.fill")
-                                        .lineLimit(1)
-                                        .font(.subheadline.weight(.medium)).padding(.horizontal, 14).frame(minHeight: 44)
-                                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
-                                }
-                            }.buttonStyle(.plain)
-                                .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeInOut(duration: 0.4), value: liquidMetal.on)
-                                .id(LibraryEntry.steamBigPictureID)
-                                .overlay(RoundedRectangle(cornerRadius: 22).stroke(focused == LibraryEntry.steamBigPictureID && controller.connected ? Color.cyan : .clear, lineWidth: 3))
-                                .contextMenu {
-                                    if let startSteam {
-                                        Button {
-                                            startSteam(true)
-                                        } label: {
-                                            Label("Launch Steam Big Picture", systemImage: "play.fill")
-                                        }
-                                    }
-                                    Button {
-                                        ideck.bigPictureMode = true
-                                        ideckAdvanced = false
-                                    } label: {
-                                        Label("Open Steam Launcher", systemImage: "checklist")
-                                    }
-                                }
                         }
                     }
+                    SteamNetworkIndicatorBar()
                 }
                 // The library's sections, as in the fork: Steam (installed and downloading
                 // Steam games, then Not installed), then Other games, the games you added.
