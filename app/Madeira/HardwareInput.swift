@@ -1391,7 +1391,7 @@ final class HardwareInput: ObservableObject {
     }
 
     private func renderCursor() {
-        let nativeCursor = InputSettings.shared.mouseMode && !pointerLocked
+        let nativeCursor = InputSettings.shared.mouseMode && !pointerLocked && mouseConnected
         winios_set_native_cursor_hidden(nativeCursor ? 1 : 0)
         guard directCursorLive else { return }
         let visible = !nativeCursor && mouseInUse && mouseFocused && cursorState.shown != 0
@@ -1519,7 +1519,7 @@ final class HardwareInput: ObservableObject {
             }
             return true
         }
-        if InputSettings.shared.mouseMode {
+        if InputSettings.shared.mouseMode && mouseConnected {
             // Mouse mode: screen touches from fingers do not control Wine.
             return true
         }

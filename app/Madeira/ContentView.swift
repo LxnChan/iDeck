@@ -303,6 +303,20 @@ final class MetalBackedView: UIView {
         // the games' Metal layer — never over the whole phone screen.
         let full = convert(presentationBounds(), to: w)
         winios_set_compositor_frame(full.minX, full.minY, full.width, full.height)
+        if desktopMode {
+            var deskW: Int32 = 0, deskH: Int32 = 0
+            winios_screen_size(&deskW, &deskH)
+            if deskW <= 0 { deskW = 1024 }
+            if deskH <= 0 { deskH = 768 }
+            Self.cursor = CGPoint(x: CGFloat(deskW / 2), y: CGFloat(deskH / 2))
+            if !HardwareInput.shared.mouseConnected {
+                InputSettings.shared.mouseMode = false
+            }
+            winios_set_native_cursor_hidden(0)
+            winios_cursor_show(1)
+            winios_cursor_move(Int32(Self.cursor.x), Int32(Self.cursor.y))
+            postPointer(F_MOVE | F_ABS)
+        }
         if !Self.layerRegistered {
             Self.layerRegistered = true
             madeira_display_set_layer(host.metalLayer)
@@ -587,7 +601,7 @@ final class MetalBackedView: UIView {
     private func tmgFilter(_ touches: Set<UITouch>, _ phase: UITouch.Phase) -> Set<UITouch>? {
         if phase == .began {
             _ = TouchMouseGate.mode   // logs the mode once
-            guard InputSettings.shared.mouseMode || TouchMouseGate.suppressing(touchpad: touchPointerMode, desktop: desktopMode) else { return touches }
+            guard (InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected) || TouchMouseGate.suppressing(touchpad: touchPointerMode, desktop: desktopMode) else { return touches }
             let direct = touches.filter { $0.type == .direct }
             guard !direct.isEmpty else { return touches }
             for t in direct { tmgSwallowed.insert(ObjectIdentifier(t)) }
@@ -607,7 +621,7 @@ final class MetalBackedView: UIView {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .began) { return }
         guard let touches = tmgFilter(touches, .began) else { return }
-        if InputSettings.shared.mouseMode { return }
+        if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeBegan(touches); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -661,7 +675,7 @@ final class MetalBackedView: UIView {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .moved) { return }
         guard let touches = tmgFilter(touches, .moved) else { return }
-        if InputSettings.shared.mouseMode { return }
+        if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeMoved(touches, event); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -727,6 +741,17 @@ final class MetalBackedView: UIView {
          * by dragging RIGHT. That is the same sign as a mouse. Negate both terms
          * for content-drag (finger-follows-world) feel. */
         if InputSettings.shared.relative {
+            if desktopMode {
+                let sens = CGFloat(InputSettings.shared.sensRel)
+                var deskW: Int32 = 0, deskH: Int32 = 0
+                winios_screen_size(&deskW, &deskH)
+                let maxX = CGFloat(max(Int(deskW), 1) - 1)
+                let maxY = CGFloat(max(Int(deskH), 1) - 1)
+                Self.cursor.x = min(max(Self.cursor.x + dx * sens, 0), maxX)
+                Self.cursor.y = min(max(Self.cursor.y + dy * sens, 0), maxY)
+                postPointer(F_MOVE | F_ABS)
+                return
+            }
             let sens = CGFloat(InputSettings.shared.sensRel)
             relCarryX += dx * sens
             relCarryY += dy * sens
@@ -752,7 +777,7 @@ final class MetalBackedView: UIView {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .ended) { return }
         guard let touches = tmgFilter(touches, .ended) else { return }
-        if InputSettings.shared.mouseMode { return }
+        if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeEnded(touches, event); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -813,7 +838,7 @@ final class MetalBackedView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .cancelled) { return }
         guard let touches = tmgFilter(touches, .cancelled) else { return }
-        if InputSettings.shared.mouseMode { return }
+        if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeCancelled(touches); return }
         guard desktopMode else {
             guard let t = touches.first else { return }
@@ -1761,6 +1786,11 @@ struct ContentView: View {
                 input.relative = true; input.touchMode = false; input.mouseMode = false
             }
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            HardwareInput.shared.settingsChanged("pointerMode")
+            let isHardwareMouse = input.mouseMode && HardwareInput.shared.mouseConnected
+            winios_set_native_cursor_hidden(isHardwareMouse ? 1 : 0)
+            winios_cursor_show(1)
+            winios_cursor_move(Int32(MetalBackedView.cursor.x), Int32(MetalBackedView.cursor.y))
         } label: {
             Text(input.mouseMode ? "Mouse" : input.touchMode ? "Touch" : input.relative ? "Relative" : "Absolute")
                 .font(.system(size: 13, weight: .semibold))

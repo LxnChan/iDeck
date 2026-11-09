@@ -996,6 +996,8 @@ static BOOL g_desk_rect_set;
 #define WINIOS_PX_TO_PT_Y (g_px_to_pt_y > 0 ? g_px_to_pt_y : g_px_to_pt)
 static CGRect g_comp_frame;              /* presentation area (window coords), from Swift */
 static BOOL g_comp_frame_set;
+static CALayer *g_cursor_layer;
+static CGPoint g_cursor_pos_px;
 
 static CGRect winios_layer_rect(int x, int y, int w, int h) {
     CGFloat s = g_px_to_pt, sy = WINIOS_PX_TO_PT_Y;
@@ -1053,6 +1055,12 @@ static void winios_layout_compositor(void) {
         if (l) l.frame = winios_layer_rect((int)r.origin.x, (int)r.origin.y,
                                            (int)r.size.width, (int)r.size.height);
         winios_place_metal_layer(key);
+    }
+    if (g_cursor_layer) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        winios_cursor_place();
+        [CATransaction commit];
     }
     fprintf(stderr, "[winios] compositor layout: frame=(%.0f,%.0f %.0fx%.0f) desk=%dx%d px_to_pt=%.3f\n",
             frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
@@ -1178,6 +1186,8 @@ static BOOL winios_covers_desktop(CGRect px) {
 
 static void winios_forget_cursor_layer(void);   /* cursor section, below */
 static void winios_game_cursor_refresh(void);   /* cursor section, below */
+static void winios_ensure_cursor_layer(void);   /* cursor section, below */
+static void winios_cursor_place(void);          /* cursor section, below */
 
 /* main thread only. Removes the compositor view and every window layer. */
 static void winios_drop_compositor(const char *why) {
@@ -1305,7 +1315,24 @@ static void winios_ensure_compositor(void) {
     [g_compositor_view.layer addSublayer:g_desk_bg];
     [win addSubview:g_compositor_view];
     winios_layout_compositor();
-    fprintf(stderr, "[winios] compositor attached inside presentation frame\n");
+    /* Desktop mode: immediately ensure cursor layer exists, is centered, and is visible */
+    int dw = 0, dh = 0;
+    winios_screen_size(&dw, &dh);
+    if (dw <= 0) dw = 1024;
+    if (dh <= 0) dh = 768;
+    if (g_cursor_pos_px.x == 0 && g_cursor_pos_px.y == 0) {
+        g_cursor_pos_px = CGPointMake(dw / 2.0, dh / 2.0);
+    }
+    winios_ensure_cursor_layer();
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    winios_cursor_place();
+    if (!g_native_cursor_hidden && !g_desktop_cursor_prog_hidden) {
+        g_cursor_layer.hidden = NO;
+    }
+    [CATransaction commit];
+    fprintf(stderr, "[winios] compositor attached inside presentation frame (cursor at %.0f,%.0f)\n",
+            g_cursor_pos_px.x, g_cursor_pos_px.y);
     fflush(stderr);
     /* A guest display-mode change moves the desktop's size without moving
      * the presentation frame, so winios_set_compositor_frame (which skips a
@@ -2227,8 +2254,6 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
  * S2 trackpad pointer + rendered cursor
  * ============================================================ */
 
-static CALayer *g_cursor_layer;
-
 static UIImage *winios_cursor_image(void) {
     static UIImage *img;
     static dispatch_once_t once;
@@ -2258,7 +2283,6 @@ static UIImage *winios_cursor_image(void) {
 
 /* Wine cursor image state (px). w==0 → builtin arrow fallback. */
 static int g_cur_w, g_cur_h, g_cur_hx, g_cur_hy;
-static CGPoint g_cursor_pos_px;
 
 /* madeira-bcd: the game-mode dialog cursor. A game session draws no cursor:
  * the finger is the pointer. Over a launcher or message box that the game-mode
@@ -2307,10 +2331,13 @@ static void winios_ensure_cursor_layer(void) {
     g_cursor_layer.zPosition = 10000;   /* above every window layer */
     g_cursor_layer.anchorPoint = CGPointMake(0, 0);
     g_cursor_layer.contents = (id)img.CGImage;
-    g_cursor_layer.bounds = CGRectMake(0, 0, img.size.width, img.size.height);
     g_cursor_layer.magnificationFilter = kCAFilterNearest;
-    if (g_comp_game || g_native_cursor_hidden) g_cursor_layer.hidden = YES;   /* winios_game_cursor_refresh shows it */
+    if (g_comp_game || g_native_cursor_hidden || g_desktop_cursor_prog_hidden) g_cursor_layer.hidden = YES;   /* winios_game_cursor_refresh shows it */
     [g_compositor_view.layer addSublayer:g_cursor_layer];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    winios_cursor_place();
+    [CATransaction commit];
 }
 
 /* main thread only — place (and size) the cursor at its stored px pos,
@@ -2396,6 +2423,9 @@ void winios_cursor_show(int show) {
             return;
         }
         g_desktop_cursor_prog_hidden = !show;
+        if (!g_cursor_layer && show && winios_desktop_session()) {
+            winios_ensure_cursor_layer();
+        }
         if (g_cursor_layer) g_cursor_layer.hidden = g_native_cursor_hidden || !show;
     });
 }
@@ -2407,8 +2437,13 @@ void winios_set_native_cursor_hidden(int hidden) {
         g_native_cursor_hidden = h;
         if (g_comp_game) {
             winios_game_cursor_refresh();
-        } else if (g_cursor_layer) {
-            g_cursor_layer.hidden = g_native_cursor_hidden || g_desktop_cursor_prog_hidden;
+        } else {
+            if (!g_cursor_layer && !h && winios_desktop_session()) {
+                winios_ensure_cursor_layer();
+            }
+            if (g_cursor_layer) {
+                g_cursor_layer.hidden = g_native_cursor_hidden || g_desktop_cursor_prog_hidden;
+            }
         }
     });
 }

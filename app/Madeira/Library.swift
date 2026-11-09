@@ -1221,6 +1221,20 @@ final class LibraryModel: ObservableObject {
             launchDismissLogged = true
             fputs("[launch-view] dismissed reason=\(reason) logs=\(launchLogs ? 1 : 0)\n", stderr)
         }
+        if let entry = activeEntry, entry.desktop == true || entry.runsInDesktop {
+            var dw: Int32 = 0, dh: Int32 = 0
+            winios_screen_size(&dw, &dh)
+            if dw <= 0 { dw = 1024 }
+            if dh <= 0 { dh = 768 }
+            MetalBackedView.cursor = CGPoint(x: CGFloat(dw / 2), y: CGFloat(dh / 2))
+            if !HardwareInput.shared.mouseConnected {
+                InputSettings.shared.mouseMode = false
+            }
+            winios_set_native_cursor_hidden(0)
+            winios_cursor_show(1)
+            winios_cursor_move(Int32(MetalBackedView.cursor.x), Int32(MetalBackedView.cursor.y))
+            winios_pointer(Int32(MetalBackedView.cursor.x), Int32(MetalBackedView.cursor.y), 0x8001, 0)
+        }
         LogStore.shared.setDisplayActive(liveLogs)
         var transaction = Transaction(); transaction.disablesAnimations = true
         withTransaction(transaction) { launchLogs = false; launching = false }
@@ -4199,6 +4213,11 @@ struct LibraryPointerSettings: View {
         Binding(get: { input.mouseMode ? "mouse" : (input.touchMode ? "touch" : (input.relative ? "relative" : "absolute")) }, set: { value in
             input.touchMode = value == "touch"; input.relative = value == "relative"; input.mouseMode = value == "mouse"
             fputs("[frontend-pointer] mode=\(value)\n", stderr)
+            HardwareInput.shared.settingsChanged("pointerMode")
+            let isHardwareMouse = value == "mouse" && HardwareInput.shared.mouseConnected
+            winios_set_native_cursor_hidden(isHardwareMouse ? 1 : 0)
+            winios_cursor_show(1)
+            winios_cursor_move(Int32(MetalBackedView.cursor.x), Int32(MetalBackedView.cursor.y))
         })
     }
     var body: some View {
