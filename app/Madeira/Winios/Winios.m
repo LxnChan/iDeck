@@ -998,6 +998,10 @@ static CGRect g_comp_frame;              /* presentation area (window coords), f
 static BOOL g_comp_frame_set;
 static CALayer *g_cursor_layer;
 static CGPoint g_cursor_pos_px;
+static BOOL g_desktop_cursor_prog_hidden;
+static BOOL g_native_cursor_hidden;
+static void winios_ensure_cursor_layer(void);
+static void winios_cursor_place(void);
 
 static CGRect winios_layer_rect(int x, int y, int w, int h) {
     CGFloat s = g_px_to_pt, sy = WINIOS_PX_TO_PT_Y;
@@ -1186,8 +1190,6 @@ static BOOL winios_covers_desktop(CGRect px) {
 
 static void winios_forget_cursor_layer(void);   /* cursor section, below */
 static void winios_game_cursor_refresh(void);   /* cursor section, below */
-static void winios_ensure_cursor_layer(void);   /* cursor section, below */
-static void winios_cursor_place(void);          /* cursor section, below */
 
 /* main thread only. Removes the compositor view and every window layer. */
 static void winios_drop_compositor(const char *why) {
@@ -2295,8 +2297,6 @@ static int g_cur_w, g_cur_h, g_cur_hx, g_cur_hy;
  * cursor. env.MADEIRA_GAME_DIALOG_CURSOR = 0 turns it off. */
 static BOOL g_game_cursor_seen;          /* a touch placed it since the overlay appeared */
 static BOOL g_game_cursor_prog_hidden;   /* the program hid its cursor */
-static BOOL g_desktop_cursor_prog_hidden;
-static BOOL g_native_cursor_hidden;      /* HardwareInput: native iOS cursor is visible in mouseMode */
 static _Atomic int g_game_cursor_drawn;  /* it is on screen; read off the main thread by winios_pointer */
 
 static int winios_game_cursor_enabled(void) {

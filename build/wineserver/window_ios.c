@@ -601,7 +601,47 @@ struct process *get_top_window_owner( struct desktop *desktop )
 /* get the top window size of a given desktop */
 void get_virtual_screen_rect( struct desktop *desktop, struct rectangle *rect, int is_raw )
 {
-    *rect = monitors_get_union_rect( desktop->winstation, is_raw );
+    if (desktop && desktop->winstation)
+        *rect = monitors_get_union_rect( desktop->winstation, is_raw );
+    else
+        memset( rect, 0, sizeof(*rect) );
+
+    if (rect->right <= rect->left || rect->bottom <= rect->top)
+    {
+        /* iOS: monitors_get_union_rect returns (0,0,0,0) since Wine's iOS port
+         * never registers display monitors in the winstation. Fall back to the
+         * desktop's top window size, the shared cursor clip, or the session screen size
+         * to prevent cursor clipping and mouse coords collapsing to (0,0). */
+        if (desktop && desktop->top_window &&
+            desktop->top_window->client_rect.right > desktop->top_window->client_rect.left &&
+            desktop->top_window->client_rect.bottom > desktop->top_window->client_rect.top)
+        {
+            *rect = desktop->top_window->client_rect;
+        }
+        else if (desktop && desktop->top_window &&
+                 desktop->top_window->window_rect.right > desktop->top_window->window_rect.left &&
+                 desktop->top_window->window_rect.bottom > desktop->top_window->window_rect.top)
+        {
+            *rect = desktop->top_window->window_rect;
+        }
+        else if (desktop && desktop->shared &&
+                 desktop->shared->cursor.clip.right > desktop->shared->cursor.clip.left &&
+                 desktop->shared->cursor.clip.bottom > desktop->shared->cursor.clip.top)
+        {
+            *rect = desktop->shared->cursor.clip;
+        }
+        else
+        {
+            const char *we = getenv( "MADEIRA_SCREEN_W" );
+            const char *he = getenv( "MADEIRA_SCREEN_H" );
+            int w = (we && atoi( we ) > 0) ? atoi( we ) : 1024;
+            int h = (he && atoi( he ) > 0) ? atoi( he ) : 768;
+            rect->left = 0;
+            rect->top = 0;
+            rect->right = w;
+            rect->bottom = h;
+        }
+    }
 }
 
 /* post a message to the desktop window */
@@ -665,15 +705,19 @@ static struct window *create_window( struct window *parent, struct window *owner
                  * and update_desktop_cursor_pos clips every (x,y) to (0,0),
                  * dropping all hardware mouse coords. Initialize the desktop
                  * shared cursor.clip directly to match SM_CXSCREEN/CYSCREEN
-                 * (1024x768 in sysparams_ios.c). */
+                 * (MADEIRA_SCREEN_W/H, fallback 1024x768). */
                 {
+                    const char *we = getenv( "MADEIRA_SCREEN_W" );
+                    const char *he = getenv( "MADEIRA_SCREEN_H" );
+                    int w = (we && atoi( we ) > 0) ? atoi( we ) : 1024;
+                    int h = (he && atoi( he ) > 0) ? atoi( he ) : 768;
                     desktop_shm_t *desktop_shm = desktop->shared;
                     SHARED_WRITE_BEGIN( desktop_shm, desktop_shm_t )
                     {
                         shared->cursor.clip.left = 0;
                         shared->cursor.clip.top = 0;
-                        shared->cursor.clip.right = 1024;
-                        shared->cursor.clip.bottom = 768;
+                        shared->cursor.clip.right = w;
+                        shared->cursor.clip.bottom = h;
                     }
                     SHARED_WRITE_END;
                 }
@@ -2392,16 +2436,20 @@ DECL_HANDLER(get_desktop_window)
             }
             /* Initialize cursor.clip to screen size — monitors_get_union_rect
              * returns (0,0,0,0) on iOS so update_desktop_cursor_pos clips
-             * every (x,y) to (0,0) by default. Hardcode 1024x768 to match
-             * sysparams_ios.c SM_CXSCREEN/CYSCREEN. */
+             * every (x,y) to (0,0) by default. Follow MADEIRA_SCREEN_W/H
+             * (fallback 1024x768). */
             {
+                const char *we = getenv( "MADEIRA_SCREEN_W" );
+                const char *he = getenv( "MADEIRA_SCREEN_H" );
+                int w = (we && atoi( we ) > 0) ? atoi( we ) : 1024;
+                int h = (he && atoi( he ) > 0) ? atoi( he ) : 768;
                 desktop_shm_t *desktop_shm = desktop->shared;
                 SHARED_WRITE_BEGIN( desktop_shm, desktop_shm_t )
                 {
                     shared->cursor.clip.left = 0;
                     shared->cursor.clip.top = 0;
-                    shared->cursor.clip.right = 1024;
-                    shared->cursor.clip.bottom = 768;
+                    shared->cursor.clip.right = w;
+                    shared->cursor.clip.bottom = h;
                 }
                 SHARED_WRITE_END;
             }

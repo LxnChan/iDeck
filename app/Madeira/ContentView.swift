@@ -399,6 +399,14 @@ final class MetalBackedView: UIView {
         tmScrollAccum = 0
     }
 
+    func resetTouchState() {
+        tmgSwallowed.removeAll()
+        tmResetGesture()
+        twoFingerActive = false
+        dragActive = false
+        dragTouch = nil
+    }
+
     /// Midpoint of every finger's down point this gesture.
     private func tmMidpoint() -> CGPoint {
         guard !tmDownPoints.isEmpty else { return tmGestureDownPoint }
@@ -1274,13 +1282,13 @@ extension MetalBackedView: UIKeyInput {
 final class InputSettings: ObservableObject {
     static let shared = InputSettings()
 
-    @Published var relative: Bool  = false { didSet { save() } }
+    @Published var relative: Bool  = false { didSet { save(); MetalBackedView.keyboardTarget?.resetTouchState(); HardwareInput.shared.settingsChanged("relative") } }
     @Published var sensAbs:  Double = 2.0  { didSet { save() } }
     @Published var sensRel:  Double = 2.0  { didSet { save() } }
     /// Touch pointer mode (MetalBackedView.touchModeBegan): tap to click where
     /// the finger is, hold or move to drag. Checked before `relative`; the
     /// library's pointer picker keeps the two mutually exclusive.
-    @Published var touchMode = false { didSet { save() } }
+    @Published var touchMode = false { didSet { save(); MetalBackedView.keyboardTarget?.resetTouchState(); HardwareInput.shared.settingsChanged("touchMode") } }
     /// Absolute mode long-press drag threshold in seconds. Default 0.25s (shortened by half from legacy 0.5s).
     @Published var longPressDelay: Double = 0.25 { didSet { save() } }
     /// ml649: heavy diagnostics. Default OFF so the shipped default is the fast
@@ -1299,7 +1307,7 @@ final class InputSettings: ObservableObject {
     /// External hardware mouse mode: direct 1:1 mouse mapping, keeps the native
     /// iOS cursor visible (unless pointer lock is toggled on), and ignores direct
     /// finger touches on the game surface.
-    @Published var mouseMode = false { didSet { save(); HardwareInput.shared.settingsChanged("mouseMode") } }
+    @Published var mouseMode = false { didSet { save(); MetalBackedView.keyboardTarget?.resetTouchState(); HardwareInput.shared.settingsChanged("mouseMode") } }
     /// Pointer lock switch in Settings (locks and hides the iOS cursor for 3D camera rotation).
     @Published var mouseLock = false { didSet { save(); HardwareInput.shared.settingsChanged("mouseLock") } }
 

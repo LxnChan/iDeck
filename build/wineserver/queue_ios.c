@@ -547,8 +547,12 @@ static int update_desktop_cursor_pos( struct desktop *desktop, user_handle_t win
     int updated;
     unsigned int time = get_tick_count();
 
-    x = max( min( x, desktop_shm->cursor.clip.right - 1 ), desktop_shm->cursor.clip.left );
-    y = max( min( y, desktop_shm->cursor.clip.bottom - 1 ), desktop_shm->cursor.clip.top );
+    if (desktop_shm->cursor.clip.right > desktop_shm->cursor.clip.left &&
+        desktop_shm->cursor.clip.bottom > desktop_shm->cursor.clip.top)
+    {
+        x = max( min( x, desktop_shm->cursor.clip.right - 1 ), desktop_shm->cursor.clip.left );
+        y = max( min( y, desktop_shm->cursor.clip.bottom - 1 ), desktop_shm->cursor.clip.top );
+    }
 
     SHARED_WRITE_BEGIN( desktop_shm, desktop_shm_t )
     {
@@ -656,6 +660,22 @@ void set_clip_rectangle( struct desktop *desktop, const struct rectangle *rect, 
         if (new_rect.left > new_rect.right || new_rect.top > new_rect.bottom) new_rect = top_rect;
     }
     else new_rect = top_rect;
+
+    if (new_rect.right <= new_rect.left || new_rect.bottom <= new_rect.top)
+    {
+        new_rect = top_rect;
+        if (new_rect.right <= new_rect.left || new_rect.bottom <= new_rect.top)
+        {
+            const char *we = getenv( "MADEIRA_SCREEN_W" );
+            const char *he = getenv( "MADEIRA_SCREEN_H" );
+            int w = (we && atoi( we ) > 0) ? atoi( we ) : 1024;
+            int h = (he && atoi( he ) > 0) ? atoi( he ) : 768;
+            new_rect.left = 0;
+            new_rect.top = 0;
+            new_rect.right = w;
+            new_rect.bottom = h;
+        }
+    }
 
     SHARED_WRITE_BEGIN( desktop_shm, desktop_shm_t )
     {

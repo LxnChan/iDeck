@@ -1168,7 +1168,7 @@ final class HardwareInput: ObservableObject {
     /// Absolute route: put the program's cursor where the iOS pointer is on
     /// the game view. Main thread.
     private func postAbsolute(_ p: CGPoint, in view: UIView) {
-        if p == .zero && lastAbsolute != nil { return }
+        if p == .zero { return }
         let (sx, sy): (Int32, Int32)
         if let mbv = (view as? MetalBackedView) ?? MetalBackedView.keyboardTarget {
             let ptInMbv = view === mbv ? p : view.convert(p, to: mbv)
@@ -1185,7 +1185,7 @@ final class HardwareInput: ObservableObject {
             sx = s.x
             sy = s.y
         }
-        if sx == 0 && sy == 0, let last = lastAbsolute, hypot(Double(last.x), Double(last.y)) > 10 {
+        if sx == 0 && sy == 0 && (lastAbsolute == nil || hypot(Double(lastAbsolute!.x), Double(lastAbsolute!.y)) > 10) {
             return
         }
         setMouseInUse(true)
@@ -1287,7 +1287,8 @@ final class HardwareInput: ObservableObject {
         let (pos_x, pos_y): (Int32, Int32)
         let flagsExtra: UInt32
         if (currentRoute == .absolute || (InputSettings.shared.mouseMode && !pointerLocked)),
-           let last = lastAbsolute ?? (MetalBackedView.cursor != .zero ? (x: Int32(MetalBackedView.cursor.x), y: Int32(MetalBackedView.cursor.y)) : nil) {
+           let last = lastAbsolute ?? (MetalBackedView.cursor != .zero ? (x: Int32(MetalBackedView.cursor.x), y: Int32(MetalBackedView.cursor.y)) : nil),
+           !(last.x == 0 && last.y == 0) {
             pos_x = last.x
             pos_y = last.y
             flagsExtra = Self.moveFlag | Self.absoluteFlag
@@ -1311,7 +1312,8 @@ final class HardwareInput: ObservableObject {
         let (pos_x, pos_y): (Int32, Int32)
         let flagsExtra: UInt32
         if (currentRoute == .absolute || (InputSettings.shared.mouseMode && !pointerLocked)),
-           let last = lastAbsolute ?? (MetalBackedView.cursor != .zero ? (x: Int32(MetalBackedView.cursor.x), y: Int32(MetalBackedView.cursor.y)) : nil) {
+           let last = lastAbsolute ?? (MetalBackedView.cursor != .zero ? (x: Int32(MetalBackedView.cursor.x), y: Int32(MetalBackedView.cursor.y)) : nil),
+           !(last.x == 0 && last.y == 0) {
             pos_x = last.x
             pos_y = last.y
             flagsExtra = Self.moveFlag | Self.absoluteFlag
