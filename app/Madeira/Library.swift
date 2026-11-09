@@ -646,6 +646,7 @@ final class LibraryModel: ObservableObject {
     @Published var enabled = false
     @Published var entries: [LibraryEntry] = []
     @Published var current: UUID?
+    @Published var showAddGame = false
     @Published var activeEntry: LibraryEntry?
     @Published var menu = false
     @Published var performance = false
@@ -3120,10 +3121,16 @@ struct LibraryView: View {
                 withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .easeOut(duration: 0.18)) { focused = ids[(index + delta + ids.count) % ids.count] }
             }
         }
-        .sheet(isPresented: $browser) {
+        .sheet(isPresented: Binding(
+            get: { browser || model.showAddGame },
+            set: {
+                browser = $0
+                model.showAddGame = $0
+            }
+        )) {
             NavigationStack { ExecutableBrowser(folder: LibraryModel.drive) { entry in
                 // madeira-bcd: the page shows the entry as stored, with its recommended settings.
-                model.save(entry); browser = false; selected = model.entries.first { $0.id == entry.id } ?? entry
+                model.save(entry); browser = false; model.showAddGame = false; selected = model.entries.first { $0.id == entry.id } ?? entry
             } }
         }
         .sheet(item: $selected) { entry in

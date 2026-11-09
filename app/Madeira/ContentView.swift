@@ -1395,6 +1395,7 @@ struct ContentView: View {
     @ObservedObject private var library = LibraryModel.shared
     /// "Use New Interface" (actionButtons) applies at the next start.
     @State private var showFrontendRestart = false
+    @State private var showAboutDialog = false
 
     enum JITStatus {
         case unknown
@@ -1579,6 +1580,38 @@ struct ContentView: View {
             // now or, from a cold start, once the library is up.
             .onReceive(ShortcutRouter.shared.$pendingExe) { _ in launchPendingShortcut() }
             .onChange(of: library.enabled) { _, _ in launchPendingShortcut() }
+            .onReceive(NotificationCenter.default.publisher(for: .appMenuAddCustomGame)) { _ in
+                ideckAdvanced = true
+                LibraryModel.shared.showAddGame = true
+                LibraryController.shared.commands.send("add")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .appMenuLaunchDesktop)) { _ in
+                ideckAdvanced = true
+                if library.current == nil && wine_process_is_running() == 0 {
+                    let entry = library.entries.first(where: { $0.desktop == true }) ?? .desktopEntry
+                    launchLibraryEntry(entry)
+                } else {
+                    LibraryModel.shared.showDetail = LibraryEntry.desktopID
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .appMenuLaunchSteamDesktop)) { _ in
+                ideck.bigPictureMode = false
+                startIDeck()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .appMenuLaunchSteamBigPicture)) { _ in
+                ideck.bigPictureMode = true
+                startIDeck()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .appMenuAbout)) { _ in
+                showAboutDialog = true
+            }
+            .alert("About iDeck", isPresented: $showAboutDialog) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+                let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+                Text("iDeck (Madeira) v\(version) (\(build))\n\nPC gaming and Windows compatibility layer for iPadOS / iOS powered by FEX-Emu, Wine, and Metal graphics translation.\n\nCreated by Will Faust, with contributions by Nick, Jfishin, Jesse, Dan Perks, bahacan16, spitefulowl, meshoklv, TheHadesc, and the open-source community.")
+            }
         }
     }
 
