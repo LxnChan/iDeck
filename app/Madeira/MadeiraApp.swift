@@ -163,7 +163,26 @@ final class MadeiraAppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     @objc func handleMenuAbout(_ sender: Any?) {
-        NotificationCenter.default.post(name: .appMenuAbout, object: nil)
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let appName = Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? (IDeckState.enabled ? "iDeck" : "Madeira")
+        let alert = UIAlertController(
+            title: "\(appName) v\(version) (\(build))",
+            message: "PC gaming and Windows compatibility layer for iPadOS / iOS powered by FEX-Emu, Wine, and Metal graphics translation.\n\nCreated by Will Faust, with contributions by Nick, Jfishin, Jesse, Dan Perks, bahacan16, spitefulowl, meshoklv, TheHadesc, and the open-source community.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        for scene in UIApplication.shared.connectedScenes {
+            if let windowScene = scene as? UIWindowScene,
+               let root = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+                var top = root
+                while let presented = top.presentedViewController {
+                    top = presented
+                }
+                top.present(alert, animated: true)
+                break
+            }
+        }
     }
 }
 
