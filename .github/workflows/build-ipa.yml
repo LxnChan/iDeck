@@ -89,6 +89,13 @@ jobs:
           python3 -B tests/host/check-library-sections.py
           python3 -B tests/host/check-ideck.py
 
+      - name: Run mouse and touch input regression checks
+        run: |
+          python3 -B tests/host/check-hardware-input.py
+          python3 -B tests/host/check-mouse-buttons.py
+          python3 -B tests/host/check-crosshair-input.py
+          python3 -B tests/host/check-touch-gamepad.py
+
       - name: Install build tools (LLVM & Bison)
         run: |
           brew install llvm bison

@@ -269,8 +269,11 @@ in-game menu:
 Changes made in the menu (FPS limit, Aspect & scaling, controls, overlay) are
 saved to the game's profile.
 
-**Pointer modes.** Absolute drags the pointer like a trackpad, Relative sends
-finger movement as mouse movement (mouse-look), and **Touch** clicks where the
+**Pointer modes.** Absolute drags the pointer like a trackpad. Crosshair sends
+relative mouse movement in both direct and desktop sessions: pan to aim, tap
+to left-click, or hold still for the Hold delay to press left, then pan while
+held and lift to release. A two-finger tap right-clicks; a two-finger drag
+scrolls. A pan beyond tap slop does not click on release. **Touch** clicks where the
 finger is: tap to click, hold or move to drag, a two- or three-finger tap for a
 right or middle click, a two-finger drag to scroll. Touch works in direct and
 desktop sessions.

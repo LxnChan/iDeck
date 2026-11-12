@@ -101,6 +101,13 @@ Buttons are left, right, middle and the two side buttons
 (`XBUTTON1`/`XBUTTON2`); continuous scrolling is summed into wheel notches of
 120, vertical and horizontal.
 
+Button delivery is chosen separately from motion, per button: once GCMouse
+reports a button it owns that button, and UIKit echoes are ignored. Other
+buttons continue to use UIKit, including when GCMouse reports only movement.
+Mouse mode recognizes synthetic compatibility clicks and keeps each pointer
+contact through its empty-mask release; real fingers remain ignored. Opening
+the menu, changing pointer mode or losing app focus releases held input.
+
 **Gain:** relative mouse motion has its own sensitivity (`sensMouse`, default
 1.0 = the device's deltas unchanged).
 

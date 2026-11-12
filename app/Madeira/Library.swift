@@ -4236,7 +4236,7 @@ struct LibraryPointerSettings: View {
         }.pickerStyle(.segmented)
         Text(input.mouseMode ? "Direct hardware mouse input (buttons, wheel, 1:1 cursor) with the native iOS pointer shown and screen touches ignored."
              : (input.touchMode ? "Tap anywhere to position and left-click. Touch and hold to drag. Two-finger tap right-clicks, two-finger drag scrolls."
-                : (input.relative ? "Pan anywhere to steer (relative mouse moves), tap to left-click." : "Pan like a notebook trackpad, tap to left-click.")))
+                : (input.relative ? "Pan anywhere to steer. Tap to left-click; hold still to press left, then pan while held. Lift to release. Two-finger tap right-clicks, two-finger drag scrolls." : "Pan like a notebook trackpad, tap to left-click.")))
             .font(.caption).foregroundStyle(.secondary)
         if input.mouseMode {
             Toggle("Lock cursor (3D camera)", isOn: $input.mouseLock)
@@ -4255,7 +4255,7 @@ struct LibraryPointerSettings: View {
             LabeledContent("Touch sensitivity") {
                 Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.1...8)
             }
-            if !input.relative && !input.touchMode {
+            if !input.touchMode {
                 LabeledContent("Hold delay") {
                     HStack(spacing: 8) {
                         Slider(value: $input.longPressDelay, in: 0.15...0.60, step: 0.05)

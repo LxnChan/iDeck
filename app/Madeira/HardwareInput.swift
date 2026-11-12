@@ -231,6 +231,60 @@ enum MouseButton: Int, CaseIterable, Comparable {
     static func < (a: MouseButton, b: MouseButton) -> Bool { a.rawValue < b.rawValue }
 }
 
+/// A button's raw reports own that button once they arrive. Other buttons
+/// still use the system pointer fallback, even if raw motion is available.
+/// Transferring ownership preserves a held press and ignores delayed echoes.
+struct MouseButtonSources {
+    private(set) var gc: Set<MouseButton> = []
+    private(set) var pointer: Set<MouseButton> = []
+    private(set) var gcReported: Set<MouseButton> = []
+    private var pointerPhysical: Set<MouseButton> = []
+    private var pointerBlocked: Set<MouseButton> = []
+
+    var wanted: Set<MouseButton> { gc.union(pointer.subtracting(gcReported)) }
+
+    mutating func claimGC(_ button: MouseButton) {
+        gcReported.insert(button)
+        if pointer.contains(button) { gc.insert(button) }
+        pointer.remove(button)
+    }
+
+    mutating func setGC(_ button: MouseButton, pressed: Bool) {
+        claimGC(button)
+        if pressed { gc.insert(button) } else { gc.remove(button) }
+    }
+
+    mutating func setPointer(_ buttons: Set<MouseButton>, focused: Bool = true) {
+        pointerPhysical = buttons
+        pointerBlocked.formIntersection(buttons)
+        if !focused { pointerBlocked.formUnion(buttons) }
+        pointer = focused ? buttons.subtracting(gcReported).subtracting(pointerBlocked) : []
+    }
+
+    mutating func releaseAll() {
+        gc.removeAll(); pointer.removeAll()
+        pointerBlocked = pointerPhysical
+    }
+
+    mutating func cancelPointer() {
+        pointer.removeAll(); pointerPhysical.removeAll(); pointerBlocked.removeAll()
+    }
+
+    mutating func reset() {
+        releaseAll(); gcReported.removeAll()
+        pointerPhysical.removeAll(); pointerBlocked.removeAll()
+    }
+}
+
+enum MouseTouchPolicy {
+    /// Compatibility clicks have a synthetic contact patch; a real finger
+    /// never becomes a mouse just because Mouse mode is selected.
+    static func isMouse(indirect: Bool, hasButtonMask: Bool, synthetic: Bool,
+                        mouseMode: Bool, mouseConnected: Bool) -> Bool {
+        indirect || hasButtonMask || (mouseMode && mouseConnected && synthetic)
+    }
+}
+
 /// What has been posted DOWN and not yet UP. Callers declare the complete set
 /// they want held and post the returned edges (ups first), so a lost callback
 /// converges on the next one instead of leaving a key held.
@@ -611,12 +665,25 @@ final class HardwareInput: ObservableObject {
 
     private var keys = FocusGate<Int32>()
     private var keysPosted = HeldEdges<Int32>()
-    /// Buttons whose press went to the program and are still down.
-    private var gameButtons: Set<MouseButton> = []
+    /// Buttons whose press went to the program and are still down, by source.
+    private var buttonSources = MouseButtonSources()
+    private var gameButtons: Set<MouseButton> { buttonSources.wanted }
     private var buttonsPosted = HeldEdges<MouseButton>()
     /// iPhone: presses waiting for the tap that says where they belong.
     private var pendingButtons: [MouseButton: (at: CFTimeInterval, released: Bool)] = [:]
     private var gcButtonSeen = false
+    /// A pointer contact stays a mouse through its empty-mask release.
+    private var mouseTouches: Set<ObjectIdentifier> = []
+    /// Empty-mask direct contacts coincident with a raw button are echoes,
+    /// including right-click echoes which must never invent a left click.
+    private var mouseEchoTouches: Set<ObjectIdentifier> = []
+    /// Direct empty-mask clicks briefly wait for a matching raw button edge;
+    /// native indirect-pointer clicks keep their immediate path.
+    private var pendingCompatibilityTouches: [ObjectIdentifier: (at: CFTimeInterval, released: Bool)] = [:]
+    private var compatibilityLeftTouches: Set<ObjectIdentifier> = []
+    private var pointerMaskButtons: Set<MouseButton> = []
+    /// Exclusions for the current callback, including contacts just released.
+    private var interceptedMouseTouches: Set<ObjectIdentifier> = []
 
     // MARK: cursor and lock state (main thread)
 
@@ -804,7 +871,13 @@ final class HardwareInput: ObservableObject {
         let had = keysPosted.down.count + buttonsPosted.down.count
         keys.focusLost()
         pendingButtons.removeAll()
-        gameButtons.removeAll()
+        buttonSources.releaseAll()
+        mouseTouches.removeAll()
+        mouseEchoTouches.removeAll()
+        pendingCompatibilityTouches.removeAll()
+        compatibilityLeftTouches.removeAll()
+        pointerMaskButtons.removeAll()
+        interceptedMouseTouches.removeAll()
         syncKeys()
         syncButtons()
         motionLock.lock(); carry.reset(); wheel.reset(); motionLock.unlock()
@@ -834,6 +907,7 @@ final class HardwareInput: ObservableObject {
         let keyboard = base && !typingElsewhere()
         let over = InputSettings.shared.mouseMode ? (!hoverSeen || pointerOver || clickFocus.onGame) : (hoverSeen ? pointerOver : clickFocus.onGame)
         let mouse = base && (!Self.focusEnabled || pointerLocked || over || !gameButtons.isEmpty)
+        if baseFocused && !base { MetalBackedView.keyboardTarget?.resetTouchState() }
         baseFocused = base
         if keyboard != keyboardFocused {
             keyboardFocused = keyboard
@@ -845,7 +919,12 @@ final class HardwareInput: ObservableObject {
             mouseFocused = mouse
             if !mouse {
                 pendingButtons.removeAll()
-                gameButtons.removeAll()
+                buttonSources.releaseAll()
+                mouseTouches.removeAll()
+                mouseEchoTouches.removeAll()
+                pendingCompatibilityTouches.removeAll()
+                compatibilityLeftTouches.removeAll()
+                pointerMaskButtons.removeAll()
                 syncButtons()
                 motionLock.lock(); carry.reset(); wheel.reset(); motionLock.unlock()
             }
@@ -913,6 +992,9 @@ final class HardwareInput: ObservableObject {
         guard Self.enabled else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            if ["mouseMode", "pointerMode", "touchMode", "relative"].contains(what) {
+                self.releaseAll("pointer mode changed")
+            }
             PointerHider.invalidateAll()
             self.refreshFocus(what)
         }
@@ -1059,7 +1141,13 @@ final class HardwareInput: ObservableObject {
     private func detachMouse(_ mouse: GCMouse?) {
         if let mouse { attachedMice.remove(ObjectIdentifier(mouse)) }
         pendingButtons.removeAll()
-        gameButtons.removeAll()
+        buttonSources.reset()
+        mouseTouches.removeAll()
+        mouseEchoTouches.removeAll()
+        pendingCompatibilityTouches.removeAll()
+        compatibilityLeftTouches.removeAll()
+        pointerMaskButtons.removeAll()
+        interceptedMouseTouches.removeAll()
         syncButtons()
         let remaining = GCMouse.mice()
         // The UIKit path never depended on a GCMouse object; only a GC-less AND
@@ -1246,12 +1334,13 @@ final class HardwareInput: ObservableObject {
         if pressed {
             setMouseInUse(true)
             refreshFocus("button")
+            buttonSources.claimGC(b)
             if !baseFocused {
                 // nothing: the program does not have focus
             } else if !Self.focusEnabled || pointerLocked || hoverSeen || InputSettings.shared.mouseMode {
-                if mouseFocused { gameButtons.insert(b) }
+                if mouseFocused { buttonSources.setGC(b, pressed: true) }
             } else if let toGame = clickFocus.route(buttonAt: t, now: CACurrentMediaTime()) {
-                if toGame { gameButtons.insert(b) }
+                if toGame { buttonSources.setGC(b, pressed: true) }
             } else {
                 pendingButtons[b] = (t, false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + ClickFocus.window) { [weak self] in
@@ -1260,7 +1349,7 @@ final class HardwareInput: ObservableObject {
             }
         } else {
             if let p = pendingButtons[b] { pendingButtons[b] = (p.at, true) }
-            gameButtons.remove(b)
+            buttonSources.setGC(b, pressed: false)
         }
         syncButtons()
         // A drag that left the game view keeps the mouse only while held.
@@ -1274,10 +1363,10 @@ final class HardwareInput: ObservableObject {
         let toGame = baseFocused
             && (clickFocus.route(buttonAt: p.at, now: CACurrentMediaTime()) ?? clickFocus.onGame)
         guard toGame else { return }
-        gameButtons.insert(b)
+        buttonSources.setGC(b, pressed: true)
         syncButtons()
         if p.released {
-            gameButtons.remove(b)
+            buttonSources.setGC(b, pressed: false)
             syncButtons()
         }
     }
@@ -1491,21 +1580,57 @@ final class HardwareInput: ObservableObject {
 
     enum TouchPhase { case began, moved, ended, cancelled }
 
-    /// Called first by each of MetalBackedView's touch overrides. Returns true
-    /// when the touches belong to the mouse and must not reach the finger
-    /// paths: an indirect-pointer touch is a mouse BUTTON (read off
-    /// `UIEvent.buttonMask`), and its motion is carried by `PointerFallback`'s
-    /// recognisers; a synthesised AssistiveTouch click is dropped. A real
-    /// finger on the game view hides the drawn cursor: the finger is the
-    /// pointer until the mouse moves again.
+    /// Called before the finger paths. Indirect pointer contacts and proven
+    /// compatibility contacts carry buttons, including their empty-mask ups.
+    /// Mixed callbacks leave real fingers for `fingerTouches(in:)` to return.
     func interceptTouches(_ touches: Set<UITouch>, _ event: UIEvent?, _ phase: TouchPhase) -> Bool {
+        interceptedMouseTouches.removeAll()
         guard Self.enabled else { return false }
-        let hasIndirect = touches.contains(where: { $0.type == .indirectPointer })
+        let maskHasPointerContact = touches.union(event?.allTouches ?? []).contains {
+            $0.type == .indirectPointer || mouseTouches.contains(ObjectIdentifier($0))
+        }
         let hasButtonMask = !(event?.buttonMask.isEmpty ?? true)
-        let isMouse = hasIndirect || hasButtonMask
-        if isMouse {
+        motionLock.lock(); let buttonAt = lastGCButtonAt; motionLock.unlock()
+        let sinceButton = buttonAt == 0 ? Double.infinity : CACurrentMediaTime() - buttonAt
+        var echoIDs: Set<ObjectIdentifier> = []
+        let pointerTouches = touches.filter { touch in
+            let id = ObjectIdentifier(touch)
+            if mouseEchoTouches.contains(id) { echoIDs.insert(id); return true }
+            if mouseTouches.contains(id) { return true }
+            let synthetic = SynthesizedTouch.looksSynthesized(direct: touch.type == .direct,
+                                                              majorRadius: Double(touch.majorRadius),
+                                                              secondsSinceButton: sinceButton)
+            if touch.type == .direct && synthetic && !hasButtonMask
+                && (sinceButton < SynthesizedTouch.buttonCoincidence
+                    || (!InputSettings.shared.mouseMode && shouldIgnore(touch, logging: false))) {
+                echoIDs.insert(id)
+                return true
+            }
+            return MouseTouchPolicy.isMouse(indirect: touch.type == .indirectPointer,
+                                             hasButtonMask: hasButtonMask
+                                                && (synthetic || (!maskHasPointerContact && touches.count == 1)),
+                                             synthetic: synthetic, mouseMode: InputSettings.shared.mouseMode,
+                                             mouseConnected: mouseConnected)
+        }
+        let ids = Set(pointerTouches.map(ObjectIdentifier.init))
+        if !pointerTouches.isEmpty {
+            if phase == .ended || phase == .cancelled {
+                mouseTouches.subtract(ids); mouseEchoTouches.subtract(ids)
+            } else {
+                mouseTouches.formUnion(ids); mouseEchoTouches.formUnion(echoIDs)
+            }
+            let compatibilityTouches = pointerTouches.filter {
+                let id = ObjectIdentifier($0)
+                return !echoIDs.contains(id) && (pendingCompatibilityTouches[id] != nil
+                    || compatibilityLeftTouches.contains(id)
+                    || (phase == .began && $0.type == .direct && !hasButtonMask))
+            }
+            let compatibilityIDs = Set(compatibilityTouches.map(ObjectIdentifier.init))
+            let buttonTouches = pointerTouches.filter {
+                !echoIDs.contains(ObjectIdentifier($0)) && !compatibilityIDs.contains(ObjectIdentifier($0))
+            }
             if phase == .began || phase == .moved {
-                let t = touches.first(where: { $0.type == .indirectPointer }) ?? touches.first
+                let t = pointerTouches.first(where: { $0.type == .indirectPointer }) ?? pointerTouches.first
                 let v = MetalBackedView.keyboardTarget ?? t?.view
                 if let t, let v {
                     let p = t.location(in: v)
@@ -1514,20 +1639,89 @@ final class HardwareInput: ObservableObject {
                     }
                 }
             }
-            switch phase {
-            case .moved: break
-            case .cancelled: uikitButtons([])       // no mask worth reading: drop all
-            case .began, .ended: pointerButtons(event, ending: phase == .ended)
+            for touch in compatibilityTouches {
+                compatibilityTouch(ObjectIdentifier(touch), phase)
             }
-            return true
+            if !buttonTouches.isEmpty {
+                switch phase {
+                case .moved: break
+                case .cancelled:
+                    buttonSources.cancelPointer()
+                    mouseTouches.removeAll()
+                    mouseEchoTouches.removeAll()
+                    pendingCompatibilityTouches.removeAll()
+                    compatibilityLeftTouches.removeAll()
+                    pointerMaskButtons.removeAll()
+                    syncButtons()
+                case .began, .ended: pointerButtons(event, ending: phase == .ended)
+                }
+            }
+            interceptedMouseTouches = ids
+            if pointerTouches.count == touches.count { return true }
         }
         if InputSettings.shared.mouseMode && mouseConnected {
             // Mouse mode: screen touches from fingers do not control Wine.
             return true
         }
-        let drop = shouldIgnore(touches, logging: phase == .began)
+        let fingers = fingerTouches(in: touches)
+        let drop = shouldIgnore(fingers, logging: phase == .began)
         if !drop, phase == .began { setMouseInUse(false) }
         return drop
+    }
+
+    private func compatibilityTouch(_ id: ObjectIdentifier, _ phase: TouchPhase) {
+        switch phase {
+        case .began:
+            guard pendingCompatibilityTouches[id] == nil, !compatibilityLeftTouches.contains(id) else { return }
+            refreshFocus("compatibility down")
+            guard baseFocused else { mouseEchoTouches.insert(id); return }
+            pendingCompatibilityTouches[id] = (CACurrentMediaTime(), false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + SynthesizedTouch.buttonCoincidence) { [weak self] in
+                self?.resolveCompatibilityClick(id)
+            }
+        case .ended:
+            if let pending = pendingCompatibilityTouches[id] {
+                pendingCompatibilityTouches[id] = (pending.at, true)
+            } else if compatibilityLeftTouches.remove(id) != nil {
+                postPointerButtons()
+            }
+        case .cancelled:
+            pendingCompatibilityTouches.removeValue(forKey: id)
+            compatibilityLeftTouches.remove(id)
+            postPointerButtons()
+        case .moved: break
+        }
+    }
+
+    private func resolveCompatibilityClick(_ id: ObjectIdentifier) {
+        guard let pending = pendingCompatibilityTouches.removeValue(forKey: id) else { return }
+        motionLock.lock(); let rawButtonAt = lastGCButtonAt; motionLock.unlock()
+        if rawButtonAt != 0 && abs(rawButtonAt - pending.at) <= SynthesizedTouch.buttonCoincidence {
+            if !pending.released { mouseEchoTouches.insert(id) }
+            return
+        }
+        refreshFocus("compatibility click")
+        guard baseFocused else { return }
+        compatibilityLeftTouches.insert(id)
+        postPointerButtons()
+        if pending.released {
+            compatibilityLeftTouches.remove(id)
+            postPointerButtons()
+        }
+    }
+
+    private func postPointerButtons() {
+        uikitButtons(pointerMaskButtons.union(compatibilityLeftTouches.isEmpty ? [] : [.left]))
+    }
+
+    /// Also used for allTouches so held mouse contacts cannot count as fingers
+    /// in a two-finger gesture. Released exclusions survive this callback.
+    func fingerTouches(in touches: Set<UITouch>) -> Set<UITouch> {
+        guard Self.enabled else { return touches }
+        return touches.filter {
+            $0.type != .indirectPointer && !mouseTouches.contains(ObjectIdentifier($0))
+                && !interceptedMouseTouches.contains(ObjectIdentifier($0))
+        }
     }
 
     private func pointerButtons(_ event: UIEvent?, ending: Bool) {
@@ -1536,7 +1730,8 @@ final class HardwareInput: ObservableObject {
             // A mask that still lists the button being released: if nothing
             // indirect or mouse touch is still down, nothing is held.
             let live = (event?.allTouches ?? []).filter {
-                ($0.type == .indirectPointer || InputSettings.shared.mouseMode)
+                mouseTouches.contains(ObjectIdentifier($0))
+                    && !mouseEchoTouches.contains(ObjectIdentifier($0))
                     && $0.phase != .ended && $0.phase != .cancelled
             }
             if live.isEmpty { mask = [] }
@@ -1550,7 +1745,8 @@ final class HardwareInput: ObservableObject {
         // UIKit's pointer-compatibility mode reports a click as a touch with an
         // empty mask. It is a left click.
         if !ending && want.isEmpty { want.insert(.left) }
-        uikitButtons(want)
+        pointerMaskButtons = want
+        postPointerButtons()
     }
 
     private func armAssistiveTouchHint() {
@@ -1614,10 +1810,10 @@ final class HardwareInput: ObservableObject {
     /// These touches reach the game view only while the pointer is over it.
     func uikitButtons(_ want: Set<MouseButton>) {
         guard Self.enabled else { return }
+        refreshFocus("UIKit buttons")
         let allowed = baseFocused ? want : []
-        if !want.isEmpty { noteUIKitPointer(); setMouseInUse(true) }
-        guard allowed != gameButtons else { return }
-        gameButtons = allowed
+        if !allowed.isEmpty { noteUIKitPointer(); setMouseInUse(true) }
+        buttonSources.setPointer(want, focused: baseFocused)
         syncButtons()
         startTicker()
     }
@@ -1881,6 +2077,45 @@ final class TouchFocusObserver: UIGestureRecognizer {
     }
 }
 
+/// Button contacts are observed before responder delivery, so a SwiftUI
+/// gesture cannot hide a click from the game surface. This recognizer never
+/// recognizes or delays a touch and only observes native pointer contacts.
+final class PointerButtonObserver: UIGestureRecognizer {
+    init() {
+        super.init(target: nil, action: nil)
+        allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        delegate = PointerGestureDelegate.shared
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        _ = HardwareInput.shared.interceptTouches(touches, event, .began)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        _ = HardwareInput.shared.interceptTouches(touches, event, .moved)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        _ = HardwareInput.shared.interceptTouches(touches, event, .ended)
+        finishIfIdle(event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        _ = HardwareInput.shared.interceptTouches(touches, event, .cancelled)
+        finishIfIdle(event)
+    }
+
+    private func finishIfIdle(_ event: UIEvent) {
+        let live = (event.allTouches ?? []).contains {
+            $0.type == .indirectPointer && $0.phase != .ended && $0.phase != .cancelled
+        }
+        if !live { state = .failed }
+    }
+}
+
 /// The mouse as UIKit sees it on the game surface. iOS splits one pointer into
 /// three shapes:
 ///   * hover:  movement with no button down (absolute positions);
@@ -1889,7 +2124,7 @@ final class TouchFocusObserver: UIGestureRecognizer {
 ///   * scroll: the wheel, a pan that accepts no touch type at all.
 /// Positions drive pointer focus and the absolute route on every path; the
 /// deltas carry motion when GameController cannot see the mouse. Buttons are
-/// indirect-pointer touches, handled by `HardwareInput.interceptTouches`. None
+/// indirect-pointer touches, observed before the view's finger handlers. None
 /// of this can touch a finger.
 final class PointerFallback: NSObject {
     private static let key = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
@@ -1908,6 +2143,7 @@ final class PointerFallback: NSObject {
         let pointer = UIPointerInteraction(delegate: PointerHider.shared)
         PointerHider.register(pointer)
         view.addInteraction(pointer)
+        view.addGestureRecognizer(PointerButtonObserver())
 
         let indirect = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         let hover = UIHoverGestureRecognizer(target: f, action: #selector(onHover(_:)))

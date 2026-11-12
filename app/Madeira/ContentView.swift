@@ -278,7 +278,7 @@ final class MetalBackedView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        guard let w = window else { return }   // detach: leave the host be
+        guard let w = window else { resetTouchState(); return }
         MetalBackedView.keyboardTarget = self  // keyboard button targets the live view
         // SwiftUI ancestors attach gesture recognizers that can delay or
         // cancel raw touch delivery (double-tap timing is exactly what
@@ -400,11 +400,21 @@ final class MetalBackedView: UIView {
     }
 
     func resetTouchState() {
+        touchGeneration += 1   // cancel a hold armed before the mode changed
+        for up in pointerClicks.keys.sorted() { winios_pointer(0, 0, up, 0) }
+        pointerClicks.removeAll()
+        if dragActive { winios_pointer(0, 0, F_LUP, 0) }
+        if tmResolved, let t = tmDragTouch {
+            let (x, y) = mapPoint(t.location(in: self))
+            winios_post_touch_up(x, y)
+        }
         tmgSwallowed.removeAll()
         tmResetGesture()
         twoFingerActive = false
         dragActive = false
         dragTouch = nil
+        panTouch = nil
+        relCarryX = 0; relCarryY = 0
     }
 
     /// Midpoint of every finger's down point this gesture.
@@ -554,7 +564,10 @@ final class MetalBackedView: UIView {
     private var movedBeyondSlop = false
     private var dragActive = false
     private var dragTouch: UITouch?          // the finger that owns the drag
+    private var panTouch: UITouch?           // rejects stale phases after an input reset
     private var touchGeneration = 0          // invalidates pending long-press timers
+    private var pointerClickGeneration = 0
+    private var pointerClicks: [UInt32: Int] = [:]   // delayed releases, keyed by UP flag
     private var twoFingerActive = false
     private var twoFingerMoved = false
     private var twoFingerStartTime: TimeInterval = 0
@@ -586,11 +599,29 @@ final class MetalBackedView: UIView {
         return i
     }
     private func postPointer(_ flags: UInt32, data: Int32 = 0) {
-        var f = flags
-        if !InputSettings.shared.relative {
-            f |= F_ABS | F_MOVE
+        if InputSettings.shared.relative {
+            // Buttons and wheel act at Wine's current cursor. Coordinates in
+            // a relative packet are deltas, never our cached desktop position.
+            winios_pointer(0, 0, flags & ~F_ABS, UInt32(bitPattern: data))
+        } else {
+            winios_pointer(Int32(Self.cursor.x), Int32(Self.cursor.y),
+                           flags | F_ABS | F_MOVE, UInt32(bitPattern: data))
         }
-        winios_pointer(Int32(Self.cursor.x), Int32(Self.cursor.y), f, UInt32(bitPattern: data))
+    }
+    private func postPointerClick(down: UInt32, up: UInt32) {
+        // Keep two very fast taps as distinct presses. The old release must
+        // finish before the next press, never release the new press later.
+        if pointerClicks.removeValue(forKey: up) != nil { winios_pointer(0, 0, up, 0) }
+        pointerClickGeneration += 1
+        let generation = pointerClickGeneration
+        pointerClicks[up] = generation
+        postPointer(down)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            guard let self, self.pointerClicks[up] == generation else { return }
+            self.pointerClicks.removeValue(forKey: up)
+            // A mode change before this release must not warp the cursor.
+            winios_pointer(0, 0, up, 0)
+        }
     }
     private func avgPoint(_ touches: [UITouch]) -> CGPoint {
         var x: CGFloat = 0, y: CGFloat = 0
@@ -599,7 +630,8 @@ final class MetalBackedView: UIView {
         return CGPoint(x: x / n, y: y / n)
     }
     private func activeTouches(_ event: UIEvent?) -> [UITouch] {
-        (event?.allTouches ?? []).filter { $0.phase != .ended && $0.phase != .cancelled }
+        HardwareInput.shared.fingerTouches(in: event?.allTouches ?? [])
+            .filter { $0.phase != .ended && $0.phase != .cancelled }
     }
 
     // Direct touches that began while TouchMouseGate was suppressing stay
@@ -628,10 +660,12 @@ final class MetalBackedView: UIView {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .began) { return }
+        let touches = HardwareInput.shared.fingerTouches(in: touches)
+        guard !touches.isEmpty else { return }
         guard let touches = tmgFilter(touches, .began) else { return }
         if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeBegan(touches); return }
-        guard desktopMode else {
+        guard desktopMode || InputSettings.shared.relative else {
             guard let t = touches.first else { return }
             let p = t.location(in: self)
             let (x, y) = mapTouch(t)
@@ -646,32 +680,32 @@ final class MetalBackedView: UIView {
         let active = activeTouches(event)
         touchGeneration += 1
         if active.count >= 2 {
+            let wasDragging = dragActive
+            if dragActive { postPointer(F_LUP); dragActive = false; dragTouch = nil }
             twoFingerActive = true
-            twoFingerMoved = false
+            twoFingerMoved = wasDragging   // a hold becoming a scroll is not a right-click
             twoFingerStartTime = now
             lastTwoFingerY = avgPoint(active).y
             scrollAccum = 0
-            // a drag started by the first finger stays active; harmless
             return
         }
         guard let t = touches.first else { return }
+        panTouch = t
         let p = t.location(in: self)
         touchStartPoint = p
         lastPanPoint = p
         touchStartTime = now
         movedBeyondSlop = false
         relCarryX = 0; relCarryY = 0   // ml641: never carry motion across a lift
-        // long-press → drag: hold still for longPressDelay (default 0.25s, was 0.5s), haptic confirms, then move
-        // the window; release drops. (Replaced double-tap-hold — it raced
-        // Windows' double-click detection: wine saw WM_LBUTTONDBLCLK.)
+        // A stationary hold presses left; after it arms, motion drags the
+        // trackpad cursor or steers Crosshair while held. A pan cancels it.
         let gen = touchGeneration
         let delay = max(0.1, InputSettings.shared.longPressDelay)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.touchGeneration == gen, !self.dragActive,
                   !self.movedBeyondSlop, !self.twoFingerActive,
-                  // ml643: in mouse-look the finger is the CAMERA, not a pointer.
-                  // Holding still to line up a shot must not press the mouse.
-                  !InputSettings.shared.relative else { return }
+                  self.panTouch === t,
+                  t.phase != .ended, t.phase != .cancelled else { return }
             self.dragActive = true
             self.dragTouch = t
             self.postPointer(self.F_LDOWN)
@@ -682,10 +716,12 @@ final class MetalBackedView: UIView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .moved) { return }
+        let touches = HardwareInput.shared.fingerTouches(in: touches)
+        guard !touches.isEmpty else { return }
         guard let touches = tmgFilter(touches, .moved) else { return }
         if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeMoved(touches, event); return }
-        guard desktopMode else {
+        guard desktopMode || InputSettings.shared.relative else {
             guard let t = touches.first else { return }
             let p = t.location(in: self)
             if !directTouchMovedBeyondSlop {
@@ -719,7 +755,7 @@ final class MetalBackedView: UIView {
             guard touches.contains(d) else { return }  // only the old tap finger moved
             t = d
         } else {
-            guard let f = touches.first else { return }
+            guard let f = panTouch, touches.contains(f) else { return }
             t = f
         }
         let p = t.location(in: self)
@@ -749,17 +785,6 @@ final class MetalBackedView: UIView {
          * by dragging RIGHT. That is the same sign as a mouse. Negate both terms
          * for content-drag (finger-follows-world) feel. */
         if InputSettings.shared.relative {
-            if desktopMode {
-                let sens = CGFloat(InputSettings.shared.sensRel)
-                var deskW: Int32 = 0, deskH: Int32 = 0
-                winios_screen_size(&deskW, &deskH)
-                let maxX = CGFloat(max(Int(deskW), 1) - 1)
-                let maxY = CGFloat(max(Int(deskH), 1) - 1)
-                Self.cursor.x = min(max(Self.cursor.x + dx * sens, 0), maxX)
-                Self.cursor.y = min(max(Self.cursor.y + dy * sens, 0), maxY)
-                postPointer(F_MOVE | F_ABS)
-                return
-            }
             let sens = CGFloat(InputSettings.shared.sensRel)
             relCarryX += dx * sens
             relCarryY += dy * sens
@@ -784,10 +809,12 @@ final class MetalBackedView: UIView {
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .ended) { return }
+        let touches = HardwareInput.shared.fingerTouches(in: touches)
+        guard !touches.isEmpty else { return }
         guard let touches = tmgFilter(touches, .ended) else { return }
         if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeEnded(touches, event); return }
-        guard desktopMode else {
+        guard desktopMode || InputSettings.shared.relative else {
             guard let t = touches.first else { return }
             let now = Date().timeIntervalSinceReferenceDate
             if !directTouchMovedBeyondSlop {
@@ -807,17 +834,16 @@ final class MetalBackedView: UIView {
         let now = Date().timeIntervalSinceReferenceDate
         if twoFingerActive {
             if activeTouches(event).isEmpty {
-                if !twoFingerMoved && now - twoFingerStartTime < 0.40
-                    && !InputSettings.shared.relative {   // ml643: see touchesBegan
-                    postPointer(F_RDOWN)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
-                        self?.postPointer(self?.F_RUP ?? 0x10)
-                    }
+                if !twoFingerMoved && now - twoFingerStartTime < 0.40 {
+                    postPointerClick(down: F_RDOWN, up: F_RUP)
                 }
                 twoFingerActive = false
+                panTouch = nil
             }
             return
         }
+        guard let owner = panTouch, touches.contains(owner) else { return }
+        panTouch = nil
         touchGeneration += 1   // cancel any pending long-press
         if dragActive {
             if let d = dragTouch, !touches.contains(d) {
@@ -830,25 +856,23 @@ final class MetalBackedView: UIView {
             dragTouch = nil
             return
         }
-        // stationary release before the drag threshold = click.
-        // ml643: NOT in relative mode — every small aim adjustment would fire the
-        // weapon. Left/right click are on-screen buttons there instead.
+        // A release within tap slop before the hold threshold is a click.
+        // An aiming pan that crossed slop never fires on release.
         let delay = max(0.1, InputSettings.shared.longPressDelay)
-        if !movedBeyondSlop && now - touchStartTime < delay && !InputSettings.shared.relative {
+        if !movedBeyondSlop && now - touchStartTime < delay {
             fputs("[trackpad] ended: click\n", stderr)
-            postPointer(F_LDOWN)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
-                self?.postPointer(self?.F_LUP ?? 0x4)
-            }
+            postPointerClick(down: F_LDOWN, up: F_LUP)
         }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         if HardwareInput.shared.interceptTouches(touches, event, .cancelled) { return }
+        let touches = HardwareInput.shared.fingerTouches(in: touches)
+        guard !touches.isEmpty else { return }
         guard let touches = tmgFilter(touches, .cancelled) else { return }
         if InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected { return }
         if touchPointerMode { touchModeCancelled(touches); return }
-        guard desktopMode else {
+        guard desktopMode || InputSettings.shared.relative else {
             guard let t = touches.first else { return }
             let (x, y) = directTouchMovedBeyondSlop ? mapTouch(t) : directTouchStartGuest
             winios_post_touch_up(x, y)
@@ -858,6 +882,7 @@ final class MetalBackedView: UIView {
         touchGeneration += 1
         if dragActive { postPointer(F_LUP); dragActive = false }
         dragTouch = nil
+        panTouch = nil
         twoFingerActive = false
     }
 }
@@ -1289,7 +1314,7 @@ final class InputSettings: ObservableObject {
     /// the finger is, hold or move to drag. Checked before `relative`; the
     /// library's pointer picker keeps the two mutually exclusive.
     @Published var touchMode = false { didSet { save(); MetalBackedView.keyboardTarget?.resetTouchState(); HardwareInput.shared.settingsChanged("touchMode") } }
-    /// Absolute mode long-press drag threshold in seconds. Default 0.25s (shortened by half from legacy 0.5s).
+    /// Trackpad/Crosshair stationary hold threshold in seconds.
     @Published var longPressDelay: Double = 0.25 { didSet { save() } }
     /// ml649: heavy diagnostics. Default OFF so the shipped default is the fast
     /// path; flip it on only when a run needs to be explainable.
