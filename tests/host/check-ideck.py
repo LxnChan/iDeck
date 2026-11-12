@@ -3,7 +3,7 @@
 from pathlib import Path
 import subprocess, tempfile
 root = Path(__file__).resolve().parents[2]
-s = (root / 'app/Madeira/SteamUIExperiment.swift').read_text()
+s = (root / 'app/Madeira/SteamUIExperiment.swift').read_text(encoding='utf-8')
 policy = s[s.index('enum SteamUIExperiment {'):s.index('\n@MainActor\nfinal class SteamUIEvidence')]
 test = r'''
 
@@ -39,10 +39,19 @@ assert(flight().results.map(\.id) == IDeckPrerequisite.allCases)
 let screen=CGSize(width:932,height:430)
 let corner=IDeckOverlayPosition.center(size:screen,saved:CGPoint(x:-1,y:-1),left:59,top:0,right:59,bottom:21)
 assert(corner.x==841 && corner.y==32)
-let moved=IDeckOverlayPosition.center(size:screen,saved:CGPoint(x:0.5,y:0.6),left:59,top:0,right:59,bottom:21)
-assert(abs(moved.x-466)<0.001 && abs(moved.y-258)<0.001)
+let moved=IDeckOverlayPosition.center(size:screen,saved:CGPoint(x:0.5,y:0.2),left:59,top:0,right:59,bottom:21)
+assert(abs(moved.x-466)<0.001 && abs(moved.y-86)<0.001)
+// The top-corner migration accepts saved positions only in the upper 35%.
+let boundary=IDeckOverlayPosition.center(size:screen,saved:CGPoint(x:0.5,y:0.35),left:59,top:0,right:59,bottom:21)
+assert(abs(boundary.x-466)<0.001 && abs(boundary.y-150.5)<0.001)
+for saved in [CGPoint(x:0.5,y:0.3501), CGPoint(x:0.5,y:0.6), CGPoint(x:CGFloat.nan,y:0.2), CGPoint(x:0.5,y:CGFloat.infinity)] {
+ let reset=IDeckOverlayPosition.center(size:screen,saved:saved,left:59,top:0,right:59,bottom:21)
+ assert(reset.x==841 && reset.y==32)
+}
 let edge=IDeckOverlayPosition.center(size:screen,saved:CGPoint(x:4,y:5),left:59,top:0,right:59,bottom:21)
-assert(edge.x==841 && edge.y==377)
+assert(edge.x==841 && edge.y==32)
+let rightEdge=IDeckOverlayPosition.center(size:screen,saved:CGPoint(x:4,y:0.2),left:59,top:0,right:59,bottom:21)
+assert(rightEdge.x==841 && rightEdge.y==86)
 assert(IDeckCommand(rawValue:"change-account") == .changeAccount)
 assert(IDeckCommand(rawValue:"exit-game") == .exitGame)
 assert(IDeckCommand(rawValue:"menu") == .steamMenu)
