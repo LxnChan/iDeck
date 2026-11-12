@@ -82,6 +82,13 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Run release and launch policy checks
+        run: |
+          python3 -B -m unittest discover -s tests/release -p 'test_*.py'
+          python3 -B tests/host/check-development-signing.py
+          python3 -B tests/host/check-library-sections.py
+          python3 -B tests/host/check-ideck.py
+
       - name: Install build tools (LLVM & Bison)
         run: |
           brew install llvm bison
@@ -230,12 +237,22 @@ jobs:
             fi
           fi
 
-          # Fallback if prefix-template.tar.gz could not be downloaded
-          if [ ! -f "app/Madeira/prefix-template.tar.gz" ]; then
-            echo "Warning: Creating fallback empty prefix-template.tar.gz..."
-            mkdir -p /tmp/fallback_pfx
-            tar -czf app/Madeira/prefix-template.tar.gz -C /tmp/fallback_pfx .
-          fi
+          # A missing or incomplete runtime must fail staging, not become an empty template.
+          python3 tools/check-prefix-template.py app/Madeira/prefix-template.tar.gz
+          for asset in \
+            app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/StikJIT \
+            app/Madeira/d3d12/libmetalirconverter.dylib \
+            app/Madeira/libntdll_unix.a \
+            app/Madeira/libwin32u_unix.a \
+            build/ideck-control/ideck-control.exe \
+            app/Madeira/aarch64-windows/cmd.exe \
+            app/Madeira/aarch64-windows/explorer.exe \
+            app/Madeira/i386-windows/ntdll.dll; do
+            if [ ! -s "$asset" ]; then
+              echo "::error::Required companion runtime asset is missing or empty: $asset"
+              exit 1
+            fi
+          done
 
           echo "Staging complete. Libraries present in app/Madeira:"
           ls -lh app/Madeira/*.a || true
@@ -327,7 +344,7 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
           echo "ipa_name=$IPA_NAME" >> $GITHUB_OUTPUT
 
-          APP_PATH=$(find build/DerivedData -name "Madeira.app" -type d | head -n 1)
+          APP_PATH="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app"
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
             echo "Error: Could not locate built Madeira.app under build/DerivedData"
             exit 1
@@ -335,16 +352,14 @@ jobs:
           echo "Found built application at: $APP_PATH"
           rm -f "$IPA_PATH"
 
-          if python3 tools/package-ipa.py "$APP_PATH" "$IPA_PATH" --entitlements app/Madeira/Madeira.entitlements; then
-            echo "Package complete with tools/package-ipa.py -> $IPA_NAME"
-          else
-            echo "tools/package-ipa.py returned non-zero, using fallback packaging..."
-            PAYLOAD_DIR="/tmp/manual_ipa_payload"
-            rm -rf "$PAYLOAD_DIR"
-            mkdir -p "$PAYLOAD_DIR/Payload"
-            cp -R "$APP_PATH" "$PAYLOAD_DIR/Payload/"
-            (cd "$PAYLOAD_DIR" && zip -r -9 "$GITHUB_WORKSPACE/$IPA_PATH" Payload)
+          python3 tools/package-ipa.py "$APP_PATH" "$IPA_PATH" --entitlements app/Madeira/Madeira.entitlements
+          INVENTORY_PATH="$OUTPUT_DIR/iDeck-fork-${SHORT_SHA}.inventory.json"
+          if [ ! -s "$IPA_PATH" ] || [ ! -s "$INVENTORY_PATH" ]; then
+            echo "::error::Packaging must produce both a non-empty IPA and inventory JSON."
+            exit 1
           fi
+          echo "ipa_path=$IPA_PATH" >> $GITHUB_OUTPUT
+          echo "inventory_path=$INVENTORY_PATH" >> $GITHUB_OUTPUT
 
           echo "IPA package generated successfully:"
           ls -lh "$OUTPUT_DIR"
@@ -354,7 +369,7 @@ jobs:
         with:
           name: iDeck-fork-${{ steps.package.outputs.short_sha }}
           path: |
-            output/*.ipa
-            output/*.inventory.json
+            ${{ steps.package.outputs.ipa_path }}
+            ${{ steps.package.outputs.inventory_path }}
           retention-days: 14
           if-no-files-found: error
