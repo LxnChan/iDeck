@@ -112,7 +112,18 @@ try FileManager.default.moveItem(at: fallback.appendingPathComponent(files.last!
 assert(!IDeckRules.steamClientReady(prefix: prefix)) // Never combine files from different clients.
 '''
 with tempfile.TemporaryDirectory() as temp:
-    p = Path(temp); (p/'main.swift').write_text('import Foundation\n#if canImport(CoreGraphics)\nimport CoreGraphics\n#endif\nenum MadeiraConfig { static func get(_ key: String) -> String? { nil } }\n' + policy + test)
+    # UI-backed configuration is outside the readiness policy exercised here.
+    host = '''import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
+enum MadeiraConfig { static func get(_ key: String) -> String? { nil } }
+struct NetworkProxySettings {
+    static let shared = Self()
+    let cefArguments = ""
+}
+'''
+    p = Path(temp); (p/'main.swift').write_text(host + policy + test)
     subprocess.run(['swiftc','-module-cache-path',str(p/'module-cache'),str(p/'main.swift'),'-o',str(p/'check')],check=True)
     subprocess.run([str(p/'check')],check=True)
 print('PASS: production iDeck complete-client readiness, architecture and no-overlap auto-start gates')
