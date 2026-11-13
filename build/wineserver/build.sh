@@ -18,7 +18,9 @@ fi
 
 # A clean checkout has no prebuilt archive. Build the unchanged members
 # from the pinned Wine tree below before replacing the iOS-specific ones.
-if [ ! -f "$OBJ_DIR/libwineserver.a" ] && [ -f "$APP_LIB" ]; then
+if [ "${WINE_REBUILD_ALL:-0}" = 1 ]; then
+    rm -f "$OBJ_DIR/libwineserver.a"
+elif [ ! -f "$OBJ_DIR/libwineserver.a" ] && [ -f "$APP_LIB" ]; then
     cp "$APP_LIB" "$OBJ_DIR/libwineserver.a"
 fi
 
@@ -118,7 +120,8 @@ PATCHED_FILES=(
 if [ ! -f "$OBJ_DIR/libwineserver.a" ]; then
     echo "=== Bootstrapping unchanged wineserver members from source ==="
     BASE_OBJECTS=()
-    for src in "$WINE_SRC"/server/*.c; do
+    while IFS= read -r file; do
+        src="$WINE_SRC/server/$file"
         name=$(basename "$src" .c)
         skip=0
         for entry in "${PATCHED_FILES[@]}"; do
@@ -127,7 +130,8 @@ if [ ! -f "$OBJ_DIR/libwineserver.a" ]; then
         [ "$skip" -eq 0 ] || continue
         compile_one "$src" "$name"
         BASE_OBJECTS+=("$OBJ_DIR/$name.o")
-    done
+    done < <(sed -nE 's/^[[:space:]]+([[:alnum:]_]+\.c)[[:space:]\\]*$/\1/p' "$WINE_SRC/server/Makefile.in")
+    [ "${#BASE_OBJECTS[@]}" -gt 0 ] || { echo "ERROR: no Wine server sources found" >&2; exit 1; }
     ar rcs "$OBJ_DIR/libwineserver.a" "${BASE_OBJECTS[@]}"
 fi
 

@@ -203,3 +203,6 @@ app/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework/Modules/StikJIT.s
 
 # dedicate research file
 lxnchan-research.md
+
+# Generated runtime provenance is embedded in the IPA, never committed.
+app/Madeira/legal/runtime-sync.json

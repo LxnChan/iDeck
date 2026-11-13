@@ -2071,6 +2071,15 @@ static void device_destroy( struct object *obj )
 /****************************************************************/
 /* inode functions */
 
+/* Madeira's Wine fork caches directory listings in ntdll. Invalidate after
+ * server-side namespace changes; imported from Madeira fbad430. */
+extern void madeira_dircache_changed(void) __attribute__((weak));
+
+static void dircache_changed(void)
+{
+    if (madeira_dircache_changed) madeira_dircache_changed();
+}
+
 static void unlink_closed_fd( struct inode *inode, struct closed_fd *fd )
 {
     /* make sure it is still the same file */
@@ -2079,6 +2088,7 @@ static void unlink_closed_fd( struct inode *inode, struct closed_fd *fd )
     {
         if (S_ISDIR(st.st_mode)) rmdir( fd->unix_name );
         else unlink( fd->unix_name );
+        dircache_changed();
     }
 }
 
@@ -3043,6 +3053,7 @@ static int ios_replace_readonly_link( const char *name, int flags, unsigned int 
     if (lstat( name, &st ) == -1 || !S_ISLNK( st.st_mode )) goto keep;
     if (stat( name, &st ) == -1 || !S_ISREG( st.st_mode ) || ios_link_target_in_use( &st )) goto keep;
     if (unlink( name ) == -1) goto keep;
+    dircache_changed();
     if (++count <= 16)
         fprintf( stderr, "[readonly-link] #%u an overwrite replaced a link to a read-only file with a new file "
                  "(MADEIRA_REPLACE_READONLY_LINK=0 fails it)\n", count );
@@ -3103,6 +3114,7 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
                 goto error;
             }
         }
+        else dircache_changed();
         flags &= ~(O_CREAT | O_EXCL | O_TRUNC);
     }
 
@@ -3670,6 +3682,7 @@ static void set_reparse_point( struct fd *fd, struct async *async )
             free( reparse_name );
             return;
         }
+        dircache_changed();
         free( fd->unix_name );
         fd->closed->unix_name = fd->unix_name = reparse_name;
     }
@@ -3768,6 +3781,7 @@ static void delete_reparse_point( struct fd *fd, struct async *async )
         return;
     }
 
+    dircache_changed();
     free( fd->unix_name );
     fd->closed->unix_name = fd->unix_name = base_name;
 
@@ -4096,6 +4110,7 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
                 file_set_error();
                 goto failed;
             }
+            dircache_changed();
         }
     }
 
@@ -4103,6 +4118,8 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
     {
         if (link( fd->unix_name, name ))
             file_set_error();
+        else
+            dircache_changed();
         free( name );
         return;
     }
@@ -4112,6 +4129,7 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
         file_set_error();
         goto failed;
     }
+    dircache_changed();
 
     if (is_file_executable( fd->unix_name ) != is_file_executable( name ) && !fstat( fd->unix_fd, &st ))
     {

@@ -13,9 +13,13 @@ pointing at our fork [willfaust/dxmt](https://github.com/willfaust/dxmt),
 - `libdxmt_combined.a` (~79MB) → `app/Madeira/libdxmt_combined.a`.
   DXMT's unix/Metal side + airconv shader translator + LLVM 15 static
   libs, combined into one archive Xcode links.
-- `d3d11.dll`, `dxgi.dll`, `winemetal.dll`, `d3d10core.dll` →
-  `app/Madeira/aarch64-windows/`. Aarch64 Windows PE, built via
-  llvm-mingw, loaded by Wine inside Madeira.
+- `d3d11.dll`, `dxgi.dll`, `winemetal.dll`, `d3d10core.dll`, `d3d9.dll` →
+  `app/Madeira/arm64ec-windows/` and `app/Madeira/i386-windows/`.
+  The i386 D3D9 shim is installed as `d3d9.dll` and `d3d9shim.dll`, with
+  the emulated frontend beside it as `d3d9-emulated.dll`.
+- `d3d11.dll`, `dxgi.dll`, `winemetal.dll` → `app/Madeira/aarch64-windows/`.
+  AArch64's existing `d3d9.dll` and `d3d10core.dll` keep their Wine ownership.
+- `nvapi64.dll` → `app/Madeira/arm64ec-windows/`.
 
 Both are gitignored — rebuild via the steps below.
 
@@ -53,43 +57,38 @@ Both are gitignored — rebuild via the steps below.
 
 ## Build steps
 
-### PE side (d3d11 / dxgi / winemetal / d3d10core)
+### PE side
 
-The meson cross file uses `@GLOBAL_SOURCE_ROOT@/toolchains/...` paths, so
-symlink our toolchains dir into the DXMT submodule once:
+First build Wine's three Windows farms and their import libraries in
+`wine/build-arm64ec`, `wine/build-macos` and `wine/build-i386`. When the
+complete runtime build calls this DXMT script separately, run the i386 Wine
+build with `SKIP_DXMT=1` to avoid rebuilding DXMT twice.
 
-```
-ln -s ../toolchains dxmt/toolchains
+From the repository root:
+
+```sh
+bash build/dxmt-ios/build-pe.sh
 ```
 
-Then:
-
-```
-cd dxmt
-SDKROOT=$(xcrun --sdk macosx --show-sdk-path) \
-    PATH="$(pwd)/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:/usr/bin:/opt/homebrew/bin:$PATH" \
-    meson setup --cross-file build-aarch64-win.txt --native-file build-osx.txt \
-                -Dwine_build_path=../../wine/build-macos build-pe
-SDKROOT=$(xcrun --sdk macosx --show-sdk-path) \
-    PATH="$(pwd)/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin:/usr/bin:/opt/homebrew/bin:$PATH" \
-    meson compile -C build-pe
-cp build-pe/src/d3d11/d3d11.dll \
-   build-pe/src/dxgi/dxgi.dll \
-   build-pe/src/winemetal/winemetal.dll \
-   build-pe/src/d3d10/d3d10core.dll \
-   ../../app/Madeira/aarch64-windows/
-```
+The script builds all three architectures from the pinned DXMT revision,
+validates the outputs before installing them, and preserves the source
+ownership listed above. `LLVM_MINGW` may override the toolchain directory
+(without `/bin`); `JOBS` controls parallel compilation. ARM64EC outputs stay
+under `dxmt/build-arm64ec` for the Madeira D3D12 link.
 
 ### Unix side (libdxmt_combined.a)
 
 ```
-./build.sh                    # builds libdxmt_unix.a (patched DXMT unix objs + airconv)
-
-# Combine DXMT objs + LLVM iOS static libs into one archive Xcode links.
-xcrun -sdk iphoneos libtool -static -o libdxmt_combined.a \
-    obj/*.o ../../toolchains/llvm-ios-build/lib/*.a
-cp libdxmt_combined.a ../../app/Madeira/
+bash build/dxmt-ios/build.sh
 ```
+
+A full build clears previous DXMT objects and creates a new combined archive
+from those objects and the pinned iOS LLVM libraries. It stages the result
+into `app/Madeira/libdxmt_combined.a`, replacing any companion-release copy.
+Both build halves apply `build/dxmt-patches/` and generate Metal 3.1 shader
+headers through `tools/build/build-shader-headers.sh`, including the existing
+Xcode 27 atomic patch. Updating only the submodule pin does not update the IPA's
+native archive or its Windows DLLs.
 
 ## What the fork changes vs upstream
 

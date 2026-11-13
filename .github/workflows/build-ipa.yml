@@ -27,7 +27,7 @@ on:
           - Debug
           - Release
       rebuild_fex:
-        description: 'Rebuild FEXCore from source with CPUID patches'
+        description: 'Force a fresh native runtime build (FEX, Wine and DXMT)'
         required: false
         default: false
         type: boolean
@@ -51,7 +51,7 @@ jobs:
   build:
     name: Build & Package IPA
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
@@ -59,6 +59,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Select Xcode (prefer iOS 27 / 26 SDK)
         run: |
@@ -99,7 +100,7 @@ jobs:
 
       - name: Install build tools (LLVM & Bison)
         run: |
-          brew install llvm bison
+          brew install llvm bison cmake ninja meson pkg-config flex autoconf automake libtool
           echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
           echo "/opt/homebrew/opt/bison/bin" >> $GITHUB_PATH
           echo "Installed tools:"
@@ -265,33 +266,175 @@ jobs:
           echo "Staging complete. Libraries present in app/Madeira:"
           ls -lh app/Madeira/*.a || true
 
-      - name: Rebuild FEXCore (optional)
-        if: ${{ inputs.rebuild_fex == true }}
+      - name: Prepare source-matched runtime build
+        id: runtime-key
         run: |
-          chmod +x build/fex-ios/build.sh
-          echo "==> Rebuilding FEXCore with CPUID patch from source..."
+          set -euo pipefail
+          find build tools -name '*.sh' -exec chmod +x {} +
+          bash tools/build/runtime-sdk-key.sh
+          python3 tools/build/runtime-input-key.py
+          echo "fex=$(git rev-parse HEAD:FEX)" >> "$GITHUB_OUTPUT"
+          echo "wine=$(git rev-parse HEAD:wine)" >> "$GITHUB_OUTPUT"
+          echo "dxmt=$(git rev-parse HEAD:dxmt)" >> "$GITHUB_OUTPUT"
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Restore pinned LLVM MinGW
+        id: mingw-cache
+        uses: actions/cache/restore@v4
+        with:
+          key: mingw-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/setup-llvm-mingw.sh') }}
+          path: toolchains/llvm-mingw-20260421-ucrt-macos-universal
+
+      - name: Prepare LLVM MinGW
+        run: |
+          bash tools/build/setup-llvm-mingw.sh
+          echo "LLVM_MINGW=$GITHUB_WORKSPACE/toolchains/llvm-mingw-20260421-ucrt-macos-universal" >> "$GITHUB_ENV"
+
+      - name: Save LLVM MinGW
+        if: steps.mingw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.mingw-cache.outputs.cache-primary-key }}
+          path: toolchains/llvm-mingw-20260421-ucrt-macos-universal
+
+      - name: Restore LLVM for iOS
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          key: llvm-ios17-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime-key.outputs.key }}-${{ hashFiles('tools/build/build-llvm-ios.sh') }}
+          path: |
+            toolchains/llvm-ios-build/.madeira-cache.sha256
+            toolchains/llvm-ios-build/lib/*.a
+            toolchains/llvm-ios-build/include
+            toolchains/llvm-project/llvm/include
+
+      - name: Build LLVM for iOS
+        run: bash tools/build/build-llvm-ios.sh
+
+      - name: Save LLVM for iOS
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+          path: |
+            toolchains/llvm-ios-build/.madeira-cache.sha256
+            toolchains/llvm-ios-build/lib/*.a
+            toolchains/llvm-ios-build/include
+            toolchains/llvm-project/llvm/include
+
+      - name: Restore native dependency libraries
+        id: dependency-cache
+        uses: actions/cache/restore@v4
+        with:
+          key: runtime-deps-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.dependency }}
+          path: |
+            toolchains/gnutls-ios
+            toolchains/ffmpeg-ios
+            research/freetype/include
+            build/freetype-ios/build/libfreetype.a
+            app/Madeira/libav*.a
+            app/Madeira/libswresample.a
+
+      - name: Build native dependency libraries
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          (cd build/gnutls-ios/src && shasum -a 256 -c SHA256SUMS)
+          bash build/gnutls-ios/build.sh
+          bash build/ffmpeg/build.sh
+          bash build/freetype-ios/build.sh
+
+      - name: Stage native dependency libraries
+        run: bash tools/build/sync-gnutls-libs.sh
+
+      - name: Save native dependency libraries
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.dependency-cache.outputs.cache-primary-key }}
+          path: |
+            toolchains/gnutls-ios
+            toolchains/ffmpeg-ios
+            research/freetype/include
+            build/freetype-ios/build/libfreetype.a
+            app/Madeira/libav*.a
+            app/Madeira/libswresample.a
+
+      - name: Generate Wine headers from the selected source
+        run: bash tools/build/build-wine.sh
+
+      - name: Restore Windows runtime
+        id: windows-cache
+        if: inputs.rebuild_fex != true
+        uses: actions/cache/restore@v4
+        with:
+          key: windows-runtime-v1-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.windows }}
+          path: |
+            app/Madeira/arm64ec-windows
+            app/Madeira/aarch64-windows
+            app/Madeira/i386-windows
+
+      - name: Rebuild complete Windows runtime
+        if: steps.windows-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          bash build/windows-runtime/build.sh
+          SKIP_DXMT=1 bash build/wine-i386/build.sh
+          bash build/dxmt-ios/build-pe.sh
+          bash build/fex-arm64ec/build.sh
+          bash build/fex-wow64/build.sh
+
+      - name: Save Windows runtime
+        if: inputs.rebuild_fex != true && steps.windows-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.windows-cache.outputs.cache-primary-key }}
+          path: |
+            app/Madeira/arm64ec-windows
+            app/Madeira/aarch64-windows
+            app/Madeira/i386-windows
+
+      - name: Restore native FEX Wine and DXMT
+        id: native-cache
+        if: inputs.rebuild_fex != true
+        uses: actions/cache/restore@v4
+        with:
+          key: native-runtime-v1-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.native }}
+          path: |
+            FEX/build-ios
+            app/Madeira/libntdll_unix.a
+            app/Madeira/libwin32u_unix.a
+            app/Madeira/libwineserver.a
+            app/Madeira/libdxmt_combined.a
+
+      - name: Rebuild complete native FEX Wine and DXMT
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
           bash build/fex-ios/build.sh
-          cp -vf FEX/build-ios/FEXCore/Source/libFEXCore*.a app/Madeira/ || true
+          bash build/ntdll-unix/build.sh
+          bash build/win32u-unix/build.sh
+          WINE_REBUILD_ALL=1 bash build/wineserver/build.sh
+          bash build/dxmt-ios/build.sh
 
-      - name: Setup FEXCore generated headers
+      - name: Save native FEX Wine and DXMT
+        if: inputs.rebuild_fex != true && steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+          path: |
+            FEX/build-ios
+            app/Madeira/libntdll_unix.a
+            app/Madeira/libwin32u_unix.a
+            app/Madeira/libwineserver.a
+            app/Madeira/libdxmt_combined.a
+
+      - name: Verify and record synchronized runtime inputs
         run: |
-          chmod +x build/setup-fex-headers.sh
+          set -euo pipefail
           bash build/setup-fex-headers.sh
-
-      - name: Setup Wine host headers
-        run: |
-          chmod +x build/setup-wine-headers.sh
-          bash build/setup-wine-headers.sh
-
-      - name: Rebuild modified Wine runtime libraries
-        run: |
-          chmod +x build/wineserver/build.sh build/ntdll-unix/compile_patched.sh build/win32u-unix/compile_patched.sh
-          echo "==> Rebuilding libwineserver.a with modified source..."
-          bash build/wineserver/build.sh
-          echo "==> Rebuilding libntdll_unix.a with modified source..."
-          bash build/ntdll-unix/compile_patched.sh
-          echo "==> Rebuilding libwin32u_unix.a with modified source..."
-          bash build/win32u-unix/compile_patched.sh
+          python3 tools/check-wine-media-dlls.py app/Madeira/arm64ec-windows
+          python3 tools/check-synced-runtime.py --record app/Madeira
 
       - name: Build application with xcodebuild
         run: |
@@ -372,6 +515,26 @@ jobs:
           echo "IPA package generated successfully:"
           ls -lh "$OUTPUT_DIR"
 
+      - name: Verify packaged runtime matches the build
+        run: |
+          python3 tools/check-synced-runtime.py --ipa '${{ steps.package.outputs.ipa_path }}' \
+            --output 'output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json'
+
+      - name: Retain runtime build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-build-diagnostics-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            build/ntdll-unix/obj/*.err
+            build/win32u-unix/obj/*.err
+            build/wineserver/obj/err-*.txt
+            build/gnutls-ios/obj/*.log
+            wine/build-*/config.log
+            wine/build-*/*build.log
+
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -379,5 +542,6 @@ jobs:
           path: |
             ${{ steps.package.outputs.ipa_path }}
             ${{ steps.package.outputs.inventory_path }}
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json
           retention-days: 14
           if-no-files-found: error

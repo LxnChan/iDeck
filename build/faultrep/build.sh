@@ -9,7 +9,7 @@
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$DIR/../.." && pwd)"
-MINGW="$REPO_ROOT/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
+MINGW="${LLVM_MINGW:-$REPO_ROOT/toolchains/llvm-mingw-20260421-ucrt-macos-universal}/bin"
 OUT="${OUT:-$DIR/out}"
 DEST="${DEST:-$REPO_ROOT/app/Madeira/arm64ec-windows}"
 mkdir -p "$OUT"

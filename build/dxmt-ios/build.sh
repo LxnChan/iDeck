@@ -2,13 +2,14 @@
 # Build DXMT winemetal unix side + airconv + dxbc_parser as iOS-aarch64
 # static library, for linking into Madeira.app.
 #
-# Produces: libdxmt_unix.a
-set -eu
+# Produces: libdxmt_unix.a and app/Madeira/libdxmt_combined.a.
+set -euo pipefail
 
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$BUILD_DIR/../.." && pwd)"
 DXMT_SRC="$REPO_ROOT/dxmt/src"
 DXMT_ROOT="$REPO_ROOT/dxmt"
+bash "$REPO_ROOT/build/dxmt-patches/apply.sh"
 LLVM_SRC="$REPO_ROOT/toolchains/llvm-project/llvm"
 LLVM_BUILD="$REPO_ROOT/toolchains/llvm-ios-build"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -16,6 +17,11 @@ OBJ_DIR="$BUILD_DIR/obj"
 OUT_LIB="$BUILD_DIR/libdxmt_unix.a"
 
 mkdir -p "$OBJ_DIR"
+# A full build must not carry removed sources or optional converter objects
+# from a previous revision into the archive.
+if [ -z "${MADEIRA_ONLY:-}" ]; then
+    rm -f "$OBJ_DIR"/*.o
+fi
 
 COMMON_FLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=18.0 -fblocks -O2"
 INCLUDES="-I$DXMT_ROOT/include -I$DXMT_ROOT/libs -I$DXMT_SRC/winemetal -I$DXMT_SRC/airconv"
@@ -99,6 +105,7 @@ compile_cxx() {
 # MADEIRA: the native D3D9 frontend and its substrate (section 8.10 step 1).
 compile_madeira_cxx() {
     local src=$1 name=$2 extra="${3:-}"
+    if [ -n "${MADEIRA_ONLY:-}" ] && [ "$name" != "$MADEIRA_ONLY" ]; then return 0; fi
     printf "  %-40s " "$name"
     if xcrun -sdk iphoneos clang++ $COMMON_FLAGS $MADEIRA_CXX_FLAGS $MADEIRA_WARNINGS \
         $MADEIRA_INCLUDES $INCLUDES_DIRECTX $INCLUDES_SHADERS $MADEIRA_DEFS $extra \
@@ -111,6 +118,7 @@ compile_madeira_cxx() {
 
 compile_madeira_c() {
     local src=$1 name=$2 extra="${3:-}"
+    if [ -n "${MADEIRA_ONLY:-}" ] && [ "$name" != "$MADEIRA_ONLY" ]; then return 0; fi
     printf "  %-40s " "$name"
     if xcrun -sdk iphoneos clang $COMMON_FLAGS -std=c11 $MADEIRA_WARNINGS \
         $MADEIRA_INCLUDES $INCLUDES_DIRECTX $INCLUDES_SHADERS $MADEIRA_DEFS $extra \
@@ -197,28 +205,7 @@ compile_objc "$DXMT_SRC/winemetal/unix/winemetal_unix.c" winemetal_unix
 compile_objc "$DXMT_SRC/winemetal/unix/cache.c"          cache
 
 echo "=== airconv (C++ 20, needs LLVM headers) ==="
-# Meson's airconv target generates these embedded AIR modules. A clean
-# standalone build must generate them too, before compiling their consumer.
-mkdir -p "$BUILD_DIR/shader-headers"
-for shader in air_msad air_samplepos air_tessellation; do
-    src="$DXMT_SRC/airconv/shaders/$shader.metal"
-    header="$BUILD_DIR/shader-headers/$shader.h"
-    patch_file="$BUILD_DIR/xcode27-metal-atomic.patch"
-    if [ ! -f "$header" ] || [ "$src" -nt "$header" ] || [ "$0" -nt "$header" ] || [ "$patch_file" -nt "$header" ]; then
-        # Patch a staged copy, keeping the pinned DXMT submodule unchanged.
-        if [ "$shader" = air_tessellation ]; then
-            staged="$BUILD_DIR/shader-headers/$shader.metal"
-            cp "$src" "$staged"
-            if grep -q '__metal_atomic_fetch_add_explicit' "$staged"; then
-                patch -s "$staged" < "$patch_file"
-            fi
-            src="$staged"
-        fi
-        xcrun -sdk macosx metal -std=metal3.1 --target=air64-apple-macos14.0 \
-            -o "$BUILD_DIR/shader-headers/$shader.air" -c "$src"
-        xxd -n "$shader" -i "$BUILD_DIR/shader-headers/$shader.air" "$header"
-    fi
-done
+bash "$REPO_ROOT/tools/build/build-shader-headers.sh"
 for cpp in airconv_context.cpp air_type.cpp air_signature.cpp air_operations.cpp \
            dxbc_converter.cpp dxbc_converter_gs.cpp dxbc_converter_ts.cpp \
            dxbc_converter_basicblock.cpp dxbc_converter_cfg.cpp \
@@ -234,6 +221,7 @@ compile_cxx "$DXMT_SRC/airconv/transforms/lower_16bit_texread.cpp" lower_16bit_t
 echo "=== DXBCParser (uses exceptions — override) ==="
 for cpp in BlobContainer.cpp DXBCUtils.cpp ShaderBinary.cpp; do
     name=dxbc_$(basename "$cpp" .cpp)
+    if [ -n "${MADEIRA_ONLY:-}" ] && [ "$name" != "$MADEIRA_ONLY" ]; then continue; fi
     # ShaderBinary uses `throw`, so we can't use -fno-exceptions from CXX_FLAGS.
     printf "  %-40s " "$name"
     if xcrun -sdk iphoneos clang++ $COMMON_FLAGS -std=c++20 -fno-rtti \
@@ -349,21 +337,18 @@ fi
 
 echo ""
 echo "=== Archiving libdxmt_unix.a ==="
-xcrun -sdk iphoneos ar rcs "$OUT_LIB" "$OBJ_DIR"/*.o
+xcrun -sdk iphoneos libtool -static -o "$OUT_LIB.tmp" "$OBJ_DIR"/*.o
+mv -f "$OUT_LIB.tmp" "$OUT_LIB"
 echo "Built: $OUT_LIB ($(wc -c < "$OUT_LIB" | tr -d ' ') bytes)"
 
-# The app links libdxmt_combined.a (this unix side merged with the LLVM archives
-# airconv needs), NOT libdxmt_unix.a. Refreshing only the latter is how a change
-# here reaches nothing: the app would keep linking the previous objects and the
-# build would look clean. Replace our members in place and re-index.
+# Generate the complete archive from this build's objects and the pinned iOS
+# LLVM libraries, even when a companion release staged an older combined file.
 COMBINED="$BUILD_DIR/libdxmt_combined.a"
-if [ -f "$COMBINED" ]; then
-    echo "=== Refreshing libdxmt_combined.a ==="
-    xcrun -sdk iphoneos ar r "$COMBINED" "$OBJ_DIR"/*.o
-    xcrun -sdk iphoneos ranlib "$COMBINED"
-    echo "Refreshed: $COMBINED ($(wc -c < "$COMBINED" | tr -d ' ') bytes)"
-    APP_COPY="$REPO_ROOT/app/Madeira/libdxmt_combined.a"
-    if [ -f "$APP_COPY" ]; then cp "$COMBINED" "$APP_COPY"; echo "Staged: $APP_COPY"; fi
-else
-    echo "NOTE: $COMBINED absent; the app links that file, so build it before deploying."
-fi
+LLVM_ARCHIVES=("$LLVM_BUILD"/lib/libLLVM*.a)
+[ -f "${LLVM_ARCHIVES[0]}" ] || { echo "ERROR: build the iOS LLVM libraries first" >&2; exit 1; }
+echo "=== Creating libdxmt_combined.a ==="
+xcrun -sdk iphoneos libtool -static -o "$COMBINED.tmp" "$OUT_LIB" "${LLVM_ARCHIVES[@]}"
+mv -f "$COMBINED.tmp" "$COMBINED"
+mkdir -p "$REPO_ROOT/app/Madeira"
+cp -f "$COMBINED" "$REPO_ROOT/app/Madeira/libdxmt_combined.a"
+echo "Staged libdxmt_combined.a from DXMT $(git -C "$DXMT_ROOT" rev-parse HEAD)"

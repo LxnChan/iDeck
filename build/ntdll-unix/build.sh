@@ -95,12 +95,19 @@ echo "=== Building crypto/network unixlibs ==="
 compile_one "$CRYPTO_DIR/gnutls_symtab_ios.c" "gnutls_symtab_ios"
 compile_unixlib "$WINE_SRC/dlls/ws2_32/unixlib.c" "ws2_32_unixlib" "ws2_32" \
     -I"$WINE_SRC/dlls/ws2_32"
+GNUTLS_DEFS=()
+if [ -f "$GNUTLS_PREFIX/lib/libgnutls.a" ]; then
+    GNUTLS_DEFS=(-DHAVE_GNUTLS_CIPHER_INIT '-DSONAME_LIBGNUTLS="libgnutls.so.30"')
+else
+    echo "ERROR: GnuTLS headers and libraries are required for a complete Wine rebuild" >&2
+    exit 1
+fi
 compile_unixlib "$WINE_SRC/dlls/bcrypt/gnutls.c" "bcrypt_unixlib" "bcrypt" \
     -I"$WINE_SRC/dlls/bcrypt" -I"$GNUTLS_PREFIX/include" \
-    -include "$CRYPTO_DIR/ios_gnutls_shim.h"
+    -include "$CRYPTO_DIR/ios_gnutls_shim.h" "${GNUTLS_DEFS[@]}"
 compile_unixlib "$WINE_SRC/dlls/secur32/schannel_gnutls.c" "secur32_unixlib" "secur32" \
     -I"$WINE_SRC/dlls/secur32" -I"$GNUTLS_PREFIX/include" \
-    -include "$CRYPTO_DIR/ios_gnutls_shim.h"
+    -include "$CRYPTO_DIR/ios_gnutls_shim.h" "${GNUTLS_DEFS[@]}"
 # iOS-Madeira ml494 (#61 text wall): dwrite had NO unixlib, so every
 # __wine_unix_call from dwrite.dll failed and get_glyph_bbox never ran —
 # every glyph run reported an EMPTY bbox and Chromium drew no text at all.
@@ -112,7 +119,7 @@ compile_unixlib "$BUILD_DIR/dwrite_freetype_ios.c" "dwrite_unixlib" "dwrite" \
     -I"$REPO_ROOT/wine/build-arm64ec/include"
 compile_unixlib "$CRYPTO_DIR/crypt32_unixlib_ios.c" "crypt32_unixlib" "crypt32" \
     -I"$WINE_SRC/dlls/crypt32" -I"$GNUTLS_PREFIX/include" \
-    -include "$CRYPTO_DIR/ios_gnutls_shim.h"
+    -include "$CRYPTO_DIR/ios_gnutls_shim.h" "${GNUTLS_DEFS[@]}"
 # iOS-Madeira 2026-08-03 (#79 transport): in-process NSI TCP connection
 # tables (nsiproxy.sys is not shipped; PE nsi.dll falls back to this).
 compile_one "$BUILD_DIR/nsi_unixlib_ios.c" "nsi_unixlib_ios"
@@ -206,9 +213,14 @@ echo "Results: $SUCCEEDED succeeded, $FAILED failed"
 if [ -n "$FAILED_FILES" ]; then
     echo "Failed:$FAILED_FILES"
 fi
+if [ "$FAILED" -gt 0 ]; then
+    echo "ERROR: incomplete Wine runtime; no archive installed" >&2
+    exit 1
+fi
 
 echo ""
 echo "=== Building libntdll_unix.a ==="
+rm -f "$OBJ_DIR/libntdll_unix.a"
 ar rcs "$OBJ_DIR/libntdll_unix.a" \
     "$OBJ_DIR/audio_null_ios.o" "$OBJ_DIR/madsync.o" "$OBJ_DIR/nsi_unixlib_ios.o" \
     "$OBJ_DIR/nsi_network_ios.o" "$OBJ_DIR/nsi_ndis.o" "$OBJ_DIR/nsi_ip.o" \
