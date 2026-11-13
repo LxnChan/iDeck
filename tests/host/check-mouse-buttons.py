@@ -60,6 +60,9 @@ if args.source_only:
 
 stubs = r'''
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 typealias CFTimeInterval = Double
 enum TestClock { static var now: Double = 10 }
 func CACurrentMediaTime() -> Double { TestClock.now }

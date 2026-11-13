@@ -35,6 +35,9 @@ if args.source_only:
 
 stubs = r'''
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
