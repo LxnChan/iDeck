@@ -32,12 +32,13 @@ names = (
     'private func buttonChanged(', 'private func resolvePendingButton(',
     'private func syncButtons()', 'private func releaseAll(',
     'func interceptTouches(', 'private func pointerButtons(',
-    'func uikitButtons(', 'func fingerTouches(',
+    'func uikitButtons(', 'func fingerTouches(', 'func pointerTouchesInWindow(',
     'func shouldIgnore(_ t:', 'func shouldIgnore(_ touches:',
     'private func compatibilityTouch(', 'private func resolveCompatibilityClick(',
     'private func postPointerButtons()',
     'func uikitMoved(', 'func uikitScroll(', 'private func scrolled(',
     'private func resetRawMouseSources()',
+    'private func wireMouseButton(',
 )
 methods = '\n'.join(method(signature) for signature in names)
 held = source.split('    // MARK: held state (main thread)', 1)[1].split('    // MARK: cursor and lock state', 1)[0]
@@ -45,9 +46,11 @@ held = held.replace('private ', '')
 observer = source.split('final class PointerButtonObserver:', 1)[1].split('final class PointerFallback:', 1)[0]
 for phase in ('began', 'moved', 'ended', 'cancelled'):
     assert f'HardwareInput.shared.interceptTouches(touches, event, .{phase})' in observer
+    assert f'HardwareInput.shared.pointerTouchesInWindow(touches, event, .{phase})' in observer
 for setting in ('cancelsTouchesInView', 'delaysTouchesBegan', 'delaysTouchesEnded'):
     assert f'{setting} = false' in observer
 assert 'view.addGestureRecognizer(PointerButtonObserver())' in source
+assert 'PointerButtonObserver(observingWindow: true)' in method('private func installTouchObserver()')
 detach = method('private func detachMouse(')
 assert 'if remaining.isEmpty {\n            resetRawMouseSources()' in detach
 assert 'resetRawMouseSources()' not in method('private func releaseAll(')
@@ -77,9 +80,16 @@ func winios_pointer(_ x: Int32, _ y: Int32, _ flags: UInt32, _ data: UInt32) {
 
 class UIView {
     var bounds = CGRect(x: 0, y: 0, width: 1024, height: 768)
+    weak var superview: UIView?
+    var window: UIWindow? { (self as? UIWindow) ?? superview?.window }
+    func addSubview(_ view: UIView) { view.superview = self }
+    func isDescendant(of view: UIView) -> Bool {
+        self === view || superview?.isDescendant(of: view) == true
+    }
 }
+final class UIWindow: UIView {}
 final class UITouch: Hashable {
-    enum TouchType { case direct, indirectPointer }
+    enum TouchType: Int { case direct, indirectPointer }
     enum Phase { case began, moved, stationary, ended, cancelled }
     var type: TouchType, phase: Phase
     var majorRadius: CGFloat
@@ -118,6 +128,17 @@ final class InputSettings {
     var ignoreTouchesWithMouse = true
     var diagnostics = false
 }
+final class GCControllerButtonInput {
+    typealias Handler = (GCControllerButtonInput, Float, Bool) -> Void
+    var pressedChangedHandler: Handler?
+    var valueChangedHandler: Handler?
+    var value: Float = 0
+    var isPressed = false
+    func report(_ pressed: Bool, viaValue: Bool = false) {
+        isPressed = pressed; value = pressed ? 1 : 0
+        (viaValue ? valueChangedHandler : pressedChangedHandler)?(self, value, pressed)
+    }
+}
 '''
 
 glue_stubs = r'''
@@ -137,6 +158,9 @@ final class HardwareInput {
     var gcScrollLive = false
     var mouseActive = false
     var touchClassLogged = 0
+    var windowButtonLogged = 0
+    var postedButtonLogged = 0
+    var diagnostics: Bool { InputSettings.shared.diagnostics }
     var lastGCButtonAt: Double = 0
     var clickFocus = ClickFocus()
     var currentRoute = PointerRoute.absolute
@@ -155,6 +179,12 @@ final class HardwareInput {
     func logRaw(_ source: String, _ dx: Double, _ dy: Double) {}
     func postMotion(_ dx: Double, _ dy: Double) { motionDeltas.append((dx, dy)) }
     func log(_ line: String) {}
+    var rawButtonSources: [String] = []
+    func gcButton(_ button: MouseButton, _ pressed: Bool, source: String, value: Double) {
+        rawButtonSources.append(source)
+        lastGCButtonAt = CACurrentMediaTime()
+        buttonChanged(button, pressed, at: CACurrentMediaTime())
+    }
     func noteUIKitPointer() {}
     func pointerHovered(at p: CGPoint, in view: UIView, inside: Bool) {
         lastAbsolute = (Int32(p.x), Int32(p.y))
@@ -165,7 +195,9 @@ tests = r'''
 func edges() -> [UInt32] { packets.map { $0.flags & ~UInt32(0x8001) } }
 func clear() { packets.removeAll() }
 func fresh() -> HardwareInput {
-    clear(); InputSettings.shared.mouseMode = true; TestClock.now = 10
+    clear(); InputSettings.shared.mouseMode = true
+    InputSettings.shared.ignoreTouchesWithMouse = true
+    InputSettings.shared.diagnostics = false; TestClock.now = 10
     return HardwareInput()
 }
 func settle(_ input: HardwareInput, _ t: UITouch) {
@@ -181,6 +213,170 @@ func touch(_ input: HardwareInput, _ t: UITouch, _ phase: HardwareInput.TouchPha
     case .cancelled: t.phase = .cancelled
     }
     return input.interceptTouches([t], UIEvent(mask, others.union([t])), phase)
+}
+
+struct WindowTree {
+    let window = UIWindow(), otherWindow = UIWindow()
+    let host = UIView(), game = UIView(), gameChild = UIView(), sibling = UIView(), otherView = UIView()
+    init() {
+        window.addSubview(host); host.addSubview(game)
+        game.addSubview(gameChild); host.addSubview(sibling)
+        otherWindow.addSubview(otherView)
+        MetalBackedView.keyboardTarget = game
+    }
+}
+func windowTouch(_ input: HardwareInput, _ t: UITouch, _ phase: HardwareInput.TouchPhase,
+                 _ mask: UIEvent.ButtonMask = [], others: Set<UITouch> = []) {
+    switch phase {
+    case .began: t.phase = .began
+    case .moved: t.phase = .moved
+    case .ended: t.phase = .ended
+    case .cancelled: t.phase = .cancelled
+    }
+    input.pointerTouchesInWindow([t], UIEvent(mask, others.union([t])), phase)
+}
+
+// Both actual callback registrations share one physical press in either order.
+for valueFirst in [true, false] {
+    let input = fresh(), button = GCControllerButtonInput()
+    input.wireMouseButton(button, .left)
+    assert(button.pressedChangedHandler != nil && button.valueChangedHandler != nil)
+    button.report(true, viaValue: valueFirst)
+    button.report(true, viaValue: !valueFirst)
+    assert(input.gameButtons == [.left] && edges() == [2])
+    button.report(false, viaValue: !valueFirst)
+    button.report(false, viaValue: valueFirst)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    assert(input.rawButtonSources == (valueFirst ? ["value", "pressed", "pressed", "value"]
+                                              : ["pressed", "value", "value", "pressed"]))
+}
+
+// A device that sends only value changes still produces every click.
+do {
+    let input = fresh(), button = GCControllerButtonInput()
+    input.wireMouseButton(button, .right)
+    button.report(true, viaValue: true); button.report(false, viaValue: true)
+    button.report(true, viaValue: true); button.report(false, viaValue: true)
+    assert(input.gameButtons.isEmpty && edges() == [8, 16, 8, 16])
+    assert(input.rawButtonSources == ["value", "value", "value", "value"])
+}
+
+// A hosting ancestor hit recovers the pointer click on the game surface.
+do {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = tree.host
+    windowTouch(input, pointer, .began, .secondary)
+    assert(input.gameButtons == [.right] && edges() == [8])
+    windowTouch(input, pointer, .ended)
+    assert(input.gameButtons.isEmpty && edges() == [8, 16])
+}
+
+// An explicit mask proves a single ancestor compatibility contact is a pointer,
+// even when UIKit assigns it a nonzero contact radius.
+do {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch(.direct, radius: 20)
+    pointer.view = tree.host; InputSettings.shared.mouseMode = false
+    windowTouch(input, pointer, .began, .secondary)
+    assert(input.gameButtons == [.right] && edges() == [8])
+    windowTouch(input, pointer, .ended)
+    assert(input.gameButtons.isEmpty && edges() == [8, 16])
+}
+
+// Direct game hits and child hits also survive duplicate window/view delivery.
+for childHit in [true, false] {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = childHit ? tree.gameChild : tree.game
+    windowTouch(input, pointer, .began, .primary)
+    assert(touch(input, pointer, .began, .primary))
+    windowTouch(input, pointer, .ended)
+    assert(touch(input, pointer, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+}
+
+// A native sibling control keeps its click even when it geometrically overlaps.
+do {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = tree.sibling
+    windowTouch(input, pointer, .began, .primary)
+    windowTouch(input, pointer, .ended)
+    assert(packets.isEmpty && input.mouseTouches.isEmpty)
+}
+
+// Another window, missing hit view, and an initial off-surface contact are excluded.
+for excluded in 0..<3 {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = excluded == 0 ? tree.otherView : excluded == 1 ? nil : tree.host
+    if excluded == 2 { pointer.point = CGPoint(x: -10, y: 100) }
+    windowTouch(input, pointer, .began, .primary)
+    windowTouch(input, pointer, .ended)
+    assert(packets.isEmpty && input.mouseTouches.isEmpty)
+}
+
+// Already-owned contacts retain their release or cancellation outside the game.
+for cancelled in [true, false] {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = tree.host
+    windowTouch(input, pointer, .began, .secondary)
+    pointer.point = CGPoint(x: 1200, y: 900)
+    pointer.view = tree.sibling
+    windowTouch(input, pointer, .moved, .secondary)
+    windowTouch(input, pointer, cancelled ? .cancelled : .ended)
+    assert(input.gameButtons.isEmpty && input.mouseTouches.isEmpty && edges() == [8, 16])
+}
+
+// Real fingers are never admitted by window observation, including mixed events.
+do {
+    let input = fresh(), tree = WindowTree(), finger = UITouch(.direct, radius: 20), pointer = UITouch()
+    finger.view = tree.game; pointer.view = tree.host
+    InputSettings.shared.mouseMode = false
+    windowTouch(input, finger, .began)
+    assert(packets.isEmpty && input.mouseTouches.isEmpty)
+    input.pointerTouchesInWindow([finger, pointer], UIEvent(.secondary, [finger, pointer]), .began)
+    assert(input.fingerTouches(in: [finger, pointer]) == [finger])
+    windowTouch(input, finger, .moved, .secondary, others: [pointer])
+    assert(input.fingerTouches(in: [finger, pointer]) == [finger] && edges() == [8])
+    windowTouch(input, pointer, .ended, others: [finger])
+    assert(input.gameButtons.isEmpty && edges() == [8, 16])
+}
+
+// A finger-only callback cannot borrow the mask of another live pointer contact.
+do {
+    let input = fresh(), tree = WindowTree(), finger = UITouch(.direct, radius: 20), pointer = UITouch()
+    finger.view = tree.game; pointer.view = tree.sibling
+    InputSettings.shared.mouseMode = false
+    windowTouch(input, finger, .began, .primary, others: [pointer])
+    assert(packets.isEmpty && input.mouseTouches.isEmpty)
+    assert(input.fingerTouches(in: [finger]) == [finger])
+}
+
+// Synthetic compatibility contacts on an ancestor resolve without a GC button.
+do {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch(.direct, radius: 0)
+    pointer.view = tree.host
+    windowTouch(input, pointer, .began)
+    windowTouch(input, pointer, .ended)
+    assert(packets.isEmpty)
+    settle(input, pointer)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+}
+
+// A menu/focus block still prevents the new window route from forwarding a click.
+do {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = tree.host; input.baseFocused = false
+    windowTouch(input, pointer, .began, .primary)
+    windowTouch(input, pointer, .ended)
+    assert(packets.isEmpty && input.gameButtons.isEmpty)
+}
+
+// Diagnostics observe arrivals/edges without changing packet semantics.
+do {
+    let input = fresh(), tree = WindowTree(), pointer = UITouch()
+    pointer.view = tree.host; InputSettings.shared.diagnostics = true
+    windowTouch(input, pointer, .began, .primary)
+    windowTouch(input, pointer, .ended)
+    assert(input.windowButtonLogged == 2 && input.postedButtonLogged == 2)
+    assert(edges() == [2, 4])
 }
 
 // iPad pointer: an up with an empty mask must still end the consumed contact.
@@ -673,7 +869,7 @@ do {
     assert(input.motionDeltas.count == 1 && edges() == [0x0800])
 }
 
-print("PASS: actual mouse packet edges, pointer mask lifecycle, compatibility clicks, fingers, independent GC/UIKit button-motion-wheel arbitration, cancellation and focus releases")
+print("PASS: actual dual callback wiring, window pointer routing, mouse packet edges, pointer mask lifecycle, compatibility clicks, fingers, independent GC/UIKit button-motion-wheel arbitration, cancellation and focus releases")
 '''
 
 with tempfile.TemporaryDirectory(prefix='ideck-mouse-buttons-') as temp:

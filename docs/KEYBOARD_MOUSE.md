@@ -76,13 +76,21 @@ Two paths carry the mouse; raw reports take ownership of each input type once
 they arrive:
 
 - **GCMouse** (iPad; iPhone with AssistiveTouch): raw HID deltas on a dedicated
-  high-priority queue.
+  high-priority queue. Buttons listen to both `pressedChangedHandler` and
+  `valueChangedHandler`; duplicate reports update the same physical button
+  state and produce one press and one release.
 - **UIKit indirect pointer** (a pointer that GameController enumerates but that
   never reports): hover, pointer drag and scroll recognisers on the game view,
-  and indirect-pointer touches read as buttons from `UIEvent.buttonMask`. This
-  needs `UIApplicationSupportsIndirectInputEvents` in `Info.plist`, which this
-  change adds. It is best effort: iOS clamps the unlocked pointer at the screen
-  edge and has no API to re-centre it.
+  and pointer touches read as buttons from `UIEvent.buttonMask`. A passive
+  observer on the game view's window receives pointer contacts before responder
+  delivery. It accepts a target in the game's view subtree, or an ancestor of
+  the game view when the contact is inside the game's bounds. A hosting ancestor
+  can be UIKit's pointer target even when a finger reaches the game view itself.
+  Unrelated native siblings, menus and real finger contacts are excluded;
+  accepted contacts stay tracked through their release. This needs
+  `UIApplicationSupportsIndirectInputEvents` in `Info.plist`. It is best effort:
+  iOS clamps the unlocked pointer at the screen edge and has no API to re-centre
+  it.
 
 How motion reaches the program depends on the program's cursor:
 
@@ -223,8 +231,43 @@ the program showing or hiding its cursor; pointer lock changes with their
 reason; unmapped HID usages; touch classifications; the right-stick mouse
 turning on and off. With diagnostics on (the ladybug), also every mouse focus
 change, pointer route changes, the first raw deltas, a 10 s delivery-rate line
-and a 1 Hz activity line while input is moving or held. The driver logs each
-new cursor image (`[winios] cursor set`), as in the desktop session.
+and a 1 Hz activity line for relative movement or held input. Absolute movement
+alone does not arm that activity timer. Bounded button traces also record the
+raw callback source, value and pressed state; the window pointer contact's
+phase, type, button mask and target decision; and the posted button edges. The
+driver logs each new cursor image (`[winios] cursor set`), as in the desktop
+session.
+
+To collect a click failure:
+
+1. Enable **Settings > Diagnostics > Extended logging** (the ladybug in the
+   developer interface), then restart Madeira and start the desktop or game.
+2. Close settings and menus before testing in the game area. Click several
+   times, hold left for three seconds while moving slightly, release, then do
+   the same for right. Also note whether the mouse can click Madeira's own
+   menus and whether a finger can click the program in **Direct touch** mode.
+3. In Files, open **On My iPad > iDeck** and share `madeira-log.txt` together
+   with `madeira-input.json`. If Madeira has restarted since the reproduction,
+   also collect `madeira-log.prev.txt`. Named session logs may remain in `logs/`.
+
+The settings file describes the last saved pointer mode, so a switch to Direct
+touch at the end of a reproduction does not imply the earlier mouse test ran in
+that mode. Follow the mode transitions in the log.
+
+`[winios] drain type=0` is a mouse event (`type=1` is a key). In its flags,
+`0x2`/`0x4` are left down/up and `0x8`/`0x10` are right down/up; absolute clicks
+commonly appear as `0x8003`/`0x8005` and `0x8009`/`0x8011`. Movement-only
+`0x8001` events prove motion reached Wine, not that a click did. A downstream
+`[srv-input] btn` line records the selected window and thread. The driver
+`drv_post_mouse` status trace and server button trace have limits; their absence
+after those limits is not proof of a dropped event.
+
+Build 220 and earlier did not trace individual incoming button reports. In
+those builds, a successful movement stream and `buttons=[]` cannot distinguish
+missing raw callbacks from rejected UIKit contacts. The new callback and
+contact traces help separate those cases. Listening to both GCMouse callbacks
+and observing window contacts covers additional delivery paths; host tests
+cannot establish which callback or UIKit target a particular device uses.
 
 ## Validation
 

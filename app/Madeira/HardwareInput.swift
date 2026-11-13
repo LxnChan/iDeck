@@ -725,6 +725,8 @@ final class HardwareInput: ObservableObject {
     private var clickFocus = ClickFocus()
     private var focusTimer: Timer?
     private weak var observedWindow: UIWindow?
+    private var windowFocusObserver: TouchFocusObserver?
+    private var windowButtonObserver: PointerButtonObserver?
     private var refreshing = false
     private var refreshAgain = false
     private var overlayBlocksFocus = false
@@ -793,6 +795,9 @@ final class HardwareInput: ObservableObject {
     /// Protected by motionLock because GCMouse reports on mouseQueue.
     private var gcScrollLive = false
     private var rawSeq = 0
+    private var rawButtonSeq = 0
+    private var windowButtonLogged = 0
+    private var postedButtonLogged = 0
     private var tickDX = 0.0, tickDY = 0.0, tickWheel = 0
     private var tickerArmed = false
     private var desktopCursorSynced = false
@@ -1071,8 +1076,17 @@ final class HardwareInput: ObservableObject {
     /// Every tap and click in the game view's window, for click focus.
     private func installTouchObserver() {
         guard let w = MetalBackedView.keyboardTarget?.window, w !== observedWindow else { return }
+        if let old = observedWindow {
+            if let observer = windowFocusObserver { old.removeGestureRecognizer(observer) }
+            if let observer = windowButtonObserver { old.removeGestureRecognizer(observer) }
+        }
         observedWindow = w
-        w.addGestureRecognizer(TouchFocusObserver())
+        let focus = TouchFocusObserver()
+        let buttons = PointerButtonObserver(observingWindow: true)
+        windowFocusObserver = focus
+        windowButtonObserver = buttons
+        w.addGestureRecognizer(focus)
+        w.addGestureRecognizer(buttons)
     }
 
     /// TouchFocusObserver: a touch began somewhere in the game view's window.
@@ -1168,22 +1182,14 @@ final class HardwareInput: ObservableObject {
         m.mouseMovedHandler = { [weak self] _, dx, dy in
             self?.moved(Double(dx), Double(dy))
         }
-        m.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in
-            self?.gcButton(.left, pressed)
-        }
-        m.rightButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-            self?.gcButton(.right, pressed)
-        }
-        m.middleButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-            self?.gcButton(.middle, pressed)
-        }
+        wireMouseButton(m.leftButton, .left)
+        if let right = m.rightButton { wireMouseButton(right, .right) }
+        if let middle = m.middleButton { wireMouseButton(middle, .middle) }
         // Side buttons in the order the device reports them. Windows has
         // exactly two; anything beyond is dropped rather than invented.
         for (i, aux) in (m.auxiliaryButtons ?? []).enumerated() where i < 2 {
             let b: MouseButton = i == 0 ? .x1 : .x2
-            aux.pressedChangedHandler = { [weak self] _, _, pressed in
-                self?.gcButton(b, pressed)
-            }
+            wireMouseButton(aux, b)
         }
         m.scroll.valueChangedHandler = { [weak self] _, x, y in
             self?.scrolled(Double(x), Double(y))
@@ -1193,6 +1199,18 @@ final class HardwareInput: ObservableObject {
             log("mouse connected: \(mouse.vendorName ?? "mouse") via=\(why) "
                 + "current=\(GCMouse.current === mouse) right=\(m.rightButton != nil) "
                 + "middle=\(m.middleButton != nil) aux=\(m.auxiliaryButtons?.count ?? 0)")
+        }
+    }
+
+    /// Observe value changes as well as pressed-only changes. Both callbacks
+    /// enter the same physical-state arbitration, so an edge
+    /// reported twice still produces only one Windows button transition.
+    private func wireMouseButton(_ input: GCControllerButtonInput, _ button: MouseButton) {
+        input.pressedChangedHandler = { [weak self] _, value, pressed in
+            self?.gcButton(button, pressed, source: "pressed", value: Double(value))
+        }
+        input.valueChangedHandler = { [weak self] _, value, pressed in
+            self?.gcButton(button, pressed, source: "value", value: Double(value))
         }
     }
 
@@ -1397,9 +1415,16 @@ final class HardwareInput: ObservableObject {
     /// GCMouse button handlers run on `mouseQueue`. The timestamp is taken
     /// here, before the hop: it is what `shouldIgnore` and click focus compare
     /// a tap against.
-    private func gcButton(_ b: MouseButton, _ pressed: Bool) {
+    private func gcButton(_ b: MouseButton, _ pressed: Bool, source: String, value: Double) {
         let t = CACurrentMediaTime()
-        motionLock.lock(); lastGCButtonAt = t; motionLock.unlock()
+        motionLock.lock()
+        lastGCButtonAt = t
+        rawButtonSeq += 1
+        let n = rawButtonSeq
+        motionLock.unlock()
+        if InputSettings.shared.diagnostics && (n <= 64 || n % 100 == 0) {
+            log("raw button #\(n) source=\(source) button=\(b.rawValue) pressed=\(pressed ? 1 : 0) value=\(value)")
+        }
         DispatchQueue.main.async { [weak self] in
             self?.buttonChanged(b, pressed, at: t)
         }
@@ -1464,8 +1489,17 @@ final class HardwareInput: ObservableObject {
             pos_y = 0
             flagsExtra = 0
         }
-        for b in edges.up { let e = b.event(down: false); winios_pointer(pos_x, pos_y, e.flags | flagsExtra, e.data) }
-        for b in edges.down { let e = b.event(down: true); winios_pointer(pos_x, pos_y, e.flags | flagsExtra, e.data) }
+        for (buttons, down) in [(edges.up, false), (edges.down, true)] {
+            for b in buttons {
+                let e = b.event(down: down)
+                if InputSettings.shared.diagnostics, postedButtonLogged < 120 {
+                    postedButtonLogged += 1
+                    log("post button=\(b.rawValue) down=\(down ? 1 : 0) flags=0x\(String(e.flags | flagsExtra, radix: 16)) "
+                        + "route=\(currentRoute.rawValue) focus=\(mouseFocused ? 1 : 0)")
+                }
+                winios_pointer(pos_x, pos_y, e.flags | flagsExtra, e.data)
+            }
+        }
     }
 
     /// Reached from the mouse queue (GCMouse scroll) and from main (UIKit,
@@ -1664,6 +1698,43 @@ final class HardwareInput: ObservableObject {
     }
 
     enum TouchPhase { case began, moved, ended, cancelled }
+
+    /// UIKit can hit-test a pointer click to the hosting ancestor rather than
+    /// the transparent game placeholder. Observe that window too, but admit
+    /// only pointer contacts on the game or its covering ancestor. A native
+    /// control in a sibling view or another window keeps its click.
+    func pointerTouchesInWindow(_ touches: Set<UITouch>, _ event: UIEvent?, _ phase: TouchPhase) {
+        guard Self.enabled, let game = MetalBackedView.keyboardTarget else { return }
+        let hasMask = !(event?.buttonMask.isEmpty ?? true)
+        let maskHasPointerContact = touches.union(event?.allTouches ?? []).contains {
+            $0.type == .indirectPointer || mouseTouches.contains(ObjectIdentifier($0))
+        }
+        motionLock.lock(); let buttonAt = lastGCButtonAt; motionLock.unlock()
+        let sinceButton = buttonAt == 0 ? Double.infinity : CACurrentMediaTime() - buttonAt
+        let routed = touches.filter { touch in
+            let id = ObjectIdentifier(touch)
+            let tracked = mouseTouches.contains(id) || mouseEchoTouches.contains(id)
+            let synthetic = SynthesizedTouch.looksSynthesized(direct: touch.type == .direct,
+                majorRadius: Double(touch.majorRadius), secondsSinceButton: sinceButton)
+            let candidate = tracked || MouseTouchPolicy.isMouse(indirect: touch.type == .indirectPointer,
+                hasButtonMask: hasMask && (synthetic || (!maskHasPointerContact && touches.count == 1)), synthetic: synthetic,
+                mouseMode: InputSettings.shared.mouseMode, mouseConnected: mouseConnected)
+            let target = touch.view
+            let onGame = target?.isDescendant(of: game) == true
+            let ancestor = target.map { game.isDescendant(of: $0) } ?? false
+            let inside = game.bounds.contains(touch.location(in: game))
+            let sameWindow = game.window != nil && target?.window === game.window
+            let accept = candidate && (tracked || (phase == .began && sameWindow && inside && (onGame || ancestor)))
+            if InputSettings.shared.diagnostics, phase != .moved, windowButtonLogged < 80 {
+                windowButtonLogged += 1
+                log("window pointer phase=\(phase) type=\(touch.type.rawValue) mask=0x\(String(event?.buttonMask.rawValue ?? 0, radix: 16)) "
+                    + "target=\(onGame ? "game" : ancestor ? "ancestor" : "elsewhere") inside=\(inside ? 1 : 0) "
+                    + "candidate=\(candidate ? 1 : 0) accept=\(accept ? 1 : 0) base=\(baseFocused ? 1 : 0) mouse=\(mouseFocused ? 1 : 0)")
+            }
+            return accept
+        }
+        if !routed.isEmpty { _ = interceptTouches(routed, event, phase) }
+    }
 
     /// Called before the finger paths. Indirect pointer contacts and proven
     /// compatibility contacts carry buttons, including their empty-mask ups.
@@ -2166,11 +2237,16 @@ final class TouchFocusObserver: UIGestureRecognizer {
 
 /// Button contacts are observed before responder delivery, so a SwiftUI
 /// gesture cannot hide a click from the game surface. This recognizer never
-/// recognizes or delays a touch and only observes native pointer contacts.
+/// recognizes or delays a touch. Window routing filters real fingers and
+/// native UI targets; the view routing also accepts compatibility contacts.
 final class PointerButtonObserver: UIGestureRecognizer {
-    init() {
+    private let observingWindow: Bool
+
+    init(observingWindow: Bool = false) {
+        self.observingWindow = observingWindow
         super.init(target: nil, action: nil)
-        allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue),
+                             NSNumber(value: UITouch.TouchType.direct.rawValue)]
         cancelsTouchesInView = false
         delaysTouchesBegan = false
         delaysTouchesEnded = false
@@ -2178,27 +2254,29 @@ final class PointerButtonObserver: UIGestureRecognizer {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        _ = HardwareInput.shared.interceptTouches(touches, event, .began)
+        if observingWindow { HardwareInput.shared.pointerTouchesInWindow(touches, event, .began) }
+        else { _ = HardwareInput.shared.interceptTouches(touches, event, .began) }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        _ = HardwareInput.shared.interceptTouches(touches, event, .moved)
+        if observingWindow { HardwareInput.shared.pointerTouchesInWindow(touches, event, .moved) }
+        else { _ = HardwareInput.shared.interceptTouches(touches, event, .moved) }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        _ = HardwareInput.shared.interceptTouches(touches, event, .ended)
+        if observingWindow { HardwareInput.shared.pointerTouchesInWindow(touches, event, .ended) }
+        else { _ = HardwareInput.shared.interceptTouches(touches, event, .ended) }
         finishIfIdle(event)
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        _ = HardwareInput.shared.interceptTouches(touches, event, .cancelled)
+        if observingWindow { HardwareInput.shared.pointerTouchesInWindow(touches, event, .cancelled) }
+        else { _ = HardwareInput.shared.interceptTouches(touches, event, .cancelled) }
         finishIfIdle(event)
     }
 
     private func finishIfIdle(_ event: UIEvent) {
-        let live = (event.allTouches ?? []).contains {
-            $0.type == .indirectPointer && $0.phase != .ended && $0.phase != .cancelled
-        }
+        let live = (event.allTouches ?? []).contains { $0.phase != .ended && $0.phase != .cancelled }
         if !live { state = .failed }
     }
 }
