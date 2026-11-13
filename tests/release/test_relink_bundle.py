@@ -1,5 +1,5 @@
 """Exercise exact Xcode input capture and a relocated relink recipe."""
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import hashlib
 import importlib.util
 import json
@@ -14,6 +14,17 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("prepare_relink", ROOT / "tools/prepare-relink.py")
 TOOL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TOOL)
+
+
+class PolicyPosixPath(PurePosixPath):
+    """Exercise POSIX path policy on hosts without macOS's temporary folders."""
+    def resolve(self):
+        return self
+
+
+class PolicyWindowsPath(PureWindowsPath):
+    def resolve(self):
+        return self
 
 
 class RelinkBundleTests(unittest.TestCase):
@@ -145,6 +156,23 @@ class RelinkBundleTests(unittest.TestCase):
                 unsafe = self.write(name, b"must not ship")
                 with self.assertRaises(TOOL.RelinkError):
                     TOOL.collect(self.log(self.base() + ["-force_load", str(unsafe)]), self.root / ("kit-" + name.replace("/", "-")))
+
+    def test_macos_system_temporary_prefixes_are_allowed(self):
+        for name in ["/private/var/folders/runner/Build/main.o", "/private/tmp/runtime/native.a"]:
+            with self.subTest(path=name):
+                TOOL.ensure_public_input(PolicyPosixPath(name))
+
+    def test_macos_temporary_prefixes_keep_private_payload_checks(self):
+        for name in ["/private/var/private/runtime.a", "/private/tmp/private/runtime.o",
+                     "/private/var/folders/runner/key.p12", "/private/tmp/private.log",
+                     "/private/var/credentials/runtime.a", "/private/tmp/valve/runtime.o",
+                     "/private/tmp/steamclient.o", "/private/other/runtime.a",
+                     "/private/varevil/runtime.a", "/tmp/private/var/runtime.a", "private/var/runtime.a"]:
+            with self.subTest(path=name):
+                with self.assertRaises(TOOL.RelinkError):
+                    TOOL.ensure_public_input(PolicyPosixPath(name))
+        with self.assertRaises(TOOL.RelinkError):
+            TOOL.ensure_public_input(PolicyWindowsPath("C:/private/var/runtime.a"))
 
     def test_simulator_and_ambiguous_main_links_are_rejected(self):
         args = self.base() + [str(self.object)]

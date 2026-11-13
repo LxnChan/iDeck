@@ -125,7 +125,12 @@ def select_link_command(log_path):
 
 def ensure_public_input(path):
     for candidate in (path, path.resolve()):
-        if candidate.suffix.lower() in PRIVATE_SUFFIXES or PRIVATE_PARTS.intersection(x.lower() for x in candidate.parts):
+        parts = candidate.parts
+        # macOS resolves ordinary temporary paths under these system roots.
+        # Exempt their leading "private" only; inspect every later component.
+        if parts[:3] in {("/", "private", "var"), ("/", "private", "tmp")}:
+            parts = parts[2:]
+        if candidate.suffix.lower() in PRIVATE_SUFFIXES or PRIVATE_PARTS.intersection(x.lower() for x in parts):
             raise RelinkError(f"Refusing credential, private log or third-party payload: {path.name}")
         if candidate.name.lower() in {"steamclient.dll", "steamclient64.dll", "steam.exe", "steamclient.o"}:
             raise RelinkError(f"Refusing Valve payload: {path.name}")
