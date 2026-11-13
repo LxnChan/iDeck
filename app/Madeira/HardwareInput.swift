@@ -339,6 +339,15 @@ struct MouseButtonSources {
         pointerPhysical.removeAll(); pointerBlocked.removeAll(); pointerSuppressed.removeAll()
     }
 
+    /// A delivery-mode change ends logical presses. Raw holds remain echoes
+    /// until their physical release, which must not end a newer pointer press.
+    mutating func routingChanged() {
+        presses.removeAll(); recent.removeAll()
+        rawSuppressed = rawPhysical
+        rawBlocked.removeAll()
+        pointerPhysical.removeAll(); pointerBlocked.removeAll(); pointerSuppressed.removeAll()
+    }
+
     mutating func reset() {
         self = MouseButtonSources()
     }
@@ -683,6 +692,9 @@ final class HardwareInput: ObservableObject {
 
     @Published private(set) var keyboardConnected = false
     @Published private(set) var mouseConnected = false
+    /// Public system state, refreshed on notifications and foreground entry.
+    /// It selects compatibility handling within the user's pointer mode.
+    @Published private(set) var assistiveTouchRunning = UIAccessibility.isAssistiveTouchRunning
     /// The iOS system pointer is hidden and pinned, and GCMouse deltas keep
     /// arriving at the screen edges. See `PointerLock`.
     @Published private(set) var pointerLocked = false
@@ -853,6 +865,11 @@ final class HardwareInput: ObservableObject {
         PadStickMouse.shared.start()
 
         let nc = NotificationCenter.default
+        nc.addObserver(forName: UIAccessibility.assistiveTouchStatusDidChangeNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.refreshAssistiveTouch("system notification")
+        }
+        refreshAssistiveTouch("start")
         nc.addObserver(forName: .GCKeyboardDidConnect, object: nil, queue: .main) { [weak self] n in
             self?.attachKeyboard(n.object as? GCKeyboard)
         }
@@ -882,6 +899,7 @@ final class HardwareInput: ObservableObject {
         }
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.appActive = true
+            self?.refreshAssistiveTouch("app active")
             self?.refreshFocus("app active")
         }
         // Not on memory warnings: games here run close to the memory limit and
@@ -912,12 +930,13 @@ final class HardwareInput: ObservableObject {
     /// Enumerate and (re-)wire every pointing device by BOTH routes, `mice()`
     /// and `current`: they are not the same list and either can be empty.
     private func inventory(_ why: String) {
+        refreshAssistiveTouch("inventory \(why)")
         let mice = GCMouse.mice()
         let cur = GCMouse.current
         log("inventory(\(why)): mice=\(mice.count) current=\(cur != nil) "
             + "keyboard=\(GCKeyboard.coalesced != nil) path=\(mousePath.rawValue) "
             + "gcDelta=\(gcDeltaSeen) uikit=\(uikitSeen) "
-            + "assistiveTouch=\(UIAccessibility.isAssistiveTouchRunning ? 1 : 0) mouseMode=\(InputSettings.shared.mouseMode ? 1 : 0)")
+            + "assistiveTouch=\(assistiveTouchRunning ? 1 : 0) mouseMode=\(InputSettings.shared.mouseMode ? 1 : 0)")
         for (i, m) in mice.enumerated() { attachMouse(m, why: "\(why)/mice[\(i)]") }
         if let cur, !mice.contains(where: { $0 === cur }) { attachMouse(cur, why: "\(why)/current") }
         attachKeyboard(GCKeyboard.coalesced)
@@ -925,6 +944,37 @@ final class HardwareInput: ObservableObject {
 
     private func log(_ s: String) {
         fputs("[hwinput] \(s)\n", stderr)
+    }
+
+    /// Keep raw mouse callbacks active for button identity and movement. The
+    /// system state adds/removes the compatibility interpretation of direct
+    /// contacts, without rewriting the user's saved touch/mouse mode.
+    private func refreshAssistiveTouch(_ why: String) {
+        let running = UIAccessibility.isAssistiveTouchRunning
+        guard running != assistiveTouchRunning else { return }
+        assistiveTouchRunning = running
+        if InputSettings.shared.mouseMode {
+            // Consume old contacts through their up without admitting them
+            // under the new rules. Keyboard and finger-mode holds keep working.
+            pendingButtons.removeAll()
+            buttonSources.routingChanged()
+            mouseEchoTouches.formUnion(mouseTouches)
+            mouseTouches.removeAll()
+            pendingCompatibilityTouches.removeAll()
+            compatibilityLeftTouches.removeAll()
+            pointerMaskButtons.removeAll()
+            interceptedMouseTouches.removeAll()
+            systemPointerPosition = nil
+            systemPointerView = nil
+            systemPointerEndedAt = nil
+            syncButtons()
+            MetalBackedView.keyboardTarget?.resetTouchState()
+        }
+        refreshFocus("AssistiveTouch changed")
+        log("assistive-touch state=\(running ? "on" : "off") "
+            + "compatibility=\(running && InputSettings.shared.mouseMode && mouseConnected ? 1 : 0) automatic=1 "
+            + "mouseMode=\(InputSettings.shared.mouseMode ? 1 : 0) "
+            + "connected=\(mouseConnected ? 1 : 0) reason=\(why)")
     }
 
     /// The only place `mousePath` moves. `.gcmouse` is absorbing: once a raw
@@ -1082,7 +1132,7 @@ final class HardwareInput: ObservableObject {
             if ["mouseMode", "pointerMode", "touchMode", "relative"].contains(what) {
                 self.releaseAll("pointer mode changed")
                 self.log("settings(\(what)): mouseMode=\(InputSettings.shared.mouseMode ? 1 : 0) "
-                    + "assistiveTouch=\(UIAccessibility.isAssistiveTouchRunning ? 1 : 0)")
+                    + "assistiveTouch=\(self.assistiveTouchRunning ? 1 : 0)")
             }
             PointerHider.invalidateAll()
             self.refreshFocus(what)
@@ -1721,7 +1771,7 @@ final class HardwareInput: ObservableObject {
     /// keeps the finger path. Hover can end just before UIKit delivers a click.
     private func assistivePointerContact(_ touch: UITouch) -> Bool {
         guard touch.type == .direct, InputSettings.shared.mouseMode, mouseConnected,
-              UIAccessibility.isAssistiveTouchRunning, !pointerLocked,
+              assistiveTouchRunning, !pointerLocked,
               let p = systemPointerPosition, let view = systemPointerView,
               view === MetalBackedView.keyboardTarget else { return false }
         if let endedAt = systemPointerEndedAt {
@@ -1766,7 +1816,7 @@ final class HardwareInput: ObservableObject {
                     + "target=\(onGame ? "game" : ancestor ? "ancestor" : "elsewhere") inside=\(inside ? 1 : 0) "
                     + "candidate=\(candidate ? 1 : 0) accept=\(accept ? 1 : 0) base=\(baseFocused ? 1 : 0) mouse=\(mouseFocused ? 1 : 0) "
                     + "radius=\(touch.majorRadius) synthetic=\(synthetic ? 1 : 0) assistiveMatch=\(assistive ? 1 : 0) "
-                    + "sinceGCButton=\(sinceButton) assistiveTouch=\(UIAccessibility.isAssistiveTouchRunning ? 1 : 0) "
+                    + "sinceGCButton=\(sinceButton) assistiveTouch=\(assistiveTouchRunning ? 1 : 0) "
                     + "point=\(touch.location(in: game)) systemPoint=\(systemPointerPosition.map { String(describing: $0) } ?? "none")")
             }
             return accept
@@ -1973,6 +2023,7 @@ final class HardwareInput: ObservableObject {
     /// it, while an in-bounds hover end allows the following click briefly.
     func systemPointerHovered(at p: CGPoint, in view: UIView, inside: Bool) {
         guard Self.enabled else { return }
+        refreshAssistiveTouch("system pointer")
         if inside {
             systemPointerPosition = p
             systemPointerView = view
@@ -2690,6 +2741,12 @@ struct HardwareInputSettings: View {
                             .foregroundColor(.secondary)
                             .frame(width: 38, alignment: .trailing)
                         if HardwareInput.pointerLockAvailable { lockButton }
+                    }
+                    if input.mouseMode {
+                        Text(hw.assistiveTouchRunning ? "AssistiveTouch mouse support: automatic"
+                             : "Standard mouse support: automatic")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
                     }
                 }
                 if open && pad.controllerConnected {

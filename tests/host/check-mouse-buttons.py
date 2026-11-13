@@ -40,6 +40,7 @@ names = (
     'private func resetRawMouseSources()',
     'private func wireMouseButton(',
     'private func assistivePointerContact(', 'func systemPointerHovered(',
+    'private func refreshAssistiveTouch(',
 )
 methods = '\n'.join(method(signature) for signature in names)
 held = source.split('    // MARK: held state (main thread)', 1)[1].split('    // MARK: cursor and lock state', 1)[0]
@@ -65,6 +66,19 @@ for signature in ('private func releaseAll(', 'private func evaluateFocus('):
 detach = method('private func detachMouse(')
 assert 'if remaining.isEmpty {\n            resetRawMouseSources()' in detach
 assert 'resetRawMouseSources()' not in method('private func releaseAll(')
+assert '@Published private(set) var assistiveTouchRunning = UIAccessibility.isAssistiveTouchRunning' in source
+start = method('func start()')
+assert 'UIAccessibility.assistiveTouchStatusDidChangeNotification' in start
+assert 'self?.refreshAssistiveTouch("system notification")' in start
+assert 'refreshAssistiveTouch("start")' in start
+active = start.split('UIApplication.didBecomeActiveNotification', 1)[1].split('// Not on memory warnings:', 1)[0]
+assert active.index('refreshAssistiveTouch("app active")') < active.index('refreshFocus("app active")')
+assert 'refreshAssistiveTouch(' in method('private func inventory(')
+hover = method('func systemPointerHovered(')
+assert hover.index('refreshAssistiveTouch(') < hover.index('systemPointerPosition = p')
+assert 'assistiveTouchRunning' in method('private func assistivePointerContact(')
+for setting in ('mouseMode', 'touchMode', 'relative', 'mouseLock'):
+    assert f'InputSettings.shared.{setting} =' not in method('private func refreshAssistiveTouch(')
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source-only', action='store_true')
 args = parser.parse_args()
@@ -93,6 +107,8 @@ func winios_pointer(_ x: Int32, _ y: Int32, _ flags: UInt32, _ data: UInt32) {
 class UIView {
     var bounds = CGRect(x: 0, y: 0, width: 1024, height: 768)
     weak var superview: UIView?
+    var touchResetCount = 0
+    func resetTouchState() { touchResetCount += 1 }
     var window: UIWindow? { (self as? UIWindow) ?? superview?.window }
     func addSubview(_ view: UIView) { view.superview = self }
     func isDescendant(of view: UIView) -> Bool {
@@ -137,6 +153,9 @@ enum MetalBackedView {
 final class InputSettings {
     static let shared = InputSettings()
     var mouseMode = true
+    var touchMode = false
+    var relative = false
+    var mouseLock = false
     var ignoreTouchesWithMouse = true
     var diagnostics = false
 }
@@ -163,6 +182,7 @@ final class HardwareInput {
     var baseFocused = true
     var mouseFocused = true
     var mouseConnected = true
+    var assistiveTouchRunning = UIAccessibility.isAssistiveTouchRunning
     var pointerLocked = false
     var hoverSeen = true
     var systemPointerPosition: CGPoint?
@@ -186,14 +206,17 @@ final class HardwareInput {
     var carry = MotionCarry()
     var wheel = WheelAccumulator()
     func setMouseInUse(_ on: Bool) {}
-    func refreshFocus(_ why: String) {}
-    func syncKeys() {}
+    var focusRefreshes: [String] = []
+    var keySyncCount = 0
+    func refreshFocus(_ why: String) { focusRefreshes.append(why) }
+    func syncKeys() { keySyncCount += 1 }
     func startTicker() {}
     func bumpTicker() {}
     var motionDeltas: [(Double, Double)] = []
     func logRaw(_ source: String, _ dx: Double, _ dy: Double) {}
     func postMotion(_ dx: Double, _ dy: Double) { motionDeltas.append((dx, dy)) }
-    func log(_ line: String) {}
+    var logs: [String] = []
+    func log(_ line: String) { logs.append(line) }
     var rawButtonSources: [String] = []
     func gcButton(_ button: MouseButton, _ pressed: Bool, source: String, value: Double) {
         rawButtonSources.append(source)
@@ -212,10 +235,16 @@ func edges() -> [UInt32] { packets.map { $0.flags & ~UInt32(0x8001) } }
 func clear() { packets.removeAll() }
 func fresh() -> HardwareInput {
     clear(); InputSettings.shared.mouseMode = true
+    InputSettings.shared.touchMode = false; InputSettings.shared.relative = false
+    InputSettings.shared.mouseLock = false
     InputSettings.shared.ignoreTouchesWithMouse = true
     InputSettings.shared.diagnostics = false; TestClock.now = 10
     UIAccessibility.isAssistiveTouchRunning = false
     return HardwareInput()
+}
+func setAssistiveTouch(_ input: HardwareInput, _ running: Bool) {
+    UIAccessibility.isAssistiveTouchRunning = running
+    input.refreshAssistiveTouch("scripted notification")
 }
 func settle(_ input: HardwareInput, _ t: UITouch) {
     TestClock.now += 0.060
@@ -251,6 +280,171 @@ func windowTouch(_ input: HardwareInput, _ t: UITouch, _ phase: HardwareInput.To
     case .cancelled: t.phase = .cancelled
     }
     input.pointerTouchesInWindow([t], UIEvent(mask, others.union([t])), phase)
+}
+
+// A launch with AssistiveTouch already on immediately knows the state. Status
+// changes preserve every selected pointer mode and the user's lock setting.
+for mode in ["mouse", "touch", "relative", "absolute"] {
+    _ = fresh()
+    let tree = WindowTree()
+    InputSettings.shared.mouseMode = mode == "mouse"
+    InputSettings.shared.touchMode = mode == "touch"
+    InputSettings.shared.relative = mode == "relative"
+    InputSettings.shared.mouseLock = true
+    UIAccessibility.isAssistiveTouchRunning = true
+    let input = HardwareInput()
+    assert(input.assistiveTouchRunning)
+    input.refreshAssistiveTouch("startup")
+    assert(tree.game.touchResetCount == 0 && packets.isEmpty)
+    setAssistiveTouch(input, false)
+    setAssistiveTouch(input, true)
+    assert(InputSettings.shared.mouseMode == (mode == "mouse"))
+    assert(InputSettings.shared.touchMode == (mode == "touch"))
+    assert(InputSettings.shared.relative == (mode == "relative"))
+    assert(InputSettings.shared.mouseLock)
+    assert(tree.game.touchResetCount == (mode == "mouse" ? 2 : 0))
+    assert(packets.isEmpty)
+}
+
+// A missed status notification is caught before seeding the next system hover.
+// A changed state clears old pointer evidence, then the real hover proves this
+// contact; an unchanged refresh leaves a pending or held click uninterrupted.
+do {
+    let input = fresh(), tree = WindowTree(), contact = UITouch(.direct, radius: 20)
+    contact.view = tree.game
+    UIAccessibility.isAssistiveTouchRunning = true
+    input.systemPointerHovered(at: contact.point, in: tree.game, inside: true)
+    assert(input.assistiveTouchRunning && tree.game.touchResetCount == 1)
+    assert(input.systemPointerPosition == contact.point && input.systemPointerView === tree.game)
+    windowTouch(input, contact, .began)
+    assert(input.pendingCompatibilityTouches.count == 1 && packets.isEmpty)
+    let resets = tree.game.touchResetCount, refreshes = input.focusRefreshes.count
+    input.refreshAssistiveTouch("unchanged pending")
+    assert(input.pendingCompatibilityTouches.count == 1 && packets.isEmpty)
+    assert(input.focusRefreshes.count == refreshes)
+    settle(input, contact)
+    assert(edges() == [2])
+    let heldRefreshes = input.focusRefreshes.count
+    input.refreshAssistiveTouch("unchanged held")
+    assert(input.gameButtons == [.left] && edges() == [2])
+    assert(tree.game.touchResetCount == resets && input.focusRefreshes.count == heldRefreshes)
+    windowTouch(input, contact, .ended)
+    assert(edges() == [2, 4])
+}
+
+// Switching off while a compatibility click is pending or held releases it
+// once, and neither its late timer nor duplicate observer/responder delivery
+// can restore it. The next native click works immediately.
+for held in [false, true] {
+    let input = fresh(), tree = WindowTree(), old = UITouch(.direct, radius: 20)
+    old.view = tree.game
+    setAssistiveTouch(input, true)
+    input.systemPointerHovered(at: old.point, in: tree.game, inside: true)
+    windowTouch(input, old, .began)
+    if held { settle(input, old) }
+    setAssistiveTouch(input, false)
+    assert(input.gameButtons.isEmpty && edges() == (held ? [2, 4] : []))
+    assert(input.systemPointerPosition == nil && input.systemPointerView == nil)
+    assert(touch(input, old, .began)) // The same down reaching the responder late.
+    windowTouch(input, old, .moved)
+    settle(input, old)
+    windowTouch(input, old, .ended)
+    assert(input.gameButtons.isEmpty && edges() == (held ? [2, 4] : []))
+    let next = UITouch()
+    next.view = tree.game
+    windowTouch(input, next, .began, .primary)
+    assert(input.gameButtons == [.left])
+    windowTouch(input, next, .ended)
+    assert(edges() == (held ? [2, 4, 2, 4] : [2, 4]))
+}
+
+// Enabling compatibility support during a native pointer hold releases the
+// old press, ignores its remaining moves/up, and admits the next direct click.
+do {
+    let input = fresh(), tree = WindowTree(), old = UITouch()
+    old.view = tree.game
+    windowTouch(input, old, .began, .secondary)
+    assert(edges() == [8])
+    setAssistiveTouch(input, true)
+    assert(input.gameButtons.isEmpty && edges() == [8, 16])
+    assert(touch(input, old, .began, .secondary))
+    windowTouch(input, old, .moved, .secondary)
+    windowTouch(input, old, .ended)
+    let next = UITouch(.direct, radius: 20)
+    next.view = tree.game
+    input.systemPointerHovered(at: next.point, in: tree.game, inside: true)
+    windowTouch(input, next, .began)
+    windowTouch(input, next, .ended)
+    settle(input, next)
+    assert(input.gameButtons.isEmpty && edges() == [8, 16, 2, 4])
+}
+
+// A raw button held across a route change cannot resurrect its down through a
+// duplicate callback. Its old up must not release a new compatibility press;
+// a fresh raw press still works after that old hold has physically ended.
+for running in [false, true] {
+    let input = fresh(), tree = WindowTree(), next = UITouch(.direct, radius: 20)
+    next.view = tree.game
+    setAssistiveTouch(input, !running)
+    input.gcButton(.left, true, source: "pressed", value: 1)
+    assert(edges() == [2])
+    setAssistiveTouch(input, running)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    input.gcButton(.left, true, source: "value", value: 1)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    TestClock.now += 0.100
+    if running {
+        input.systemPointerHovered(at: next.point, in: tree.game, inside: true)
+        windowTouch(input, next, .began)
+        settle(input, next)
+    } else {
+        next.type = .indirectPointer
+        windowTouch(input, next, .began, .primary)
+    }
+    assert(input.gameButtons == [.left] && edges() == [2, 4, 2])
+    input.gcButton(.left, false, source: "pressed", value: 0)
+    assert(input.gameButtons == [.left] && edges() == [2, 4, 2])
+    windowTouch(input, next, .ended)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4, 2, 4])
+    TestClock.now += 0.100
+    input.gcButton(.left, true, source: "pressed", value: 1)
+    input.gcButton(.left, false, source: "pressed", value: 0)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4, 2, 4, 2, 4])
+}
+
+// Accessibility status changes leave a held modifier usable and do not reset
+// direct-touch/trackpad state when the user has selected another pointer mode.
+for mouseMode in [false, true] {
+    let input = fresh(), tree = WindowTree()
+    InputSettings.shared.mouseMode = mouseMode
+    InputSettings.shared.touchMode = !mouseMode
+    input.keys.press(0xA0, focused: true)
+    _ = input.keysPosted.update([0xA0])
+    if !mouseMode { input.gcButton(.right, true, source: "pressed", value: 1) }
+    setAssistiveTouch(input, true)
+    assert(input.keys.wanted(focused: true) == [0xA0] && input.keysPosted.down == [0xA0])
+    assert(input.keySyncCount == 0)
+    assert(tree.game.touchResetCount == (mouseMode ? 1 : 0))
+    if !mouseMode {
+        assert(input.gameButtons == [.right] && edges() == [8])
+        input.gcButton(.right, false, source: "pressed", value: 0)
+        assert(edges() == [8, 16])
+    }
+}
+
+// Switching click compatibility keeps raw motion/wheel ownership, so fallback
+// reports still cannot double-count a device whose raw streams are active.
+do {
+    let input = fresh()
+    input.currentRoute = .relative
+    input.gcDeltaSeen = true
+    input.gcDeltaLive = true
+    input.scrolled(0, 1)
+    clear()
+    setAssistiveTouch(input, true)
+    input.uikitMoved(3, -2, src: "after accessibility change")
+    input.uikitScroll(0, 14)
+    assert(packets.isEmpty && input.motionDeltas.isEmpty)
 }
 
 // Both actual callback registrations share one physical press in either order.
@@ -384,7 +578,7 @@ for viewFirst in [true, false] {
   for childHit in [true, false] {
     let input = fresh(), tree = WindowTree(), click = UITouch(.direct, radius: 20)
     click.view = childHit ? tree.gameChild : tree.game
-    UIAccessibility.isAssistiveTouchRunning = true
+    setAssistiveTouch(input, true)
     input.gcDeltaSeen = true
     input.systemPointerHovered(at: click.point, in: tree.game, inside: true)
     TestClock.now += 30 // A stationary pointer need not keep sending hover changes.
@@ -408,7 +602,7 @@ for viewFirst in [true, false] {
 do {
     let input = fresh(), tree = WindowTree(), drag = UITouch(.direct, radius: 20)
     drag.view = tree.host
-    UIAccessibility.isAssistiveTouchRunning = true
+    setAssistiveTouch(input, true)
     input.systemPointerHovered(at: drag.point, in: tree.game, inside: true)
     input.systemPointerHovered(at: drag.point, in: tree.game, inside: false)
     TestClock.now += 0.100
@@ -433,7 +627,7 @@ do {
 for rawFirst in [true, false] {
     let input = fresh(), tree = WindowTree(), echo = UITouch(.direct, radius: 20)
     echo.view = tree.game
-    UIAccessibility.isAssistiveTouchRunning = true
+    setAssistiveTouch(input, true)
     input.systemPointerHovered(at: echo.point, in: tree.game, inside: true)
     if rawFirst { input.gcButton(.right, true, source: "pressed", value: 1) }
     windowTouch(input, echo, .began)
@@ -453,13 +647,13 @@ for rawFirst in [true, false] {
 for exclusion in 0..<14 {
     let input = fresh(), tree = WindowTree(), contact = UITouch(.direct, radius: 20)
     contact.view = tree.game
-    UIAccessibility.isAssistiveTouchRunning = true
+    setAssistiveTouch(input, true)
     if exclusion != 0 {
         input.systemPointerHovered(at: contact.point, in: tree.game, inside: true)
     }
     switch exclusion {
     case 0: break // No system hover evidence.
-    case 1: UIAccessibility.isAssistiveTouchRunning = false
+    case 1: setAssistiveTouch(input, false)
     case 2: InputSettings.shared.mouseMode = false // Direct touch keeps its finger.
     case 3: input.mouseConnected = false
     case 4: input.pointerLocked = true
@@ -498,7 +692,7 @@ for exclusion in 0..<14 {
 do {
     let input = fresh(), tree = WindowTree(), synthetic = UITouch(.direct, radius: 0)
     synthetic.view = tree.game
-    UIAccessibility.isAssistiveTouchRunning = true
+    setAssistiveTouch(input, true)
     windowTouch(input, synthetic, .began)
     windowTouch(input, synthetic, .ended)
     settle(input, synthetic)
@@ -519,7 +713,7 @@ for focusLost in [true, false] {
     for held in [true, false] {
         let input = fresh(), tree = WindowTree(), contact = UITouch(.direct, radius: 20)
         contact.view = tree.game
-        UIAccessibility.isAssistiveTouchRunning = true
+        setAssistiveTouch(input, true)
         input.systemPointerHovered(at: contact.point, in: tree.game, inside: true)
         windowTouch(input, contact, .began)
         if held { settle(input, contact) }
@@ -1053,7 +1247,7 @@ do {
     assert(input.motionDeltas.count == 1 && edges() == [0x0800])
 }
 
-print("PASS: actual dual callback wiring, window pointer routing, mouse packet edges, pointer mask lifecycle, compatibility clicks, fingers, independent GC/UIKit button-motion-wheel arbitration, cancellation and focus releases")
+print("PASS: actual dual callback wiring, window pointer routing, mouse packet edges, pointer mask lifecycle, compatibility clicks, automatic AssistiveTouch transitions, fingers, independent GC/UIKit button-motion-wheel arbitration, cancellation and focus releases")
 '''
 
 with tempfile.TemporaryDirectory(prefix='ideck-mouse-buttons-') as temp:

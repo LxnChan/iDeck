@@ -240,6 +240,19 @@ AssistiveTouch state and whether it matches the last system pointer position.
 The inventory and pointer mode changes also record AssistiveTouch and Mouse
 mode, so the settings file need not be used to infer the mode during a click.
 
+Mouse support reads the public system AssistiveTouch state at startup and
+listens for status-change notifications on the main queue. Returning to the
+foreground and system pointer updates recheck the state as well. In Mouse
+mode, enabling AssistiveTouch automatically enables compatibility click
+handling; disabling it restores standard handling. Raw mouse motion and
+button callbacks stay active in both states, and the selected Pointer mode is
+not rewritten. Settings shows the active support mode. A state change releases
+mouse buttons, cancels pending clicks and consumes old contacts through their
+release. Keyboard holds and Direct touch gestures keep their own state.
+`[hwinput] assistive-touch state=... compatibility=... automatic=1` records each
+actual state transition; repeated notifications with unchanged state do not
+reset input.
+
 In Mouse mode with AssistiveTouch enabled, a direct empty-mask contact within
 four view points of the known system pointer can carry a left click even with
 a nonzero radius and no GCMouse button callback. This evidence comes only from

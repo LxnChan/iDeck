@@ -4239,6 +4239,9 @@ struct LibraryPointerSettings: View {
                 : (input.relative ? "Pan anywhere to steer. Tap to left-click; hold still to press left, then pan while held. Lift to release. Two-finger tap right-clicks, two-finger drag scrolls." : "Pan like a notebook trackpad, tap to left-click.")))
             .font(.caption).foregroundStyle(.secondary)
         if input.mouseMode {
+            Text(hw.assistiveTouchRunning ? "AssistiveTouch mouse support is enabled automatically."
+                 : "Mouse support adapts automatically when AssistiveTouch changes.")
+                .font(.caption).foregroundStyle(.secondary)
             Toggle("Lock cursor (3D camera)", isOn: $input.mouseLock)
             Text("Pins and hides the iOS pointer so the mouse can rotate 360° in 3D games (Ctrl+Alt+P). Keep off for point-and-click games.")
                 .font(.caption).foregroundStyle(.secondary)
