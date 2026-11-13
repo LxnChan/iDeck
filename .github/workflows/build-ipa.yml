@@ -93,6 +93,7 @@ jobs:
         run: |
           python3 -B tests/host/check-hardware-input.py
           python3 -B tests/host/check-mouse-buttons.py
+          python3 -B tests/host/check-input-queue.py
           python3 -B tests/host/check-crosshair-input.py
           python3 -B tests/host/check-touch-gamepad.py
 

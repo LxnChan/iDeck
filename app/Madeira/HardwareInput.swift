@@ -231,48 +231,116 @@ enum MouseButton: Int, CaseIterable, Comparable {
     static func < (a: MouseButton, b: MouseButton) -> Bool { a.rawValue < b.rawValue }
 }
 
-/// A button's raw reports own that button once they arrive. Other buttons
-/// still use the system pointer fallback, even if raw motion is available.
-/// Transferring ownership preserves a held press and ignores delayed echoes.
+/// Raw and system pointer reports join the same physical press. Ownership
+/// ends with that press, so intermittent raw reports never disable fallback.
+/// One completed click can consume one opposite-source echo within 50 ms.
 struct MouseButtonSources {
-    private(set) var gc: Set<MouseButton> = []
-    private(set) var pointer: Set<MouseButton> = []
-    private(set) var gcReported: Set<MouseButton> = []
+    private enum Source: Hashable { case raw, pointer }
+    private struct Press {
+        var sources: Set<Source>
+        var allowed: Bool
+    }
+    private var presses: [MouseButton: Press] = [:]
+    private var rawPhysical: Set<MouseButton> = []
     private var pointerPhysical: Set<MouseButton> = []
+    private var rawSuppressed: Set<MouseButton> = []
+    private var pointerSuppressed: Set<MouseButton> = []
+    private var rawBlocked: Set<MouseButton> = []
     private var pointerBlocked: Set<MouseButton> = []
+    private var recent: [MouseButton: (source: Source, at: Double)] = [:]
+    private static let echoWindow = 0.050
 
-    var wanted: Set<MouseButton> { gc.union(pointer.subtracting(gcReported)) }
+    var wanted: Set<MouseButton> { Set(presses.filter { $0.value.allowed }.map { $0.key }) }
 
-    mutating func claimGC(_ button: MouseButton) {
-        gcReported.insert(button)
-        if pointer.contains(button) { gc.insert(button) }
-        pointer.remove(button)
+    private mutating func begin(_ button: MouseButton, source: Source, allowed: Bool, at: Double) {
+        if var press = presses[button] {
+            press.sources.insert(source)
+            if allowed && !rawBlocked.contains(button) && !pointerBlocked.contains(button) {
+                press.allowed = true
+            }
+            presses[button] = press
+        } else if let echo = recent[button], echo.source != source,
+                  at >= echo.at && at - echo.at <= Self.echoWindow {
+            recent.removeValue(forKey: button)
+            if source == .raw { rawSuppressed.insert(button) }
+            else { pointerSuppressed.insert(button) }
+        } else {
+            recent.removeValue(forKey: button)
+            presses[button] = Press(sources: [source], allowed: allowed)
+        }
     }
 
-    mutating func setGC(_ button: MouseButton, pressed: Bool) {
-        claimGC(button)
-        if pressed { gc.insert(button) } else { gc.remove(button) }
+    private mutating func end(_ button: MouseButton, source: Source, at: Double) {
+        guard let press = presses.removeValue(forKey: button) else { return }
+        // Either source's release completes a mirrored press. The remaining
+        // physical hold is an echo, even if its release callback never comes.
+        if source != .pointer && pointerPhysical.contains(button) { pointerSuppressed.insert(button) }
+        if press.allowed && press.sources.count == 1 && press.sources.contains(source) {
+            recent[button] = (source, at)
+        }
     }
 
-    mutating func setPointer(_ buttons: Set<MouseButton>, focused: Bool = true) {
+    mutating func claimGC(_ button: MouseButton, focused: Bool = true, at: Double = 0) {
+        guard rawPhysical.insert(button).inserted else { return }
+        if !focused { rawBlocked.insert(button) }
+        begin(button, source: .raw, allowed: false, at: at)
+    }
+
+    mutating func setGC(_ button: MouseButton, pressed: Bool, at: Double = 0) {
+        if pressed {
+            claimGC(button, at: at)
+            if !rawSuppressed.contains(button), !rawBlocked.contains(button),
+               var press = presses[button], !pointerBlocked.contains(button) {
+                press.allowed = true
+                presses[button] = press
+            }
+        } else {
+            // A raw up without its down can still end the same pointer press.
+            if !rawSuppressed.contains(button) { end(button, source: .raw, at: at) }
+            rawPhysical.remove(button); rawSuppressed.remove(button); rawBlocked.remove(button)
+        }
+    }
+
+    mutating func setPointer(_ buttons: Set<MouseButton>, focused: Bool = true, at: Double = 0) {
+        for button in pointerPhysical.subtracting(buttons) {
+            if !pointerSuppressed.contains(button) {
+                end(button, source: .pointer, at: at)
+                // This release also ends a raw hold, even if focus loss has
+                // already removed its logical press and its raw up is missing.
+                if rawPhysical.contains(button) {
+                    rawSuppressed.insert(button)
+                    rawBlocked.remove(button)
+                }
+            }
+            pointerSuppressed.remove(button); pointerBlocked.remove(button)
+        }
+        for button in buttons.subtracting(pointerPhysical) {
+            if !focused || rawBlocked.contains(button) { pointerBlocked.insert(button) }
+            begin(button, source: .pointer, allowed: focused && !pointerBlocked.contains(button), at: at)
+        }
         pointerPhysical = buttons
-        pointerBlocked.formIntersection(buttons)
-        if !focused { pointerBlocked.formUnion(buttons) }
-        pointer = focused ? buttons.subtracting(gcReported).subtracting(pointerBlocked) : []
     }
 
     mutating func releaseAll() {
-        gc.removeAll(); pointer.removeAll()
+        presses.removeAll(); recent.removeAll()
+        // A mirrored release already proved a suppressed raw hold complete.
+        // Its missing up must not block new clicks after a menu/focus change.
+        rawBlocked = rawPhysical.subtracting(rawSuppressed)
         pointerBlocked = pointerPhysical
     }
 
     mutating func cancelPointer() {
-        pointer.removeAll(); pointerPhysical.removeAll(); pointerBlocked.removeAll()
+        for button in pointerPhysical {
+            if var press = presses[button] {
+                press.sources.remove(.pointer)
+                presses[button] = press.sources.isEmpty ? nil : press
+            }
+        }
+        pointerPhysical.removeAll(); pointerBlocked.removeAll(); pointerSuppressed.removeAll()
     }
 
     mutating func reset() {
-        releaseAll(); gcReported.removeAll()
-        pointerPhysical.removeAll(); pointerBlocked.removeAll()
+        self = MouseButtonSources()
     }
 }
 
@@ -1344,13 +1412,13 @@ final class HardwareInput: ObservableObject {
         if pressed {
             setMouseInUse(true)
             refreshFocus("button")
-            buttonSources.claimGC(b)
+            buttonSources.claimGC(b, focused: baseFocused, at: t)
             if !baseFocused {
                 // nothing: the program does not have focus
             } else if !Self.focusEnabled || pointerLocked || hoverSeen || InputSettings.shared.mouseMode {
-                if mouseFocused { buttonSources.setGC(b, pressed: true) }
+                if mouseFocused { buttonSources.setGC(b, pressed: true, at: t) }
             } else if let toGame = clickFocus.route(buttonAt: t, now: CACurrentMediaTime()) {
-                if toGame { buttonSources.setGC(b, pressed: true) }
+                if toGame { buttonSources.setGC(b, pressed: true, at: t) }
             } else {
                 pendingButtons[b] = (t, false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + ClickFocus.window) { [weak self] in
@@ -1359,7 +1427,7 @@ final class HardwareInput: ObservableObject {
             }
         } else {
             if let p = pendingButtons[b] { pendingButtons[b] = (p.at, true) }
-            buttonSources.setGC(b, pressed: false)
+            buttonSources.setGC(b, pressed: false, at: t)
         }
         syncButtons()
         // A drag that left the game view keeps the mouse only while held.
@@ -1373,10 +1441,10 @@ final class HardwareInput: ObservableObject {
         let toGame = baseFocused
             && (clickFocus.route(buttonAt: p.at, now: CACurrentMediaTime()) ?? clickFocus.onGame)
         guard toGame else { return }
-        buttonSources.setGC(b, pressed: true)
+        buttonSources.setGC(b, pressed: true, at: p.at)
         syncButtons()
         if p.released {
-            buttonSources.setGC(b, pressed: false)
+            buttonSources.setGC(b, pressed: false, at: CACurrentMediaTime())
             syncButtons()
         }
     }
@@ -1830,7 +1898,7 @@ final class HardwareInput: ObservableObject {
         refreshFocus("UIKit buttons")
         let allowed = baseFocused ? want : []
         if !allowed.isEmpty { noteUIKitPointer(); setMouseInUse(true) }
-        buttonSources.setPointer(want, focused: baseFocused)
+        buttonSources.setPointer(want, focused: baseFocused, at: CACurrentMediaTime())
         syncButtons()
         startTicker()
     }

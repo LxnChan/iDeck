@@ -823,6 +823,11 @@ static struct {
     pthread_mutex_t lock;
 } g_input_q = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
+/* Every Wine thread can poll this queue. Keep one drainer through submission,
+ * otherwise another thread can send an up before the popped down is sent.
+ * Separate from the queue lock so producers never wait on Wine dispatch. */
+static pthread_mutex_t g_input_drain_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void winios_q_push_ev(unsigned int type, int x, int y, unsigned int flags, unsigned int data) {
     pthread_mutex_lock(&g_input_q.lock);
     unsigned int next = (g_input_q.head + 1) % WINIOS_RING_SIZE;
@@ -884,6 +889,10 @@ BOOL winios_pProcessEvents(DWORD mask) {
             fflush(stderr);
         }
     }
+    /* Dispatch can re-enter pProcessEvents. A busy drainer owns the queued
+     * events; other polls return immediately, including recursive polls.
+     * The diagnostics below also belong to that drainer. */
+    if (pthread_mutex_trylock(&g_input_drain_lock)) return FALSE;
     static unsigned int cnt;
     static int quiet = -1;
     if (quiet < 0) quiet = getenv("MADEIRA_QUIET") != NULL;
@@ -924,6 +933,7 @@ BOOL winios_pProcessEvents(DWORD mask) {
             winios_drv_post_mouse(e.x, e.y, e.flags, e.data, NULL);
         drained = TRUE;
     }
+    pthread_mutex_unlock(&g_input_drain_lock);
     return drained;
 }
 

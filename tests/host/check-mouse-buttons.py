@@ -361,16 +361,14 @@ do {
     assert(input.gameButtons.isEmpty && edges() == [2, 8, 4, 16])
 }
 
-// GC first: mirror transitions and a delayed whole UIKit click post nothing.
+// GC first: either mirrored release completes the click, even with no raw up.
 do {
     let input = fresh(), t = UITouch()
     input.buttonChanged(.left, true, at: 10)
     assert(touch(input, t, .began, .primary))
     assert(touch(input, t, .ended))
-    assert(input.gameButtons == [.left] && edges() == [2])
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
     input.buttonChanged(.left, false, at: 10)
-    assert(touch(input, t, .began, .primary))
-    assert(touch(input, t, .ended))
     assert(input.gameButtons.isEmpty && edges() == [2, 4])
 }
 
@@ -380,9 +378,173 @@ do {
     assert(touch(input, t, .began, .secondary))
     input.buttonChanged(.right, true, at: 10)
     assert(touch(input, t, .ended))
-    assert(input.gameButtons == [.right] && edges() == [8])
+    assert(input.gameButtons.isEmpty && edges() == [8, 16])
     input.buttonChanged(.right, false, at: 10)
     assert(input.gameButtons.isEmpty && edges() == [8, 16])
+}
+
+// A completed raw click suppresses only one delayed opposite-source echo.
+do {
+    let input = fresh(), echo = UITouch(), next = UITouch()
+    input.buttonChanged(.left, true, at: 10)
+    input.buttonChanged(.left, false, at: 10)
+    TestClock.now += 0.020
+    assert(touch(input, echo, .began, .primary))
+    assert(touch(input, echo, .ended))
+    assert(edges() == [2, 4])
+    assert(touch(input, next, .began, .primary))
+    assert(touch(input, next, .ended))
+    assert(edges() == [2, 4, 2, 4])
+}
+
+// Raw up can arrive before the system up in either down ordering.
+for rawFirst in [true, false] {
+    let input = fresh(), t = UITouch()
+    if rawFirst { input.buttonChanged(.left, true, at: 10) }
+    assert(touch(input, t, .began, .primary))
+    if !rawFirst { input.buttonChanged(.left, true, at: 10) }
+    input.buttonChanged(.left, false, at: 10)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    assert(touch(input, t, .ended))
+    assert(edges() == [2, 4])
+}
+
+// A delayed raw mirror of a completed pointer click also emits no second click.
+do {
+    let input = fresh(), t = UITouch()
+    assert(touch(input, t, .began, .primary))
+    assert(touch(input, t, .ended))
+    TestClock.now += 0.020
+    input.buttonChanged(.left, true, at: TestClock.now)
+    input.buttonChanged(.left, false, at: TestClock.now)
+    assert(edges() == [2, 4])
+    assert(touch(input, t, .began, .primary))
+    assert(touch(input, t, .ended))
+    assert(edges() == [2, 4, 2, 4])
+}
+
+// Occasional GC reports must not disable later iPad/Wine desktop left clicks.
+do {
+    let input = fresh()
+    input.buttonChanged(.left, true, at: 10)
+    input.buttonChanged(.left, false, at: 10)
+    clear()
+    TestClock.now += 0.060
+    for _ in 0..<20 {
+        let t = UITouch()
+        assert(touch(input, t, .began, .primary))
+        assert(touch(input, t, .began, .primary)) // Observer/responder duplicate.
+        assert(touch(input, t, .ended))
+        assert(touch(input, t, .ended))
+        assert(input.gameButtons.isEmpty)
+        TestClock.now += 0.010 // Rapid same-source clicks must all survive.
+    }
+    assert(packets.count == 40)
+    for (i, packet) in packets.enumerated() {
+        assert(packet.flags == (i % 2 == 0 ? 0x8003 : 0x8005))
+        assert(packet.x == 100 && packet.y == 100 && packet.data == 0)
+    }
+}
+
+// Raw down with a missing raw up recovers through the mirrored pointer up.
+do {
+    let input = fresh(), first = UITouch(), next = UITouch()
+    input.buttonChanged(.left, true, at: 10)
+    assert(touch(input, first, .began, .primary))
+    assert(touch(input, first, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    TestClock.now += 0.060
+    assert(touch(input, next, .began, .primary))
+    input.buttonChanged(.left, false, at: TestClock.now) // Late up of the old press.
+    assert(input.gameButtons == [.left] && edges() == [2, 4, 2])
+    assert(touch(input, next, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4, 2, 4])
+}
+
+// Raw up without its down closes a pointer click and never claims future ones.
+do {
+    let input = fresh(), first = UITouch(), next = UITouch()
+    assert(touch(input, first, .began, .primary))
+    input.buttonChanged(.left, false, at: 10)
+    assert(touch(input, first, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    TestClock.now += 0.060
+    assert(touch(input, next, .began, .primary))
+    assert(touch(input, next, .ended))
+    assert(edges() == [2, 4, 2, 4])
+}
+
+// An unused echo credit expires instead of swallowing the next real click.
+do {
+    let input = fresh(), t = UITouch()
+    input.buttonChanged(.left, true, at: 10)
+    input.buttonChanged(.left, false, at: 10)
+    TestClock.now += 0.060
+    assert(touch(input, t, .began, .primary))
+    assert(touch(input, t, .ended))
+    assert(edges() == [2, 4, 2, 4])
+}
+
+// Local pointer focus can route a raw press that arrived before pointer hover.
+do {
+    let input = fresh(), t = UITouch()
+    input.mouseFocused = false
+    input.buttonChanged(.left, true, at: 10)
+    assert(packets.isEmpty)
+    input.mouseFocused = true
+    assert(touch(input, t, .began, .primary))
+    assert(touch(input, t, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+}
+
+// A raw press received while the app lacks focus stays blocked through its hold.
+do {
+    let input = fresh(), t = UITouch()
+    input.baseFocused = false
+    input.buttonChanged(.left, true, at: 10)
+    input.baseFocused = true
+    assert(touch(input, t, .began, .primary))
+    assert(touch(input, t, .ended))
+    assert(packets.isEmpty)
+    // The pointer up proved the blocked press ended, even if raw up is missing.
+    assert(touch(input, t, .began, .primary))
+    assert(touch(input, t, .ended))
+    assert(edges() == [2, 4])
+    input.buttonChanged(.left, false, at: 10)
+    assert(edges() == [2, 4])
+}
+
+// Missing raw up followed by menu/focus loss cannot block subsequent clicks.
+do {
+    let input = fresh(), first = UITouch(), next = UITouch()
+    input.buttonChanged(.left, true, at: 10)
+    assert(touch(input, first, .began, .primary))
+    assert(touch(input, first, .ended))
+    input.baseFocused = false
+    input.releaseAll("menu opened")
+    input.baseFocused = true
+    TestClock.now += 0.060
+    assert(touch(input, next, .began, .primary))
+    assert(touch(input, next, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4, 2, 4])
+}
+
+// Focus loss during a mirrored drag still accepts pointer up as physical release.
+do {
+    let input = fresh(), first = UITouch(), next = UITouch()
+    input.buttonChanged(.left, true, at: 10)
+    assert(touch(input, first, .began, .primary))
+    input.baseFocused = false
+    input.releaseAll("focus lost during drag")
+    assert(input.gameButtons.isEmpty && edges() == [2, 4])
+    assert(touch(input, first, .ended)) // Raw up never arrives for this drag.
+    input.baseFocused = true
+    TestClock.now += 0.060
+    assert(touch(input, next, .began, .primary))
+    assert(touch(input, next, .ended))
+    assert(input.gameButtons.isEmpty && edges() == [2, 4, 2, 4])
+    input.buttonChanged(.left, false, at: TestClock.now)
+    assert(edges() == [2, 4, 2, 4])
 }
 
 // Each button has its own owner: GC left can coexist with UIKit right.
@@ -416,7 +578,7 @@ do {
     assert(packets.isEmpty)
     input.baseFocused = true
     input.uikitButtons([.left, .right])
-    assert(packets.isEmpty) // GC ownership survives focus loss; its echo stays ignored.
+    assert(packets.isEmpty) // A pointer hold received without focus stays blocked.
     input.uikitButtons([.right])
     assert(packets.isEmpty) // The blocked fallback hold also waits for a physical release.
     input.uikitButtons([])

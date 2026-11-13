@@ -102,14 +102,19 @@ Buttons are left, right, middle and the two side buttons
 (`XBUTTON1`/`XBUTTON2`); continuous scrolling is summed into wheel notches of
 120, vertical and horizontal.
 
-Button delivery is chosen separately from motion, per button: once GCMouse
-reports a button it owns that button, and UIKit echoes are ignored. Other
-buttons continue to use UIKit, including when GCMouse reports only movement.
+Button delivery is chosen separately from motion, for each press: matching
+GCMouse and UIKit reports produce one click. A completed click can suppress
+one delayed echo for 50 ms; it never permanently disables UIKit for that
+button. UIKit continues to deliver clicks when raw button reports stop or
+arrive intermittently, including when GCMouse reports only movement.
+Either matching source can complete a press when the other source omits its
+release. Wine polling threads submit queued input in order, so a concurrent
+poll cannot send the release before the press finishes dispatching.
 Movement and scrolling also choose their sources separately: raw buttons do
 not disable UIKit movement, and raw movement does not disable UIKit scrolling.
 Once a nonzero raw wheel report arrives, its UIKit echoes are ignored and any
-partial UIKit wheel notch is cleared. Source ownership survives focus changes
-and resets when the last GCMouse disconnects.
+partial UIKit wheel notch is cleared. Movement and wheel source ownership
+survives focus changes and resets when the last GCMouse disconnects.
 Mouse mode recognizes synthetic compatibility clicks and keeps each pointer
 contact through its empty-mask release; real fingers remain ignored. Opening
 the menu, changing pointer mode or losing app focus releases held input.
@@ -225,6 +230,8 @@ new cursor image (`[winios] cursor set`), as in the desktop session.
 
 ```sh
 python3 tests/host/check-hardware-input.py      # needs swiftc, cc and the wine submodule (or WINE_SRC)
+python3 tests/host/check-mouse-buttons.py       # needs swiftc; exercises production button routing
+python3 tests/host/check-input-queue.py         # needs cc with pthreads; checks concurrent FIFO delivery
 python3 tests/host/check-nav-keys.py
 ```
 
@@ -241,6 +248,8 @@ path to the program, the app wiring, the switches and this document.
 
 Device checklist:
 
+- repeated left clicks in Mouse mode on both the Wine desktop and a game,
+  including after raw button reports stop; every press should have one release;
 - typing and held keys (WASD with Shift) in a program, with and without a
   text field of the app focused;
 - the cursor on the game view: visible in a program's menus with its own
