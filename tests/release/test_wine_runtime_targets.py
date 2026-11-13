@@ -49,6 +49,15 @@ class WineRuntimeTargets(unittest.TestCase):
         self.assertEqual(result, ["dlls/ntdll/arm64ec-windows/ntdll.dll",
                                   "programs/cmd/arm64ec-windows/cmd.exe"])
 
+    def test_companion_ntoskrnl_is_rebuilt_from_selected_wine_source(self):
+        # The base IPA already ships this Wine module. Refresh it alongside
+        # the other PE files instead of retaining its previous source version.
+        for arch in ["arm64ec", "aarch64"]:
+            with self.subTest(arch=arch):
+                rule = f"dlls/ntoskrnl.exe/{arch}-windows/ntoskrnl.exe: objects"
+                self.assertEqual(runtime_targets.targets(rule, arch),
+                                 [f"dlls/ntoskrnl.exe/{arch}-windows/ntoskrnl.exe"])
+
 
 if __name__ == "__main__":
     unittest.main()

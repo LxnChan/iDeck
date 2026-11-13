@@ -21,7 +21,7 @@ UNSUPPORTED = {
     "winemac.drv", "wineandroid.drv", "winewayland.drv", "winex11.drv",
     "wineps.drv", "winevulkan.dll", "vulkan-1.dll", "opencl.dll", "wpcap.dll",
     "winevdm.exe", "vga.dll", "hal.dll", "w32skrnl.dll", "wow32.dll",
-    "winemenubuilder.exe", "wineconsole.exe", "winedevice.exe", "ntoskrnl.exe",
+    "winemenubuilder.exe", "wineconsole.exe", "winedevice.exe",
     "ir50_32.dll", "aero.msstyles",
 }
 EXTENSIONS = {".dll", ".exe", ".drv", ".cpl", ".acm", ".ax", ".ocx", ".tlb", ".com"}
