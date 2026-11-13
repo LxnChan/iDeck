@@ -48,8 +48,13 @@ the Windows and native runtime caches to force a fresh full runtime build.
 `legal/runtime-sync.json` in the IPA records pins, patch hashes, native link
 input hashes, and all packaged PE files in the three farms. The post-package
 gate verifies required modules, PE architectures, the exact file set and bytes.
-The artifact includes the IPA, package inventory and a copy of this manifest.
+The artifact includes the IPA, package inventory and a copy of this manifest,
+plus matching source and portable relink companion archives and checksums. The
+relink command is executed against the actual link inputs before upload.
 These checks establish build/package integrity, not game behavior on a device.
+Wine foreground queries are paired with the existing Madeira op 3 bridge while
+retaining iDeck focus rules. Optional XInput battery queries (op 4) keep their
+unknown-battery fallback in this update.
 
 The original FEX mainline, Wine mainline and DXMT mainline are not merged in
 this update. DXMT's later upstream DXBC use-after-free fix is deferred to a

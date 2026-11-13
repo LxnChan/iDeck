@@ -15,3 +15,5 @@ These patches are for Madeira only and are not to be sent to FEX-Emu.
 
 A patch must apply on the current FEX pin. When the pin moves, rebase the
 patches onto it (or drop a patch the new pin already covers).
+
+Imported unchanged from willfaust/Madeira commit `b0742a76d2a820638806786fc9bcd6644ff80f27` (included in the selected `fbad430` tree).

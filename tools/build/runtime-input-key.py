@@ -27,7 +27,9 @@ def main():
     for group, prefixes in GROUPS.items():
         inputs = {}
         for name in paths:
-            shared = ((name.startswith('tools/build/') or name == '.github/workflows/build-ipa.yml')
+            shared = (((name.startswith('tools/build/') and name not in
+                        {'tools/build/package-runtime-source.py', 'tools/build/prepare-runtime-sources.sh'})
+                       or name == '.github/workflows/build-ipa.yml')
                       if group != 'dependency' else name == 'tools/build/sync-gnutls-libs.sh')
             if (name.startswith(prefixes) or shared) and (ROOT / name).is_file():
                 inputs[name] = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()

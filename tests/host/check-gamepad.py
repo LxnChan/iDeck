@@ -14,12 +14,13 @@ query = driver[driver.index('/* ml1920: same-task controller snapshots'):]
 # The foreground fix (#149) calls into win32u's windows; this check has none of it.
 foreground = query.index('/* There is no window manager on iOS')
 foreground_end = query.index('\n}\n', query.index('static void ios_foreground_check(void)')) + 3
-query = query[:foreground] + 'static void ios_foreground_check(void) {}\n' + query[foreground_end:]
+query = query[:foreground] + 'static void ios_foreground_check(void) { foreground_check_calls++; }\n' + query[foreground_end:]
 types = r'''
 #include <stdint.h>
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 typedef uint8_t BYTE;
 typedef uint16_t WORD;
@@ -27,7 +28,19 @@ typedef int16_t SHORT;
 typedef uint32_t DWORD;
 typedef unsigned int UINT;
 typedef uintptr_t ULONG_PTR;
+typedef uintptr_t HWND;
 #define C_ASSERT(x) _Static_assert(x, #x)
+static HWND foreground_hwnd;
+static DWORD foreground_pid, foreground_thread;
+static unsigned foreground_reads, foreground_check_calls;
+static HWND NtUserGetForegroundWindow(void) { foreground_reads++; return foreground_hwnd; }
+static DWORD get_window_thread(HWND hwnd, DWORD *pid)
+{
+    assert(hwnd == foreground_hwnd);
+    if (pid) *pid = foreground_pid;
+    return foreground_thread;
+}
+static DWORD GetCurrentProcessId(void) { return 42; }
 '''
 tests = r'''
 static atomic_int finished;
@@ -41,13 +54,32 @@ static void *writer(void *arg) {
     atomic_fetch_add(&finished, 1);
     return NULL;
 }
-int main(void) {
+int main(int argc, char **argv) {
     struct winios_gamepad state = {0}, result;
     struct ios_xinput_state output;
     struct ios_xinput_caps caps;
+    DWORD flags = 0xdeadbeef, rule;
+    assert(argc == 2);
+    rule = (DWORD)atoi(argv[1]);
     assert(sizeof(state) == 20);
     assert(!winios_gamepad_get_state(-1, &result) && !result.connected);
     assert(!winios_gamepad_get_state(4, &result));
+    /* Op 3 has a DWORD payload and queries the window owner even without a pad.
+     * Invalid parameters must not read the window state or touch the buffer. */
+    assert(!ios_gamepad_query(0, 3, NULL));
+    assert(!ios_gamepad_query(4, 3, &flags) && flags == 0xdeadbeef);
+    assert(!ios_gamepad_query(~0u, 3, &flags) && flags == 0xdeadbeef);
+    assert(!foreground_reads && !foreground_check_calls);
+    foreground_hwnd = 1; foreground_pid = 42; foreground_thread = 7;
+    assert(ios_gamepad_query(0, 3, &flags) == rule && flags == (rule | 0x2));
+    assert(ios_gamepad_query(3, 3, &flags) == rule && flags == (rule | 0x2));
+    foreground_pid = 43;
+    assert(!ios_gamepad_query(0, 3, &flags) && flags == rule);
+    foreground_pid = 42; foreground_thread = 0;
+    assert(!ios_gamepad_query(0, 3, &flags) && flags == rule);
+    foreground_thread = 7; foreground_hwnd = 0;
+    assert(!ios_gamepad_query(0, 3, &flags) && flags == rule);
+    assert(foreground_reads == 5 && !foreground_check_calls);
     assert(!ios_gamepad_query(0, 0, &output));
     state.connected = 1; state.buttons = 0x1011;
     state.lx = -32768; state.ly = 32767;
@@ -95,7 +127,9 @@ int main(void) {
         winios_gamepad_set_vibration(0, 5, 5);
         assert(notified == 2 && winios_gamepad_get_vibration(0, &v) == 3);
     }
-    assert(!ios_gamepad_query(0, 3, &caps) && !ios_gamepad_query(4, 0, &output));
+    flags = 0xdeadbeef;
+    assert(!ios_gamepad_query(0, 4, &flags) && flags == 0xdeadbeef);
+    assert(!ios_gamepad_query(4, 0, &output));
     assert(!ios_gamepad_query(0, 0, NULL));
     for (int i = 1; i < 4; ++i) {
         state.buttons = (uint16_t)(1 << i);
@@ -132,6 +166,12 @@ with tempfile.TemporaryDirectory(prefix='madeira-gamepad-') as tmp:
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
                     '-O2', '-pthread', '-I', str(root / 'build/win32u-unix'), str(source),
                     str(root / 'app/Madeira/Winios/WiniosGamepad.c'), '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
+    for rule, value in ((1, None), (1, ''), (0, '0'), (1, '1')):
+        environment = os.environ.copy()
+        if value is None:
+            environment.pop('MADEIRA_XINPUT_ENABLE_FOREGROUND', None)
+        else:
+            environment['MADEIRA_XINPUT_ENABLE_FOREGROUND'] = value
+        subprocess.run([str(binary), str(rule)], env=environment, check=True)
 print('PASS: packet changes, ranges, four slots, disconnect/reconnect, query ABI, concurrent snapshots, '
-      'rumble caps, XInput vibration op (ml2106)')
+      'rumble caps, XInput vibration op (ml2106), foreground owner/rule op (ml2115)')

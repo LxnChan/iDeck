@@ -97,6 +97,7 @@ jobs:
           python3 -B tests/host/check-input-queue.py
           python3 -B tests/host/check-crosshair-input.py
           python3 -B tests/host/check-touch-gamepad.py
+          python3 -B tests/host/check-gamepad.py
 
       - name: Install build tools (LLVM & Bison)
         run: |
@@ -438,7 +439,7 @@ jobs:
 
       - name: Build application with xcodebuild
         run: |
-          set -e
+          set -euo pipefail
           CONFIG="${{ inputs.configuration || 'Debug' }}"
           BUNDLE_ID="${{ inputs.bundle_id || 'com.kuschqin.madeira.steamui' }}"
           if [ -n "${{ inputs.build_number }}" ]; then
@@ -455,7 +456,7 @@ jobs:
             MADEIRA_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-            build
+            build 2>&1 | tee build/xcode-runtime-sync.log
 
           APP_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/Info.plist"
           HELPER_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/PlugIns/MadeiraJITHelper.appex/Info.plist"
@@ -520,6 +521,24 @@ jobs:
           python3 tools/check-synced-runtime.py --ipa '${{ steps.package.outputs.ipa_path }}' \
             --output 'output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json'
 
+      - name: Validate portable relink inputs
+        run: |
+          set -euo pipefail
+          python3 tools/prepare-relink.py build/xcode-runtime-sync.log build/runtime-relink
+          python3 build/runtime-relink/relink.py --verify-inputs \
+            --framework-path "$GITHUB_WORKSPACE/app/Frameworks/StikJIT.xcframework/ios-arm64"
+
+      - name: Prepare matching runtime source checkouts
+        run: bash tools/build/prepare-runtime-sources.sh
+
+      - name: Package source and relink companions
+        run: |
+          set -euo pipefail
+          SHORT_SHA='${{ steps.package.outputs.short_sha }}'
+          python3 tools/build/package-runtime-source.py "output/iDeck-fork-${SHORT_SHA}.source.tar.gz"
+          tar -czf "output/iDeck-fork-${SHORT_SHA}.relink.tar.gz" -C build/runtime-relink .
+          (cd output && shasum -a 256 "iDeck-fork-${SHORT_SHA}".* > "iDeck-fork-${SHORT_SHA}.SHA256SUMS")
+
       - name: Retain runtime build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -543,5 +562,9 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}
             ${{ steps.package.outputs.inventory_path }}
             output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.source.tar.gz
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.relink.tar.gz
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.SHA256SUMS
           retention-days: 14
+          compression-level: 0
           if-no-files-found: error

@@ -2806,6 +2806,36 @@ static void ios_foreground_check(void)
     }
 }
 
+/* ml2115: NtUserGamepadOp_Foreground (op 3). xinput asks this while the
+ * program has XInput disabled (XInputEnable(FALSE)): many programs disable
+ * XInput when their window loses activation and enable it again when it comes
+ * back, and the activation messages a window gets while the port restores it
+ * and brings it to the front at startup can arrive unbalanced. The program
+ * then reads a connected pad at rest for the whole session. TRUE tells xinput
+ * to treat the disable as stale: the switch is on and the calling process
+ * owns the foreground window. `*flags` gets bit 0 (switch on) and bit 1
+ * (owner) either way, for xinput's log lines. Two shared-memory reads, no
+ * server call. The switch comes from the host environment, which every
+ * process of the session shares, so 32- and 64-bit games read the same value.
+ * Same number and ABI as the pre-2026-10-01 fork's query. */
+static ULONG_PTR ios_gamepad_foreground( DWORD *flags )
+{
+    static int rule = -1;
+    DWORD pid = 0;
+    HWND hwnd;
+
+    if (rule < 0)
+    {
+        const char *env = getenv( "MADEIRA_XINPUT_ENABLE_FOREGROUND" );  /* 0: a program's XInputEnable(FALSE) zeroes the pad even while its window is in front */
+        rule = !(env && *env == '0');
+    }
+    *flags = rule ? 0x1 : 0;   /* NtUserGamepadForeground_Rule */
+    if ((hwnd = NtUserGetForegroundWindow()) && get_window_thread( hwnd, &pid ) &&
+        pid == GetCurrentProcessId())
+        *flags |= 0x2;         /* NtUserGamepadForeground_Owner */
+    return *flags == 0x3;
+}
+
 /***********************************************************************
  *           ios_gamepad_query
  *
@@ -2813,7 +2843,9 @@ static void ios_foreground_check(void)
  * index (0-3) and `op` selects the payload; see NtUserGamepadOp_* in
  * wine/include/ntuser.h. Op 2 (ml2106, NtUserGamepadOp_SetVibration) passes
  * the game's XINPUT_VIBRATION in from XInputSetState; an xinput that predates
- * it never sends it. Returns 1 when a pad is connected in that slot and
+ * it never sends it. Op 3 (ml2115, NtUserGamepadOp_Foreground) answers for
+ * any slot; see ios_gamepad_foreground.
+ * Returns 1 when a pad is connected in that slot and
  * `buffer` was filled (or read), 0 otherwise — which is also what an upstream,
  * non-Madeira win32u returns for a code it does not know, so xinput1_3's
  * runtime probe falls back to the existing HID path.
@@ -2823,6 +2855,7 @@ ULONG_PTR ios_gamepad_query( UINT index, UINT op, void *buffer )
     struct winios_gamepad pad;
 
     if (!buffer || index >= 4) return 0;
+    if (op == 3) return ios_gamepad_foreground( buffer );   /* NtUserGamepadOp_Foreground */
     if (op == 0 && index == 0) ios_foreground_check();
     if (!winios_gamepad_get_state( index, &pad )) return 0;
 
