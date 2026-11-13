@@ -39,6 +39,7 @@ names = (
     'func uikitMoved(', 'func uikitScroll(', 'private func scrolled(',
     'private func resetRawMouseSources()',
     'private func wireMouseButton(',
+    'private func assistivePointerContact(', 'func systemPointerHovered(',
 )
 methods = '\n'.join(method(signature) for signature in names)
 held = source.split('    // MARK: held state (main thread)', 1)[1].split('    // MARK: cursor and lock state', 1)[0]
@@ -51,6 +52,16 @@ for setting in ('cancelsTouchesInView', 'delaysTouchesBegan', 'delaysTouchesEnde
     assert f'{setting} = false' in observer
 assert 'view.addGestureRecognizer(PointerButtonObserver())' in source
 assert 'PointerButtonObserver(observingWindow: true)' in method('private func installTouchObserver()')
+for handler in ('@objc private func onHover(', '@objc private func onDrag('):
+    body = method(handler)
+    assert body.count('HardwareInput.shared.systemPointerHovered(') == 3
+    assert 'HardwareInput.shared.pointerHovered(' not in body
+for signature in ('func pointerTouchesInWindow(', 'func interceptTouches('):
+    assert 'assistivePointerContact(touch)' in method(signature)
+for signature in ('private func releaseAll(', 'private func evaluateFocus('):
+    body = method(signature)
+    for field in ('systemPointerPosition', 'systemPointerView', 'systemPointerEndedAt'):
+        assert f'{field} = nil' in body
 detach = method('private func detachMouse(')
 assert 'if remaining.isEmpty {\n            resetRawMouseSources()' in detach
 assert 'resetRawMouseSources()' not in method('private func releaseAll(')
@@ -69,6 +80,7 @@ import CoreGraphics
 typealias CFTimeInterval = Double
 enum TestClock { static var now: Double = 10 }
 func CACurrentMediaTime() -> Double { TestClock.now }
+enum UIAccessibility { static var isAssistiveTouchRunning = false }
 
 struct Packet: Equatable {
     var x: Int32, y: Int32, flags: UInt32, data: UInt32
@@ -153,6 +165,9 @@ final class HardwareInput {
     var mouseConnected = true
     var pointerLocked = false
     var hoverSeen = true
+    var systemPointerPosition: CGPoint?
+    weak var systemPointerView: UIView?
+    var systemPointerEndedAt: CFTimeInterval?
     var gcDeltaSeen = false
     var gcDeltaLive = false
     var gcScrollLive = false
@@ -187,6 +202,7 @@ final class HardwareInput {
     }
     func noteUIKitPointer() {}
     func pointerHovered(at p: CGPoint, in view: UIView, inside: Bool) {
+        guard inside else { return }
         lastAbsolute = (Int32(p.x), Int32(p.y))
     }
 '''
@@ -198,6 +214,7 @@ func fresh() -> HardwareInput {
     clear(); InputSettings.shared.mouseMode = true
     InputSettings.shared.ignoreTouchesWithMouse = true
     InputSettings.shared.diagnostics = false; TestClock.now = 10
+    UIAccessibility.isAssistiveTouchRunning = false
     return HardwareInput()
 }
 func settle(_ input: HardwareInput, _ t: UITouch) {
@@ -358,6 +375,173 @@ do {
     assert(packets.isEmpty)
     settle(input, pointer)
     assert(input.gameButtons.isEmpty && edges() == [2, 4])
+}
+
+// Rapoo/AssistiveTouch: direct, maskless contacts with a nonzero radius click
+// under a real system pointer, including stationary pointers and both orders of
+// duplicate observer/responder delivery. Game children are valid hit-test targets.
+for viewFirst in [true, false] {
+  for childHit in [true, false] {
+    let input = fresh(), tree = WindowTree(), click = UITouch(.direct, radius: 20)
+    click.view = childHit ? tree.gameChild : tree.game
+    UIAccessibility.isAssistiveTouchRunning = true
+    input.gcDeltaSeen = true
+    input.systemPointerHovered(at: click.point, in: tree.game, inside: true)
+    TestClock.now += 30 // A stationary pointer need not keep sending hover changes.
+    click.point.x += 2 // Allow the small position rounding of a compatibility contact.
+    if viewFirst { assert(touch(input, click, .began)) }
+    windowTouch(input, click, .began)
+    if !viewFirst { assert(touch(input, click, .began)) }
+    assert(input.pendingCompatibilityTouches.count == 1 && input.gameButtons.isEmpty)
+    assert(input.fingerTouches(in: [click]).isEmpty)
+    if viewFirst { assert(touch(input, click, .ended)) }
+    windowTouch(input, click, .ended)
+    if !viewFirst { assert(touch(input, click, .ended)) }
+    assert(packets.isEmpty)
+    settle(input, click)
+    assert(input.gameButtons.isEmpty && edges() == [2, 4] && !input.gcButtonSeen)
+  }
+}
+
+// Hover can stop just before a click. Once accepted, a held contact retains its
+// identity through motion away from the pointer and release outside the surface.
+do {
+    let input = fresh(), tree = WindowTree(), drag = UITouch(.direct, radius: 20)
+    drag.view = tree.host
+    UIAccessibility.isAssistiveTouchRunning = true
+    input.systemPointerHovered(at: drag.point, in: tree.game, inside: true)
+    input.systemPointerHovered(at: drag.point, in: tree.game, inside: false)
+    TestClock.now += 0.100
+    windowTouch(input, drag, .began)
+    assert(touch(input, drag, .began))
+    settle(input, drag)
+    assert(input.gameButtons == [.left] && edges() == [2])
+    drag.point = CGPoint(x: 1200, y: 900)
+    drag.view = tree.sibling
+    input.systemPointerHovered(at: drag.point, in: tree.game, inside: false)
+    TestClock.now += 2
+    windowTouch(input, drag, .moved)
+    assert(touch(input, drag, .moved))
+    assert(input.gameButtons == [.left] && edges() == [2])
+    windowTouch(input, drag, .ended)
+    assert(touch(input, drag, .ended))
+    assert(input.gameButtons.isEmpty && input.mouseTouches.isEmpty && edges() == [2, 4])
+}
+
+// A raw right click in either delivery order suppresses its direct compatibility
+// echo. The fallback must not add a left click while waiting for the raw edge.
+for rawFirst in [true, false] {
+    let input = fresh(), tree = WindowTree(), echo = UITouch(.direct, radius: 20)
+    echo.view = tree.game
+    UIAccessibility.isAssistiveTouchRunning = true
+    input.systemPointerHovered(at: echo.point, in: tree.game, inside: true)
+    if rawFirst { input.gcButton(.right, true, source: "pressed", value: 1) }
+    windowTouch(input, echo, .began)
+    windowTouch(input, echo, .ended)
+    if !rawFirst {
+        TestClock.now += 0.020
+        input.gcButton(.right, true, source: "pressed", value: 1)
+    }
+    settle(input, echo)
+    input.gcButton(.right, false, source: "pressed", value: 0)
+    assert(input.gameButtons.isEmpty && edges() == [8, 16])
+}
+
+// Pointer proximity is accepted only with its supporting accessibility/device
+// state and the current game view. Native controls retain their own contacts;
+// a recognized compatibility contact while unfocused is consumed without a click.
+for exclusion in 0..<14 {
+    let input = fresh(), tree = WindowTree(), contact = UITouch(.direct, radius: 20)
+    contact.view = tree.game
+    UIAccessibility.isAssistiveTouchRunning = true
+    if exclusion != 0 {
+        input.systemPointerHovered(at: contact.point, in: tree.game, inside: true)
+    }
+    switch exclusion {
+    case 0: break // No system hover evidence.
+    case 1: UIAccessibility.isAssistiveTouchRunning = false
+    case 2: InputSettings.shared.mouseMode = false // Direct touch keeps its finger.
+    case 3: input.mouseConnected = false
+    case 4: input.pointerLocked = true
+    case 5: contact.point.x += 20 // Finger elsewhere on the game.
+    case 6: // Pointer actually left the game bounds.
+        input.systemPointerHovered(at: CGPoint(x: -10, y: -10), in: tree.game, inside: false)
+    case 7: // The in-bounds hover end is too old to belong to this click.
+        input.systemPointerHovered(at: contact.point, in: tree.game, inside: false)
+        TestClock.now += 1
+    case 8:
+        let replacement = UIView()
+        tree.host.addSubview(replacement)
+        MetalBackedView.keyboardTarget = replacement
+        contact.view = replacement
+    case 9: contact.view = tree.sibling
+    case 10: contact.view = tree.otherView
+    case 11: input.baseFocused = false
+    case 12: // Geometric proximity cannot admit a contact outside the game.
+        input.systemPointerHovered(at: CGPoint(x: 1, y: 100), in: tree.game, inside: true)
+        contact.point = CGPoint(x: -1, y: 100)
+    default: // A hover end from a future timestamp cannot prove this click.
+        input.systemPointerHovered(at: contact.point, in: tree.game, inside: false)
+        TestClock.now -= 0.100
+    }
+    windowTouch(input, contact, .began)
+    windowTouch(input, contact, .ended)
+    settle(input, contact)
+    assert(packets.isEmpty && input.gameButtons.isEmpty && input.mouseTouches.isEmpty,
+           "AssistiveTouch exclusion \(exclusion) must not click")
+    assert(input.fingerTouches(in: [contact]) == (exclusion == 11 ? [] : [contact]))
+    assert(input.pendingCompatibilityTouches.isEmpty && input.mouseEchoTouches.isEmpty)
+}
+
+// Compatibility contacts use their position to move Wine's cursor, but that
+// position cannot supply system hover evidence for a following real finger.
+do {
+    let input = fresh(), tree = WindowTree(), synthetic = UITouch(.direct, radius: 0)
+    synthetic.view = tree.game
+    UIAccessibility.isAssistiveTouchRunning = true
+    windowTouch(input, synthetic, .began)
+    windowTouch(input, synthetic, .ended)
+    settle(input, synthetic)
+    assert(edges() == [2, 4])
+    assert(input.systemPointerPosition == nil && input.systemPointerView == nil)
+    clear()
+    let finger = UITouch(.direct, radius: 20)
+    finger.view = tree.game
+    windowTouch(input, finger, .began)
+    windowTouch(input, finger, .ended)
+    settle(input, finger)
+    assert(packets.isEmpty && input.fingerTouches(in: [finger]) == [finger])
+}
+
+// Cancellation or focus loss releases a held compatibility click and removes
+// pending clicks. Losing focus also requires new system hover evidence.
+for focusLost in [true, false] {
+    for held in [true, false] {
+        let input = fresh(), tree = WindowTree(), contact = UITouch(.direct, radius: 20)
+        contact.view = tree.game
+        UIAccessibility.isAssistiveTouchRunning = true
+        input.systemPointerHovered(at: contact.point, in: tree.game, inside: true)
+        windowTouch(input, contact, .began)
+        if held { settle(input, contact) }
+        if focusLost {
+            input.baseFocused = false
+            input.releaseAll("focus lost during AssistiveTouch click")
+        } else {
+            windowTouch(input, contact, .cancelled)
+        }
+        settle(input, contact)
+        assert(input.gameButtons.isEmpty && edges() == (held ? [2, 4] : []))
+        if focusLost {
+            input.baseFocused = true
+            clear()
+            let next = UITouch(.direct, radius: 20)
+            next.view = tree.game
+            windowTouch(input, next, .began)
+            windowTouch(input, next, .ended)
+            settle(input, next)
+            assert(packets.isEmpty)
+        }
+    }
 }
 
 // A menu/focus block still prevents the new window route from forwarding a click.

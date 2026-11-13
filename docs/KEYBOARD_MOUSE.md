@@ -235,7 +235,22 @@ and a 1 Hz activity line for relative movement or held input. Absolute movement
 alone does not arm that activity timer. Bounded button traces also record the
 raw callback source, value and pressed state; the window pointer contact's
 phase, type, button mask and target decision; and the posted button edges. The
-driver logs each new cursor image (`[winios] cursor set`), as in the desktop
+contact trace includes its radius, time since a raw button callback, the
+AssistiveTouch state and whether it matches the last system pointer position.
+The inventory and pointer mode changes also record AssistiveTouch and Mouse
+mode, so the settings file need not be used to infer the mode during a click.
+
+In Mouse mode with AssistiveTouch enabled, a direct empty-mask contact within
+four view points of the known system pointer can carry a left click even with
+a nonzero radius and no GCMouse button callback. This evidence comes only from
+system hover or indirect drag, and expires shortly after an in-bounds hover
+end. Leaving the surface or losing base focus clears it. Direct touch mode
+continues to use the finger path. UIKit gives no button identity to an
+empty-mask contact; right/side clicks still need a raw callback or button mask.
+An actual finger exactly under the pointer in Mouse mode can share this
+compatibility path; use Direct touch for finger control.
+
+The driver logs each new cursor image (`[winios] cursor set`), as in the desktop
 session.
 
 To collect a click failure:
@@ -246,6 +261,8 @@ To collect a click failure:
    times, hold left for three seconds while moving slightly, release, then do
    the same for right. Also note whether the mouse can click Madeira's own
    menus and whether a finger can click the program in **Direct touch** mode.
+   State whether AssistiveTouch is enabled and whether the mouse uses Bluetooth
+   or a USB receiver. Keep mouse-only and finger-only tests in separate phases.
 3. In Files, open **On My iPad > iDeck** and share `madeira-log.txt` together
    with `madeira-input.json`. If Madeira has restarted since the reproduction,
    also collect `madeira-log.prev.txt`. Named session logs may remain in `logs/`.

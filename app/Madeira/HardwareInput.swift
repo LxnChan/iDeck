@@ -345,8 +345,8 @@ struct MouseButtonSources {
 }
 
 enum MouseTouchPolicy {
-    /// Compatibility clicks have a synthetic contact patch; a real finger
-    /// never becomes a mouse just because Mouse mode is selected.
+    /// Mouse mode alone is not evidence: require an indirect type, a button
+    /// mask, or a proven compatibility contact.
     static func isMouse(indirect: Bool, hasButtonMask: Bool, synthetic: Bool,
                         mouseMode: Bool, mouseConnected: Bool) -> Bool {
         indirect || hasButtonMask || (mouseMode && mouseConnected && synthetic)
@@ -722,6 +722,11 @@ final class HardwareInput: ObservableObject {
     /// Without it the mouse is routed by click focus.
     private var hoverSeen = false
     private var pointerOver = false
+    /// Only system hover/indirect drag can seed this evidence. A compatibility
+    /// contact must not turn its own position into proof that it is a mouse.
+    private var systemPointerPosition: CGPoint?
+    private weak var systemPointerView: UIView?
+    private var systemPointerEndedAt: CFTimeInterval?
     private var clickFocus = ClickFocus()
     private var focusTimer: Timer?
     private weak var observedWindow: UIWindow?
@@ -911,7 +916,8 @@ final class HardwareInput: ObservableObject {
         let cur = GCMouse.current
         log("inventory(\(why)): mice=\(mice.count) current=\(cur != nil) "
             + "keyboard=\(GCKeyboard.coalesced != nil) path=\(mousePath.rawValue) "
-            + "gcDelta=\(gcDeltaSeen) uikit=\(uikitSeen)")
+            + "gcDelta=\(gcDeltaSeen) uikit=\(uikitSeen) "
+            + "assistiveTouch=\(UIAccessibility.isAssistiveTouchRunning ? 1 : 0) mouseMode=\(InputSettings.shared.mouseMode ? 1 : 0)")
         for (i, m) in mice.enumerated() { attachMouse(m, why: "\(why)/mice[\(i)]") }
         if let cur, !mice.contains(where: { $0 === cur }) { attachMouse(cur, why: "\(why)/current") }
         attachKeyboard(GCKeyboard.coalesced)
@@ -951,6 +957,9 @@ final class HardwareInput: ObservableObject {
         compatibilityLeftTouches.removeAll()
         pointerMaskButtons.removeAll()
         interceptedMouseTouches.removeAll()
+        systemPointerPosition = nil
+        systemPointerView = nil
+        systemPointerEndedAt = nil
         syncKeys()
         syncButtons()
         motionLock.lock(); carry.reset(); wheel.reset(); motionLock.unlock()
@@ -980,7 +989,12 @@ final class HardwareInput: ObservableObject {
         let keyboard = base && !typingElsewhere()
         let over = InputSettings.shared.mouseMode ? (!hoverSeen || pointerOver || clickFocus.onGame) : (hoverSeen ? pointerOver : clickFocus.onGame)
         let mouse = base && (!Self.focusEnabled || pointerLocked || over || !gameButtons.isEmpty)
-        if baseFocused && !base { MetalBackedView.keyboardTarget?.resetTouchState() }
+        if baseFocused && !base {
+            MetalBackedView.keyboardTarget?.resetTouchState()
+            systemPointerPosition = nil
+            systemPointerView = nil
+            systemPointerEndedAt = nil
+        }
         baseFocused = base
         if keyboard != keyboardFocused {
             keyboardFocused = keyboard
@@ -1067,6 +1081,8 @@ final class HardwareInput: ObservableObject {
             guard let self else { return }
             if ["mouseMode", "pointerMode", "touchMode", "relative"].contains(what) {
                 self.releaseAll("pointer mode changed")
+                self.log("settings(\(what)): mouseMode=\(InputSettings.shared.mouseMode ? 1 : 0) "
+                    + "assistiveTouch=\(UIAccessibility.isAssistiveTouchRunning ? 1 : 0)")
             }
             PointerHider.invalidateAll()
             self.refreshFocus(what)
@@ -1699,6 +1715,24 @@ final class HardwareInput: ObservableObject {
 
     enum TouchPhase { case began, moved, ended, cancelled }
 
+    /// AssistiveTouch may emit a direct, empty-mask contact with a fingertip
+    /// radius and no GC button callback. In Mouse mode, its position under the
+    /// known system pointer supplies the missing evidence. Direct touch mode
+    /// keeps the finger path. Hover can end just before UIKit delivers a click.
+    private func assistivePointerContact(_ touch: UITouch) -> Bool {
+        guard touch.type == .direct, InputSettings.shared.mouseMode, mouseConnected,
+              UIAccessibility.isAssistiveTouchRunning, !pointerLocked,
+              let p = systemPointerPosition, let view = systemPointerView,
+              view === MetalBackedView.keyboardTarget else { return false }
+        if let endedAt = systemPointerEndedAt {
+            let age = CACurrentMediaTime() - endedAt
+            guard age >= 0 && age <= 0.250 else { return false }
+        }
+        let contact = touch.location(in: view)
+        guard view.bounds.contains(contact) else { return false }
+        return hypot(contact.x - p.x, contact.y - p.y) <= 4.0
+    }
+
     /// UIKit can hit-test a pointer click to the hosting ancestor rather than
     /// the transparent game placeholder. Observe that window too, but admit
     /// only pointer contacts on the game or its covering ancestor. A native
@@ -1716,8 +1750,9 @@ final class HardwareInput: ObservableObject {
             let tracked = mouseTouches.contains(id) || mouseEchoTouches.contains(id)
             let synthetic = SynthesizedTouch.looksSynthesized(direct: touch.type == .direct,
                 majorRadius: Double(touch.majorRadius), secondsSinceButton: sinceButton)
+            let assistive = assistivePointerContact(touch)
             let candidate = tracked || MouseTouchPolicy.isMouse(indirect: touch.type == .indirectPointer,
-                hasButtonMask: hasMask && (synthetic || (!maskHasPointerContact && touches.count == 1)), synthetic: synthetic,
+                hasButtonMask: hasMask && (synthetic || assistive || (!maskHasPointerContact && touches.count == 1)), synthetic: synthetic || assistive,
                 mouseMode: InputSettings.shared.mouseMode, mouseConnected: mouseConnected)
             let target = touch.view
             let onGame = target?.isDescendant(of: game) == true
@@ -1729,7 +1764,10 @@ final class HardwareInput: ObservableObject {
                 windowButtonLogged += 1
                 log("window pointer phase=\(phase) type=\(touch.type.rawValue) mask=0x\(String(event?.buttonMask.rawValue ?? 0, radix: 16)) "
                     + "target=\(onGame ? "game" : ancestor ? "ancestor" : "elsewhere") inside=\(inside ? 1 : 0) "
-                    + "candidate=\(candidate ? 1 : 0) accept=\(accept ? 1 : 0) base=\(baseFocused ? 1 : 0) mouse=\(mouseFocused ? 1 : 0)")
+                    + "candidate=\(candidate ? 1 : 0) accept=\(accept ? 1 : 0) base=\(baseFocused ? 1 : 0) mouse=\(mouseFocused ? 1 : 0) "
+                    + "radius=\(touch.majorRadius) synthetic=\(synthetic ? 1 : 0) assistiveMatch=\(assistive ? 1 : 0) "
+                    + "sinceGCButton=\(sinceButton) assistiveTouch=\(UIAccessibility.isAssistiveTouchRunning ? 1 : 0) "
+                    + "point=\(touch.location(in: game)) systemPoint=\(systemPointerPosition.map { String(describing: $0) } ?? "none")")
             }
             return accept
         }
@@ -1755,7 +1793,7 @@ final class HardwareInput: ObservableObject {
             if mouseTouches.contains(id) { return true }
             let synthetic = SynthesizedTouch.looksSynthesized(direct: touch.type == .direct,
                                                               majorRadius: Double(touch.majorRadius),
-                                                              secondsSinceButton: sinceButton)
+                                                              secondsSinceButton: sinceButton) || assistivePointerContact(touch)
             if touch.type == .direct && synthetic && !hasButtonMask
                 && (sinceButton < SynthesizedTouch.buttonCoincidence
                     || (!InputSettings.shared.mouseMode && shouldIgnore(touch, logging: false))) {
@@ -1929,6 +1967,25 @@ final class HardwareInput: ObservableObject {
     // iOS pointer is clamped to the screen, so at an edge the hover deltas
     // stop, and iOS has no API to warp or re-centre it. The GCMouse + pointer
     // lock path is the complete solution where the OS provides it.
+
+    /// Called only by system hover and indirect-pointer drag recognizers.
+    /// A stationary pointer remains usable; leaving the surface invalidates
+    /// it, while an in-bounds hover end allows the following click briefly.
+    func systemPointerHovered(at p: CGPoint, in view: UIView, inside: Bool) {
+        guard Self.enabled else { return }
+        if inside {
+            systemPointerPosition = p
+            systemPointerView = view
+            systemPointerEndedAt = nil
+        } else if view.bounds.contains(p), systemPointerView === view {
+            systemPointerEndedAt = CACurrentMediaTime()
+        } else {
+            systemPointerPosition = nil
+            systemPointerView = nil
+            systemPointerEndedAt = nil
+        }
+        pointerHovered(at: p, in: view, inside: inside)
+    }
 
     /// Hover over the game view (`inside` false: the pointer left it).
     func pointerHovered(at p: CGPoint, in view: UIView, inside: Bool) {
@@ -2345,11 +2402,11 @@ final class PointerFallback: NSObject {
         case .began:
             if p != .zero {
                 hoverLast = p; hoverHasLast = true
-                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                HardwareInput.shared.systemPointerHovered(at: p, in: view, inside: true)
             }
         case .changed:
             if p != .zero {
-                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                HardwareInput.shared.systemPointerHovered(at: p, in: view, inside: true)
                 guard hoverHasLast else { hoverLast = p; hoverHasLast = true; return }
                 let d = CGPoint(x: p.x - hoverLast.x, y: p.y - hoverLast.y)
                 hoverLast = p
@@ -2357,7 +2414,7 @@ final class PointerFallback: NSObject {
             }
         default:
             hoverHasLast = false
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: false)
+            HardwareInput.shared.systemPointerHovered(at: p, in: view, inside: false)
         }
     }
 
@@ -2372,12 +2429,12 @@ final class PointerFallback: NSObject {
             panLast = .zero
             hoverHasLast = false
             if p != .zero {
-                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                HardwareInput.shared.systemPointerHovered(at: p, in: view, inside: true)
                 HardwareInput.shared.pointerDragged(at: p, in: view)
             }
         case .changed:
             if p != .zero {
-                HardwareInput.shared.pointerHovered(at: p, in: view, inside: true)
+                HardwareInput.shared.systemPointerHovered(at: p, in: view, inside: true)
                 HardwareInput.shared.pointerDragged(at: p, in: view)
                 let d = CGPoint(x: t.x - panLast.x, y: t.y - panLast.y)
                 panLast = t
@@ -2386,7 +2443,7 @@ final class PointerFallback: NSObject {
         default:
             panLast = .zero
             hoverHasLast = false
-            HardwareInput.shared.pointerHovered(at: p, in: view, inside: false)
+            HardwareInput.shared.systemPointerHovered(at: p, in: view, inside: false)
         }
     }
 
