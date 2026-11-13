@@ -86,8 +86,8 @@ final class MetalHostView: UIView {
 /// (madeira.cfg `env.NAME`, else the process environment): "1" always sends
 /// them (the previous behaviour), "0" never does, and by default they are not
 /// sent while the landscape overlay shows at least one controller mapping,
-/// unless touch is set to work as a trackpad. A hardware mouse or trackpad is
-/// not affected.
+/// unless a touch pointer mode (Direct touch or Crosshair) is selected.
+/// A hardware mouse or trackpad is not affected.
 ///
 /// madeira-bcd: the game's own file (Game details › This game's config) is
 /// read first, as for the pad mode, so a per-game line applies. And by
@@ -571,6 +571,7 @@ final class MetalBackedView: UIView {
     private var twoFingerActive = false
     private var twoFingerMoved = false
     private var twoFingerStartTime: TimeInterval = 0
+    private var twoFingerStartPoint = CGPoint.zero
     private var lastTwoFingerY: CGFloat = 0
     private var scrollAccum: CGFloat = 0
     // ml641: relative motion is scaled by a float sensitivity, so the integer
@@ -630,8 +631,12 @@ final class MetalBackedView: UIView {
         return CGPoint(x: x / n, y: y / n)
     }
     private func activeTouches(_ event: UIEvent?) -> [UITouch] {
-        HardwareInput.shared.fingerTouches(in: event?.allTouches ?? [])
-            .filter { $0.phase != .ended && $0.phase != .cancelled }
+        // UIEvent can also contain fingers held on controls in another view
+        // or window. Only accepted fingers on this surface form its gestures.
+        Array(HardwareInput.shared.fingerTouches(in: event?.allTouches ?? [])
+            .filter { $0.phase != .ended && $0.phase != .cancelled
+                && $0.view?.isDescendant(of: self) == true
+                && !tmgSwallowed.contains(ObjectIdentifier($0)) })
     }
 
     // Direct touches that began while TouchMouseGate was suppressing stay
@@ -641,7 +646,7 @@ final class MetalBackedView: UIView {
     private func tmgFilter(_ touches: Set<UITouch>, _ phase: UITouch.Phase) -> Set<UITouch>? {
         if phase == .began {
             _ = TouchMouseGate.mode   // logs the mode once
-            guard (InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected) || TouchMouseGate.suppressing(touchpad: touchPointerMode, desktop: desktopMode) else { return touches }
+            guard (InputSettings.shared.mouseMode && HardwareInput.shared.mouseConnected) || TouchMouseGate.suppressing(touchpad: touchPointerMode || InputSettings.shared.relative, desktop: desktopMode) else { return touches }
             let direct = touches.filter { $0.type == .direct }
             guard !direct.isEmpty else { return touches }
             for t in direct { tmgSwallowed.insert(ObjectIdentifier(t)) }
@@ -680,12 +685,20 @@ final class MetalBackedView: UIView {
         let active = activeTouches(event)
         touchGeneration += 1
         if active.count >= 2 {
+            let midpoint = avgPoint(active)
+            if twoFingerActive {
+                // Another finger cannot turn an existing scroll into a tap.
+                twoFingerMoved = true
+                lastTwoFingerY = midpoint.y
+                return
+            }
             let wasDragging = dragActive
             if dragActive { postPointer(F_LUP); dragActive = false; dragTouch = nil }
             twoFingerActive = true
-            twoFingerMoved = wasDragging   // a hold becoming a scroll is not a right-click
+            twoFingerMoved = wasDragging || (panTouch != nil && movedBeyondSlop)
             twoFingerStartTime = now
-            lastTwoFingerY = avgPoint(active).y
+            twoFingerStartPoint = midpoint
+            lastTwoFingerY = midpoint.y
             scrollAccum = 0
             return
         }
@@ -741,7 +754,9 @@ final class MetalBackedView: UIView {
             let avg = avgPoint(active)
             let dy = avg.y - lastTwoFingerY
             lastTwoFingerY = avg.y
-            if abs(dy) > 2 { twoFingerMoved = true }
+            if hypot(avg.x - twoFingerStartPoint.x, avg.y - twoFingerStartPoint.y) > 2 {
+                twoFingerMoved = true
+            }
             scrollAccum += dy
             // 14pt of finger travel = one wheel notch. ml641 flipped the sign:
             // on a touchscreen the content follows the finger, so dragging UP

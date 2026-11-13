@@ -19,6 +19,8 @@ start = source.index('    // S2 desktop mode: trackpad-style pointer.')
 trackpad = source[start:source.index('\n}\n\n/// Arrow-key', start)]
 reset_start = source.index('    func resetTouchState() {')
 reset = source[reset_start:source.index('\n    }', reset_start) + 6]
+gate_start = source.index('    static func suppressing(touchpad: Bool, desktop: Bool) -> Bool {')
+gate_policy = source[gate_start:source.index('\n    }', gate_start) + 6]
 assert trackpad.count('guard desktopMode || InputSettings.shared.relative else {') == 4
 for phase in ('Began', 'Moved', 'Ended', 'Cancelled'):
     assert f'override func touches{phase}' in trackpad
@@ -83,6 +85,10 @@ final class UIImpactFeedbackGenerator {
     func impactOccurred() {}
 }
 class UIView {
+    var superview: UIView?
+    func isDescendant(of view: UIView) -> Bool {
+        self === view || superview?.isDescendant(of: view) == true
+    }
     func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {}
     func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {}
     func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {}
@@ -93,6 +99,7 @@ final class UITouch: Hashable {
     enum Kind { case direct, indirectPointer }
     var phase: Phase = .began
     var type: Kind = .direct
+    var view: UIView?
     var point: CGPoint
     init(_ x: Double = 100, _ y: Double = 100) { point = CGPoint(x: x, y: y) }
     func location(in view: UIView) -> CGPoint { point }
@@ -116,8 +123,10 @@ final class HardwareInput {
     func fingerTouches(in touches: Set<UITouch>) -> Set<UITouch> { touches }
 }
 enum TouchMouseGate {
-    static var mode = 0
-    static func suppressing(touchpad: Bool, desktop: Bool) -> Bool { false }
+    enum Mode { case auto, on, off }
+    static var mode: Mode = .auto
+    static var padOverlay = false
+GATE_POLICY
 }
 final class MetalBackedView: UIView {
     var tmResolved = false
@@ -143,11 +152,13 @@ func fresh(relative: Bool = true) -> MetalBackedView {
     InputSettings.shared.mouseMode = false
     InputSettings.shared.sensRel = 2
     HardwareInput.shared.intercepted = false
+    TouchMouseGate.mode = .auto
+    TouchMouseGate.padOverlay = false
     MetalBackedView.cursor = CGPoint(x: 1919, y: 1079)
     return MetalBackedView()
 }
 func begin(_ v: MetalBackedView, _ t: UITouch, others: Set<UITouch> = []) {
-    t.phase = .began; v.touchesBegan([t], with: UIEvent(others.union([t])))
+    t.view = v; t.phase = .began; v.touchesBegan([t], with: UIEvent(others.union([t])))
 }
 func move(_ v: MetalBackedView, _ t: UITouch, x: Double, y: Double, others: Set<UITouch> = []) {
     t.point = CGPoint(x: x, y: y); t.phase = .moved
@@ -240,6 +251,29 @@ for desktop in [false, true] {
     move(v, t, x: 100, y: 114, others: [second]); end(v, t, others: [second]); end(v, second)
     assert(packets == [Packet(x: 0, y: 0, flags: 0x800, data: 120)]); relativeOnly()
 
+    // Cumulative slow motion and horizontal motion are drags, even when
+    // every individual delta is small. A third finger cannot restore tap.
+    v = fresh(); t = UITouch(); second = UITouch(140, 100)
+    begin(v, t); begin(v, second, others: [t])
+    for i in 1...14 {
+        second.point.y = 100 + Double(i)
+        move(v, t, x: 100, y: 100 + Double(i), others: [second])
+    }
+    end(v, t, others: [second]); end(v, second); DispatchQueue.main.advance(0.03)
+    assert(flagCount(0x800) == 1 && flagCount(8) == 0)
+    v = fresh(); t = UITouch(); second = UITouch(140, 100)
+    begin(v, t); begin(v, second, others: [t]); second.point.x = 160
+    move(v, t, x: 120, y: 100, others: [second])
+    end(v, t, others: [second]); end(v, second); DispatchQueue.main.advance(0.03)
+    assert(packets.isEmpty)
+    v = fresh(); t = UITouch(); second = UITouch(140, 100)
+    begin(v, t); begin(v, second, others: [t]); second.point.y = 114
+    move(v, t, x: 100, y: 114, others: [second])
+    let third = UITouch(120, 114); begin(v, third, others: [t, second])
+    end(v, third, others: [t, second]); end(v, t, others: [second]); end(v, second)
+    DispatchQueue.main.advance(0.03)
+    assert(flagCount(0x800) == 1 && flagCount(8) == 0)
+
     // Adding a second finger ends an existing hold and cannot strand left
     // or turn that held gesture into a right-click.
     v = fresh(); t = UITouch(); second = UITouch(140, 100)
@@ -252,6 +286,30 @@ for desktop in [false, true] {
     DispatchQueue.main.advance(0.5); end(v, t); assert(flagCount(2) == 0)
     v = fresh(); t = UITouch(); begin(v, t); cancel(v, t); DispatchQueue.main.advance(1)
     assert(packets.isEmpty)
+
+    // Selecting Crosshair is an explicit request for touch mouse input,
+    // including when a controller overlay is visible. A held control finger
+    // belongs to its own view and must not convert aiming into scrolling.
+    v = fresh(); t = UITouch(); TouchMouseGate.padOverlay = true
+    let control = UITouch(20, 300); control.view = UIView()
+    begin(v, t, others: [control]); move(v, t, x: 120, y: 115, others: [control])
+    end(v, t, others: [control]); DispatchQueue.main.advance(1)
+    assert(packets == [Packet(x: 40, y: 30, flags: 1, data: 0)])
+    v = fresh(); t = UITouch(); TouchMouseGate.padOverlay = true
+    begin(v, t, others: [control]); DispatchQueue.main.advance(0.05)
+    end(v, t, others: [control]); DispatchQueue.main.advance(0.03)
+    assert(packets.map { $0.flags } == [2, 4]); relativeOnly()
+
+    // The explicit off setting still suppresses Crosshair. A touch that
+    // began while disabled cannot join a new gesture when the gate changes.
+    v = fresh(); t = UITouch(); TouchMouseGate.mode = .off
+    begin(v, t); move(v, t, x: 120, y: 100); end(v, t); DispatchQueue.main.advance(1)
+    assert(packets.isEmpty)
+    v = fresh(); let swallowed = UITouch(); TouchMouseGate.mode = .off
+    begin(v, swallowed); TouchMouseGate.mode = .auto; t = UITouch(140, 100)
+    begin(v, t, others: [swallowed]); move(v, t, x: 160, y: 100, others: [swallowed])
+    end(v, t, others: [swallowed]); end(v, swallowed); DispatchQueue.main.advance(1)
+    assert(packets == [Packet(x: 40, y: 0, flags: 1, data: 0)])
 
     // Direct-touch precedence and hardware interception are preserved.
     v = fresh(); t = UITouch(); InputSettings.shared.touchMode = true
@@ -266,6 +324,10 @@ for desktop in [false, true] {
 // through their own APIs/absolute coordinates.
 unsetenv("MADEIRA_DESKTOP")
 var v = fresh(relative: false), t = UITouch()
+TouchMouseGate.padOverlay = true
+begin(v, t); end(v, t); DispatchQueue.main.advance(1)
+assert(packets.isEmpty)   // the auto gate still protects controller-only games
+v = fresh(relative: false); t = UITouch()
 begin(v, t); DispatchQueue.main.advance(0.05); end(v, t); DispatchQueue.main.advance(0.03)
 assert(packets.count == 2 && packets.allSatisfy { $0.kind == "touch" && $0.x == 100 && $0.y == 100 })
 setenv("MADEIRA_DESKTOP", "1", 1)
@@ -279,6 +341,6 @@ with tempfile.TemporaryDirectory(prefix='ideck-crosshair-') as directory:
     directory = Path(directory)
     swift = directory / 'main.swift'
     executable = directory / ('check.exe' if os.name == 'nt' else 'check')
-    swift.write_text(stubs + reset + '\n' + trackpad + '\n}\n' + tests, encoding='utf-8')
+    swift.write_text(stubs.replace('GATE_POLICY', gate_policy) + reset + '\n' + trackpad + '\n}\n' + tests, encoding='utf-8')
     subprocess.run([os.environ.get('SWIFTC', 'swiftc'), str(swift), '-o', str(executable)], check=True)
     subprocess.run([str(executable)], check=True)

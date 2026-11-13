@@ -721,6 +721,9 @@ final class HardwareInput: ObservableObject {
     private var lastGCDeltaAt: CFTimeInterval = 0
     private var lastGCButtonAt: CFTimeInterval = 0
     private var gcDeltaLive = false
+    /// Wheel reports claim only the wheel, independent of raw buttons/motion.
+    /// Protected by motionLock because GCMouse reports on mouseQueue.
+    private var gcScrollLive = false
     private var rawSeq = 0
     private var tickDX = 0.0, tickDY = 0.0, tickWheel = 0
     private var tickerArmed = false
@@ -751,9 +754,6 @@ final class HardwareInput: ObservableObject {
     private static let absoluteFlag: UInt32 = 0x8000
 
     private var diagnostics: Bool { InputSettings.shared.diagnostics }
-    /// Either GameController stream has spoken: the UIKit fallback stands aside.
-    private var gcLive: Bool { gcDeltaSeen || gcButtonSeen }
-
     // MARK: - lifecycle
 
     /// Idempotent. Called once from MadeiraApp's onAppear.
@@ -1154,10 +1154,8 @@ final class HardwareInput: ObservableObject {
         // UIKit-less state is "no mouse".
         mouseConnected = !remaining.isEmpty || uikitSeen
         if remaining.isEmpty {
-            gcDeltaSeen = false
-            gcButtonSeen = false
+            resetRawMouseSources()
             attachedMice.removeAll()
-            motionLock.lock(); gcDeltaLive = false; motionLock.unlock()
             if mousePath == .gcmouse { mousePath = .none; log("mouse path: none") }
             setPointerLocked(false, byUs: false, why: "mouse disconnected")
             setMouseInUse(false)
@@ -1165,6 +1163,18 @@ final class HardwareInput: ObservableObject {
         log("mouse disconnected: \(mouse?.vendorName ?? "?") (remaining=\(remaining.count) "
             + "path=\(mousePath.rawValue))")
         refreshFocus("mouse disconnected")
+    }
+
+    /// Focus changes retain ownership, so delayed UIKit echoes stay ignored.
+    /// Once the last raw device disconnects, each fallback may work again.
+    private func resetRawMouseSources() {
+        gcDeltaSeen = false
+        gcButtonSeen = false
+        motionLock.lock()
+        gcDeltaLive = false
+        gcScrollLive = false
+        carry.reset(); wheel.reset()
+        motionLock.unlock()
     }
 
     /// GameController reports y pointing UP, like a desk; Windows reports y
@@ -1392,8 +1402,15 @@ final class HardwareInput: ObservableObject {
 
     /// Reached from the mouse queue (GCMouse scroll) and from main (UIKit,
     /// which only scrolls a view the pointer is over).
-    private func scrolled(_ x: Double, _ y: Double) {
+    private func scrolled(_ x: Double, _ y: Double, fromGC: Bool = true) {
+        guard x != 0 || y != 0 else { return }
         motionLock.lock()
+        if fromGC {
+            if !gcScrollLive { wheel.reset(); gcScrollLive = true }
+        } else if gcScrollLive {
+            motionLock.unlock()
+            return
+        }
         let blocked = route == .blocked
         let notches = blocked ? [] : wheel.add(x, y)
         tickWheel += notches.count
@@ -1797,7 +1814,7 @@ final class HardwareInput: ObservableObject {
     }
 
     func uikitMoved(_ dx: CGFloat, _ dy: CGFloat, src: String) {
-        guard Self.enabled, !gcLive else { return }     // the HID stream owns it
+        guard Self.enabled, !gcDeltaSeen else { return } // only raw motion owns motion
         guard dx != 0 || dy != 0 else { return }
         logRaw(src, Double(dx), Double(dy))
         noteUIKitPointer()
@@ -1820,10 +1837,12 @@ final class HardwareInput: ObservableObject {
 
     /// 14 points per notch, the ratio the touch trackpad's two-finger scroll uses.
     func uikitScroll(_ dxPoints: CGFloat, _ dyPoints: CGFloat) {
-        guard Self.enabled, !gcLive else { return }
+        guard Self.enabled else { return }
         guard dxPoints != 0 || dyPoints != 0 else { return }
+        motionLock.lock(); let rawOwnsScroll = gcScrollLive; motionLock.unlock()
+        guard !rawOwnsScroll else { return }
         noteUIKitPointer()
-        scrolled(Double(dxPoints) / 14.0, Double(dyPoints) / 14.0)
+        scrolled(Double(dxPoints) / 14.0, Double(dyPoints) / 14.0, fromGC: false)
     }
 
     private func noteUIKitPointer() {

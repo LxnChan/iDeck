@@ -72,7 +72,8 @@ first responder. Upstream's developer layout has none.
 
 ## Mouse and trackpad
 
-Two paths carry the mouse; whichever delivers a delta first wins and is logged:
+Two paths carry the mouse; raw reports take ownership of each input type once
+they arrive:
 
 - **GCMouse** (iPad; iPhone with AssistiveTouch): raw HID deltas on a dedicated
   high-priority queue.
@@ -104,6 +105,11 @@ Buttons are left, right, middle and the two side buttons
 Button delivery is chosen separately from motion, per button: once GCMouse
 reports a button it owns that button, and UIKit echoes are ignored. Other
 buttons continue to use UIKit, including when GCMouse reports only movement.
+Movement and scrolling also choose their sources separately: raw buttons do
+not disable UIKit movement, and raw movement does not disable UIKit scrolling.
+Once a nonzero raw wheel report arrives, its UIKit echoes are ignored and any
+partial UIKit wheel notch is cleared. Source ownership survives focus changes
+and resets when the last GCMouse disconnects.
 Mouse mode recognizes synthetic compatibility clicks and keeps each pointer
 contact through its empty-mask release; real fingers remain ignored. Opening
 the menu, changing pointer mode or losing app focus releases held input.

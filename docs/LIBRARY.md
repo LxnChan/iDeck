@@ -273,7 +273,9 @@ saved to the game's profile.
 relative mouse movement in both direct and desktop sessions: pan to aim, tap
 to left-click, or hold still for the Hold delay to press left, then pan while
 held and lift to release. A two-finger tap right-clicks; a two-finger drag
-scrolls. A pan beyond tap slop does not click on release. **Touch** clicks where the
+scrolls. A pan beyond tap slop does not click on release. Crosshair keeps working
+with the touch controller overlay visible; fingers on its controls do not count
+as extra fingers on the aiming surface. **Touch** clicks where the
 finger is: tap to click, hold or move to drag, a two- or three-finger tap for a
 right or middle click, a two-finger drag to scroll. Touch works in direct and
 desktop sessions.

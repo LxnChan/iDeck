@@ -36,6 +36,8 @@ names = (
     'func shouldIgnore(_ t:', 'func shouldIgnore(_ touches:',
     'private func compatibilityTouch(', 'private func resolveCompatibilityClick(',
     'private func postPointerButtons()',
+    'func uikitMoved(', 'func uikitScroll(', 'private func scrolled(',
+    'private func resetRawMouseSources()',
 )
 methods = '\n'.join(method(signature) for signature in names)
 held = source.split('    // MARK: held state (main thread)', 1)[1].split('    // MARK: cursor and lock state', 1)[0]
@@ -46,6 +48,9 @@ for phase in ('began', 'moved', 'ended', 'cancelled'):
 for setting in ('cancelsTouchesInView', 'delaysTouchesBegan', 'delaysTouchesEnded'):
     assert f'{setting} = false' in observer
 assert 'view.addGestureRecognizer(PointerButtonObserver())' in source
+detach = method('private func detachMouse(')
+assert 'if remaining.isEmpty {\n            resetRawMouseSources()' in detach
+assert 'resetRawMouseSources()' not in method('private func releaseAll(')
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source-only', action='store_true')
 args = parser.parse_args()
@@ -125,12 +130,15 @@ final class HardwareInput {
     var pointerLocked = false
     var hoverSeen = true
     var gcDeltaSeen = false
-    var gcLive: Bool { gcDeltaSeen || gcButtonSeen }
+    var gcDeltaLive = false
+    var gcScrollLive = false
     var mouseActive = false
     var touchClassLogged = 0
     var lastGCButtonAt: Double = 0
     var clickFocus = ClickFocus()
     var currentRoute = PointerRoute.absolute
+    var route = PointerRoute.absolute
+    var tickWheel = 0
     var lastAbsolute: (x: Int32, y: Int32)? = (100, 100)
     var motionLock = NSLock()
     var carry = MotionCarry()
@@ -139,6 +147,10 @@ final class HardwareInput {
     func refreshFocus(_ why: String) {}
     func syncKeys() {}
     func startTicker() {}
+    func bumpTicker() {}
+    var motionDeltas: [(Double, Double)] = []
+    func logRaw(_ source: String, _ dx: Double, _ dy: Double) {}
+    func postMotion(_ dx: Double, _ dy: Double) { motionDeltas.append((dx, dy)) }
     func log(_ line: String) {}
     func noteUIKitPointer() {}
     func pointerHovered(at p: CGPoint, in view: UIView, inside: Bool) {
@@ -422,7 +434,81 @@ do {
     assert(sources.wanted == [.right])
 }
 
-print("PASS: actual mouse packet edges, pointer mask lifecycle, compatibility clicks, fingers, GC/UIKit arbitration, cancellation and focus releases")
+// Raw buttons alone do not take ownership of UIKit motion or the wheel.
+do {
+    let input = fresh()
+    input.currentRoute = .relative
+    input.buttonChanged(.right, true, at: 10)
+    clear()
+    input.uikitMoved(3, -2, src: "test")
+    input.uikitScroll(0, 14)
+    assert(input.motionDeltas.count == 1 && input.motionDeltas[0].0 == 3 && input.motionDeltas[0].1 == -2)
+    assert(edges() == [0x0800] && packets[0].data == 120)
+    assert(!input.gcScrollLive)
+}
+
+// Raw motion alone suppresses duplicate motion, but UIKit still carries scroll.
+do {
+    let input = fresh()
+    input.currentRoute = .relative
+    input.gcDeltaSeen = true
+    input.uikitMoved(3, -2, src: "test")
+    input.uikitScroll(14, 0)
+    assert(input.motionDeltas.isEmpty)
+    assert(edges() == [0x1000] && packets[0].data == 120)
+}
+
+// A zero raw wheel sample does not claim ownership; a real one ignores echoes.
+do {
+    let input = fresh()
+    input.scrolled(0, 0)
+    input.uikitScroll(0, 14)
+    assert(!input.gcScrollLive && edges() == [0x0800])
+    clear()
+    input.scrolled(0, 1)
+    input.uikitScroll(0, 14)
+    input.scrolled(1, 0)
+    input.uikitScroll(14, 0)
+    assert(input.gcScrollLive && edges() == [0x0800, 0x1000])
+}
+
+// Raw wheel takeover starts its own fraction, never mixing a fallback echo.
+do {
+    let input = fresh()
+    input.uikitScroll(0, 7)
+    assert(packets.isEmpty)
+    input.scrolled(0, 0.5)
+    input.uikitScroll(0, 7)
+    assert(packets.isEmpty && input.wheel.y == 0.5)
+    input.scrolled(0, 0.5)
+    assert(edges() == [0x0800])
+}
+
+// Focus loss keeps raw ownership; disconnect restores independent fallbacks.
+do {
+    let input = fresh()
+    input.currentRoute = .relative
+    input.gcDeltaSeen = true
+    input.gcDeltaLive = true
+    input.scrolled(0, 1)
+    input.baseFocused = false
+    input.route = .blocked
+    input.releaseAll("focus lost")
+    clear()
+    input.uikitScroll(0, 14)
+    input.baseFocused = true
+    input.route = .relative
+    input.uikitMoved(3, -2, src: "test")
+    input.uikitScroll(0, 14)
+    assert(packets.isEmpty && input.motionDeltas.isEmpty)
+    input.resetRawMouseSources()
+    input.uikitMoved(3, -2, src: "test")
+    input.uikitScroll(0, 14)
+    assert(!input.gcDeltaSeen && !input.gcDeltaLive && !input.gcScrollLive)
+    assert(input.motionDeltas.count == 1 && edges() == [0x0800])
+}
+
+print("PASS: actual mouse packet edges, pointer mask lifecycle, compatibility clicks, fingers, independent GC/UIKit button-motion-wheel arbitration, cancellation and focus releases")
 '''
 
 with tempfile.TemporaryDirectory(prefix='ideck-mouse-buttons-') as temp:
