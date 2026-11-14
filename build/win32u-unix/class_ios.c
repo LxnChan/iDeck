@@ -200,6 +200,43 @@ static WNDPROC ios_winproc_handle_arg( WNDPROC proc )
     return enabled ? (WNDPROC)(value - base) : proc;
 }
 
+/* Imported from Madeira fbad430410b4075192166172447c859714726de9.
+ * The selected Wine window.c also calls this helper for property/class atoms.
+ * A WoW64 ATOM may arrive with the guest window base added; the first 64 KB
+ * cannot contain a string. MADEIRA_ATOM_ARG=0 retains the original argument. */
+static int ios_atom_arg_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv( "MADEIRA_ATOM_ARG" );
+        enabled = !env || strcmp( env, "0" );
+    }
+    return enabled;
+}
+
+static ULONG_PTR ios_atom_unrebase( ULONG_PTR value, ULONG_PTR base )
+{
+    if (!(value >> 32)) return value;
+    if (!base || value <= base || value - base >= 0x10000) return value;
+    return value - base;
+}
+
+const WCHAR *ios_atom_arg( const WCHAR *ptr )
+{
+    static unsigned int reported;
+    ULONG_PTR value = (ULONG_PTR)ptr, atom;
+
+    if (!(value >> 32)) return ptr;
+    atom = ios_atom_unrebase( value, ios_wow_base() );
+    if (atom == value || !ios_atom_arg_enabled()) return ptr;
+    if (__atomic_load_n( &reported, __ATOMIC_RELAXED ) < 8 &&
+        __atomic_fetch_add( &reported, 1, __ATOMIC_RELAXED ) < 8)
+        fprintf( stderr, "[atom-arg] guest=%#lx atom=%#lx\n", (unsigned long)value, (unsigned long)atom );
+    return (const WCHAR *)atom;
+}
+
 /* return the window proc for a given handle, or NULL for an invalid handle,
  * or WINPROC_PROC16 for a handle to a 16-bit proc. */
 static WINDOWPROC *get_winproc_ptr( WNDPROC handle )
@@ -437,7 +474,7 @@ NTSTATUS WINAPI NtUserInitializeClientPfnArrays( const ntuser_client_func_ptr *c
  */
 static ATOM get_int_atom_value( UNICODE_STRING *name )
 {
-    const WCHAR *ptr = name->Buffer;
+    const WCHAR *ptr = ios_atom_arg( name->Buffer );
     const WCHAR *end = ptr + name->Length / sizeof(WCHAR);
     UINT ret = 0;
 

@@ -92,3 +92,12 @@ errors earlier. Existing binary integrity, source/relink packaging and IPA
 validation remain required. Cache keys have no broad fallback restore keys;
 the first run of the new cache schema still requires a full build. A warm run
 is needed to measure steady-state duration separately from that cold build.
+
+Run `43561594583` completed the source runtime builds but exposed three missing
+native bridge symbols at the application link. The selected Madeira tree's
+`ios_atom_arg` and class-name normalization are now included in `class_ios.c`,
+and its layer-keyed frame-time producer/reader is included in `Winios.m`.
+`madeira_swap_overlay_stats` reports this bridge's real file-backed swap usage
+and zero donor counters: the later donor allocator is not part of this sync.
+No no-op frame hook, blanket undefined-symbol linker option, or FEX
+implementation change is used to resolve these integration gaps.

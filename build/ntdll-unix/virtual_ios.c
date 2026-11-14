@@ -20398,6 +20398,19 @@ static unsigned long long ios_swap_bytes, ios_swap_peak, ios_swap_backs, ios_swa
 /* madeira-bcd swap-images: image sections in the file now / at most, sections backed, refused */
 static unsigned long long ios_swap_img_bytes, ios_swap_img_peak, ios_swap_img_backs, ios_swap_img_refused;
 
+/* DXMT's statistics ABI from Madeira fbad430410b4075192166172447c859714726de9.
+ * This bridge has file-backed swap only: no donor pool is registered or used.
+ * Report the real file counter and zero donor counters, rather than importing
+ * the unrelated donor allocator merely to satisfy the synchronized DXMT. */
+void madeira_swap_overlay_stats( unsigned long long *file_mb, unsigned long long *donor_mb,
+                                 unsigned long long *donor_pool_mb, unsigned long long *donor_guarded )
+{
+    if (file_mb) *file_mb = ios_swap_bytes >> 20;
+    if (donor_mb) *donor_mb = 0;
+    if (donor_pool_mb) *donor_pool_mb = 0;
+    if (donor_guarded) *donor_guarded = 0;
+}
+
 /* COVERAGE, FREE-SPACE REUSE AND A LOW-VOLUME CENSUS (only while the tier is on).
  *
  * With the rules above (one commit request of at least 8 MB, in the

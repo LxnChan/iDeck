@@ -1519,6 +1519,7 @@ static unsigned long long winios_hidden_present_interval_ns(void) {
 @interface MadeiraWindowMetalLayer : CAMetalLayer
 @property (nonatomic) uintptr_t madeiraHwnd;
 - (void)madeiraSetWindowHidden:(BOOL)hidden;
+- (BOOL)madeiraWindowHidden;
 @end
 
 @implementation MadeiraWindowMetalLayer {
@@ -1528,6 +1529,9 @@ static unsigned long long winios_hidden_present_interval_ns(void) {
 }
 - (void)madeiraSetWindowHidden:(BOOL)hidden {
     __atomic_store_n(&_windowHidden, hidden ? 1 : 0, __ATOMIC_RELAXED);
+}
+- (BOOL)madeiraWindowHidden {
+    return __atomic_load_n(&_windowHidden, __ATOMIC_RELAXED) != 0;
 }
 - (nullable id<CAMetalDrawable>)nextDrawable {
     if (!__atomic_exchange_n(&_firstDrawableSaid, 1, __ATOMIC_RELAXED)) {
@@ -1558,6 +1562,50 @@ static unsigned long long winios_hidden_present_interval_ns(void) {
     return [super nextDrawable];
 }
 @end
+
+/* Frame-time bridge imported from Madeira
+ * fbad430410b4075192166172447c859714726de9, app/Madeira/Winios/Winios.m.
+ * DXMT marks presents by layer; hidden windows do not enter the ring. The
+ * existing iDeck overlay is unchanged; the reader retains the upstream ABI. */
+#define MADEIRA_FRAME_RING 2048
+static struct { _Atomic(uintptr_t) key; _Atomic unsigned long long ns; } g_frame_ring[MADEIRA_FRAME_RING];
+static _Atomic unsigned long long g_frame_claim, g_frame_head;
+void madeira_frame_mark(const void *layer) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("MADEIRA_FRAME_TIMES"); on = !(e && e[0] == '0'); }
+    if (!on || !layer) return;
+    id l = (__bridge id)layer;
+    if ([l isKindOfClass:[MadeiraWindowMetalLayer class]] && [(MadeiraWindowMetalLayer *)l madeiraWindowHidden]) return;
+    unsigned long long i = atomic_fetch_add_explicit(&g_frame_claim, 1, memory_order_relaxed);
+    unsigned slot = (unsigned)(i % MADEIRA_FRAME_RING);
+    atomic_store_explicit(&g_frame_ring[slot].key, (uintptr_t)layer, memory_order_relaxed);
+    atomic_store_explicit(&g_frame_ring[slot].ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), memory_order_relaxed);
+    atomic_store_explicit(&g_frame_head, i + 1, memory_order_release);
+}
+int madeira_frame_times_us(uint32_t *out, int max, uint32_t window_ms, uint32_t *since_last_us) {
+    unsigned long long head = atomic_load_explicit(&g_frame_head, memory_order_acquire);
+    unsigned long long now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), window = (unsigned long long)window_ms * 1000000ULL;
+    unsigned long long depth = head < MADEIRA_FRAME_RING - 1 ? head : MADEIRA_FRAME_RING - 1, prev = 0;
+    uintptr_t key = 0;
+    int n = 0;
+    if (since_last_us) *since_last_us = 0;
+    for (unsigned long long back = 1; back <= depth && n < max; back++) {
+        unsigned slot = (unsigned)((head - back) % MADEIRA_FRAME_RING);
+        uintptr_t k = atomic_load_explicit(&g_frame_ring[slot].key, memory_order_relaxed);
+        unsigned long long t = atomic_load_explicit(&g_frame_ring[slot].ns, memory_order_relaxed);
+        if (!key) {
+            key = k; prev = t;
+            if (since_last_us) *since_last_us = now > t ? (uint32_t)MIN((now - t) / 1000, UINT32_MAX) : 0;
+            continue;
+        }
+        if (k != key) continue;
+        if (!t || t > prev || now - t > window) break;
+        out[n++] = (uint32_t)MIN((prev - t) / 1000, UINT32_MAX);
+        prev = t;
+    }
+    for (int a = 0, b = n - 1; a < b; a++, b--) { uint32_t s = out[a]; out[a] = out[b]; out[b] = s; }
+    return n;
+}
 
 /* madeira-bcd: ONE METAL HUD LAYER (opt-in). Apple's Metal Performance HUD
  * (Settings › Developer › Graphics HUD) is drawn per CAMetalLayer that
