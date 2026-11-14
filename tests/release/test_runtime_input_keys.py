@@ -28,11 +28,17 @@ class RuntimeInputKeyChecks(unittest.TestCase):
             "build/ffmpeg/build.sh": b"ffmpeg recipe",
             "build/freetype-ios/build.sh": b"freetype recipe",
             "build/ntdll-unix/virtual_ios.c": b"native Wine bridge",
+            "build/fex-ios/build.sh": b"native FEX recipe",
             "build/wine-pe/build-ntdll.sh": b"Windows Wine recipe",
+            "build/wintypes-compat/build.sh": b"Windows compatibility helper",
             "build/fex-ios/fex-cpuid-bmi-fma.patch": b"existing FEX patch",
             "build/dxmt-patches/existing.patch": b"existing DXMT patch",
             "tools/build/build-wine.sh": b"shared header generator",
             "tools/build/sync-gnutls-libs.sh": b"dependency archive staging",
+            "tools/build/setup-llvm-mingw.sh": b"pinned Windows toolchain",
+            "tools/build/build-native-runtime.sh": b"native build commands",
+            "tools/build/build-windows-runtime.sh": b"Windows build commands",
+            "madeira-d3d12/src/unix/madeira_ir_unix.mm": b"native converter service",
             ".github/workflows/build-ipa.yml": b"build workflow",
             "app/Madeira/aarch64-windows/ideck-control.dll": b"versioned companion PE",
             "app/Madeira/FEXBridge.mm": b"app bridge compiled by Xcode",
@@ -66,7 +72,7 @@ class RuntimeInputKeyChecks(unittest.TestCase):
             runtime_key.main()
         values = dict(line.split("=", 1)
                       for line in output.read_text(encoding="utf-8").splitlines())
-        self.assertEqual(set(values), {"dependency", "windows", "native"})
+        self.assertEqual(set(values), {"dependency", "headers", "windows", "native"})
         for value in values.values():
             self.assertRegex(value, r"^[0-9a-f]{64}$")
         return values
@@ -117,7 +123,8 @@ class RuntimeInputKeyChecks(unittest.TestCase):
                 before = self.keys()
                 original = self.pins[name]
                 self.pins[name] = "9" * 40
-                self.assert_changed_groups(before, self.keys(), {"windows", "native"})
+                expected = {"windows", "native", "headers"} if name == "wine" else {"windows", "native"}
+                self.assert_changed_groups(before, self.keys(), expected)
                 self.pins[name] = original
 
     def test_dependency_recipe_invalidates_dependencies_and_native_cache(self):
@@ -125,18 +132,41 @@ class RuntimeInputKeyChecks(unittest.TestCase):
         self.write("build/gnutls-ios/build.sh", b"updated GnuTLS configuration")
         self.assert_changed_groups(before, self.keys(), {"dependency", "native"})
 
-    def test_shared_build_recipes_and_workflow_invalidate_both_runtime_caches(self):
-        for name in ("tools/build/build-wine.sh", ".github/workflows/build-ipa.yml"):
+    def test_shared_header_and_toolchain_recipes_invalidate_their_consumers(self):
+        for name in ("tools/build/build-wine.sh", "tools/build/setup-llvm-mingw.sh"):
             with self.subTest(recipe=name):
                 before = self.keys()
                 self.write(name, b"updated common build behavior")
-                self.assert_changed_groups(before, self.keys(), {"windows", "native"})
+                self.assert_changed_groups(before, self.keys(), {"headers", "windows", "native"})
                 self.write(name, self.versioned[name])
 
-    def test_dependency_staging_recipe_invalidates_all_three_caches(self):
+    def test_dependency_staging_recipe_invalidates_native_consumers(self):
         before = self.keys()
         self.write("tools/build/sync-gnutls-libs.sh", b"updated library staging")
-        self.assert_changed_groups(before, self.keys(), {"dependency", "windows", "native"})
+        self.assert_changed_groups(before, self.keys(), {"dependency", "native"})
+
+    def test_workflow_scheduling_and_packaging_do_not_invalidate_binaries(self):
+        before = self.keys()
+        self.write(".github/workflows/build-ipa.yml", b"changed cache reporting and step order")
+        self.assertEqual(self.keys(), before)
+
+    def test_native_fex_and_converter_changes_do_not_rebuild_windows_farms(self):
+        for name in ("build/fex-ios/build.sh", "tools/build/build-native-runtime.sh",
+                     "madeira-d3d12/src/unix/madeira_ir_unix.mm"):
+            with self.subTest(source=name):
+                before = self.keys()
+                self.write(name, b"updated native build input")
+                self.assert_changed_groups(before, self.keys(), {"native"})
+                self.write(name, self.versioned[name])
+
+    def test_windows_recipe_changes_do_not_rebuild_native_libraries(self):
+        for name in ("tools/build/build-windows-runtime.sh", "build/wintypes-compat/build.sh",
+                     "build/wine-pe/build-ntdll.sh"):
+            with self.subTest(source=name):
+                before = self.keys()
+                self.write(name, b"updated Windows build input")
+                self.assert_changed_groups(before, self.keys(), {"windows"})
+                self.write(name, self.versioned[name])
 
     def test_versioned_companion_pe_bytes_invalidate_windows_cache(self):
         before = self.keys()

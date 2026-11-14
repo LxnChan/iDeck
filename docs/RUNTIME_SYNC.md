@@ -67,3 +67,26 @@ checks, build-script syntax, and application / patch idempotence. The GitHub
 Actions result is the source of truth for cross-compilation and IPA delivery.
 Device validation of repeated game exits, Unity/Mono, WoW64 and D3D9/11 remains
 pending; this Windows workspace has no available iOS test device session.
+
+## CI integration repair, 2026-11-14
+
+Run `43395096183` built the Windows runtime in 42m24s, then failed in the
+native DXMT stage: the converter extracted from the companion IPA did not
+match the original package SHA-256 required by `build/madeira-d3d12/deps.sh`.
+`tools/build/stage-metal-converter.sh` now stages the original bytes from the
+fixed Madeira revision above and checks that same SHA-256. The converter and
+vendored headers are checked before expensive compilation.
+
+Runtime commands live in `tools/build/build-{native,windows}-runtime.sh`.
+Cache keys cover these recipes, their source inputs and component pins;
+workflow scheduling and upload edits no longer discard runtime caches.
+Windows-only recipes and native-only recipes have separate invalidation
+boundaries. Native converter service sources and headers are now included in
+the native key. Wine's configured headers and host tools have their own cache,
+keyed by the Wine pin, toolchain recipe and Apple SDK/compiler identity.
+
+The shorter native build runs before Windows compilation to expose integration
+errors earlier. Existing binary integrity, source/relink packaging and IPA
+validation remain required. Cache keys have no broad fallback restore keys;
+the first run of the new cache schema still requires a full build. A warm run
+is needed to measure steady-state duration separately from that cold build.

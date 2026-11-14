@@ -267,6 +267,11 @@ jobs:
           echo "Staging complete. Libraries present in app/Madeira:"
           ls -lh app/Madeira/*.a || true
 
+      - name: Verify pinned Metal Shader Converter before compiling
+        run: |
+          bash tools/build/stage-metal-converter.sh
+          bash build/madeira-d3d12/deps.sh
+
       - name: Prepare source-matched runtime build
         id: runtime-key
         run: |
@@ -361,46 +366,36 @@ jobs:
             app/Madeira/libav*.a
             app/Madeira/libswresample.a
 
-      - name: Generate Wine headers from the selected source
-        run: bash tools/build/build-wine.sh
-
-      - name: Restore Windows runtime
-        id: windows-cache
-        if: inputs.rebuild_fex != true
+      - name: Restore Wine headers and host tools
+        id: wine-headers-cache
         uses: actions/cache/restore@v4
         with:
-          key: windows-runtime-v1-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.windows }}
+          key: wine-headers-v1-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.headers }}
           path: |
-            app/Madeira/arm64ec-windows
-            app/Madeira/aarch64-windows
-            app/Madeira/i386-windows
+            wine/build-macos
+            wine/build-arm64ec
 
-      - name: Rebuild complete Windows runtime
-        if: steps.windows-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          bash build/windows-runtime/build.sh
-          SKIP_DXMT=1 bash build/wine-i386/build.sh
-          bash build/dxmt-ios/build-pe.sh
-          bash build/fex-arm64ec/build.sh
-          bash build/fex-wow64/build.sh
+      - name: Generate Wine headers from the selected source
+        if: steps.wine-headers-cache.outputs.cache-hit != 'true'
+        run: bash tools/build/build-wine.sh
 
-      - name: Save Windows runtime
-        if: inputs.rebuild_fex != true && steps.windows-cache.outputs.cache-hit != 'true'
+      - name: Save Wine headers and host tools
+        if: steps.wine-headers-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          key: ${{ steps.windows-cache.outputs.cache-primary-key }}
+          key: ${{ steps.wine-headers-cache.outputs.cache-primary-key }}
           path: |
-            app/Madeira/arm64ec-windows
-            app/Madeira/aarch64-windows
-            app/Madeira/i386-windows
+            wine/build-macos
+            wine/build-arm64ec
 
+      # Run the shorter native build first so native integration errors do not
+      # wait behind a full three-architecture Windows rebuild.
       - name: Restore native FEX Wine and DXMT
         id: native-cache
         if: inputs.rebuild_fex != true
         uses: actions/cache/restore@v4
         with:
-          key: native-runtime-v1-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.native }}
+          key: native-runtime-v2-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.native }}
           path: |
             FEX/build-ios
             app/Madeira/libntdll_unix.a
@@ -410,13 +405,7 @@ jobs:
 
       - name: Rebuild complete native FEX Wine and DXMT
         if: steps.native-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          bash build/fex-ios/build.sh
-          bash build/ntdll-unix/build.sh
-          bash build/win32u-unix/build.sh
-          WINE_REBUILD_ALL=1 bash build/wineserver/build.sh
-          bash build/dxmt-ios/build.sh
+        run: bash tools/build/build-native-runtime.sh
 
       - name: Save native FEX Wine and DXMT
         if: inputs.rebuild_fex != true && steps.native-cache.outputs.cache-hit != 'true'
@@ -429,6 +418,31 @@ jobs:
             app/Madeira/libwin32u_unix.a
             app/Madeira/libwineserver.a
             app/Madeira/libdxmt_combined.a
+
+      - name: Restore Windows runtime
+        id: windows-cache
+        if: inputs.rebuild_fex != true
+        uses: actions/cache/restore@v4
+        with:
+          key: windows-runtime-v2-${{ steps.runtime-key.outputs.key }}-${{ steps.runtime-key.outputs.windows }}
+          path: |
+            app/Madeira/arm64ec-windows
+            app/Madeira/aarch64-windows
+            app/Madeira/i386-windows
+
+      - name: Rebuild complete Windows runtime
+        if: steps.windows-cache.outputs.cache-hit != 'true'
+        run: bash tools/build/build-windows-runtime.sh
+
+      - name: Save Windows runtime
+        if: inputs.rebuild_fex != true && steps.windows-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.windows-cache.outputs.cache-primary-key }}
+          path: |
+            app/Madeira/arm64ec-windows
+            app/Madeira/aarch64-windows
+            app/Madeira/i386-windows
 
       - name: Verify and record synchronized runtime inputs
         run: |
