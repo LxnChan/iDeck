@@ -15,6 +15,10 @@ but copies nothing in either direction unless the user asks there.
 ## When it runs
 
 - Once when Madeira starts, for every installed Steam game.
+- On **Settings › Steam › Sync all Steam Cloud saves**, for every installed
+  Steam game. This explicit sync copies safe one-sided changes even when
+  `env.MADEIRA_STEAM_CLOUD_AUTO = 0`; saves that differ on both sides still
+  wait for a choice on the game's details page.
 - When a Steam game's details page opens, and on its **Sync now** button.
 
 - On **Upload saves and close Madeira** in the game menu of a running Steam

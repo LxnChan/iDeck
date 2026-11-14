@@ -28,6 +28,8 @@ def require(condition, label):
 
 cloud = (app / 'SteamCloud.swift').read_text()
 owned = (app / 'SteamOwnedLibrary.swift').read_text()
+settings = (app / 'Onboarding.swift').read_text()
+library = (app / 'Library.swift').read_text()
 compare = cloud[cloud.index('// MARK: - Where a cloud path lives in the Wine prefix'):cloud.index('// MARK: - Download')]
 plan = cloud[cloud.index('// MARK: - What to do with a comparison'):cloud.index('// MARK: - Upload')]
 
@@ -45,6 +47,16 @@ require('urls(for: .documentDirectory' in owned and '"Steam Cloud Backups"' in o
         'backups are in Documents (Files › Madeira › Steam Cloud Backups)')
 require('$0.kind == .cloudOnly' in owned[owned.index('func resolveCloud'):owned.index('private func download(')],
         "keeping this device's side leaves a missing save missing instead of uploading nothing")
+manual = owned[owned.index('func syncAllCloud() async'):owned.index('/// App IDs of the games whose saves need the user')]
+require('SteamGamesModel.shared.games.filter(\\.installed)' in manual and '.prefix(' not in manual,
+        'the manual pass includes every installed Steam game')
+require('syncCloud(game.id, forceTransfers: true)' in manual and 'forceTransfers || Self.cloudAutomatic' in owned,
+        'manual sync copies safe one-sided changes even when automatic copying is disabled')
+require('Button {' in settings and 'Label("Sync all Steam Cloud saves"' in settings
+        and 'await steam.syncAllCloud()' in settings and '.disabled(!steam.cloudCanSyncAll)' in settings,
+        'Settings › Steam has a guarded manual whole-library Cloud sync button')
+require('"Cloud", "sync", "saves"' in library,
+        'Settings search finds the Steam Cloud sync controls')
 
 # ------------------------------------------------------------------ Swift
 main = r'''

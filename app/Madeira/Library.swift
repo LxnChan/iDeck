@@ -2870,7 +2870,7 @@ struct LibraryView: View {
                     Text("Desktop mode runs genuine Windows Steam without the gamepad UI overhead. Big Picture mode provides the controller-optimized interface.")
                 }
             }
-            if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup") {
+            if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup", "Cloud", "sync", "saves") {
                 SteamSettingsSection(open: { settingsSheet = $0 })
             }
             if settingsShow(".NET", "Mono", "Wine Mono", "framework", "download") { WineMonoSettingsSection() }

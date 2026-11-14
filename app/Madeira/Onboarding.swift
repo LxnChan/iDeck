@@ -680,6 +680,8 @@ struct SteamSettingsSection: View {
     let open: (SettingsSheet) -> Void
     @ObservedObject private var signIn = SteamSignInModel.shared
     @ObservedObject private var dock = MadeiraDockModel.shared
+    @ObservedObject private var steam = SteamOwnedLibrary.shared
+    @ObservedObject private var cloudSetting = SteamCloudSetting.shared
     @ObservedObject private var onboarding = OnboardingModel.shared
     @State private var confirmSignOut = false
 
@@ -700,6 +702,18 @@ struct SteamSettingsSection: View {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            if SteamOwnedLibrary.enabled {
+                Toggle("Steam Cloud saves", isOn: $cloudSetting.on)
+                if cloudSetting.on {
+                    Button {
+                        Task { await steam.syncAllCloud() }
+                    } label: {
+                        Label("Sync all Steam Cloud saves", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(!steam.cloudCanSyncAll)
+                    cloudSyncStatus
+                }
+            }
             if onboarding.available {
                 Button { onboarding.rerun() } label: { Label("Run setup again", systemImage: "wand.and.stars") }
             }
@@ -713,6 +727,33 @@ struct SteamSettingsSection: View {
         }
         .onAppear { signIn.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in signIn.refresh() }
+    }
+
+    @ViewBuilder private var cloudSyncStatus: some View {
+        if let state = steam.cloudSyncAll {
+            if state.running {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: Double(state.completed), total: Double(max(state.total, 1)))
+                    Text(state.current.map { "Syncing \($0)… (\(state.completed) of \(state.total))" }
+                         ?? "Waiting to sync \(state.total) installed game\(state.total == 1 ? "" : "s")…")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else if state.total == 0 {
+                Text("No installed Steam games were found.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                let stopped = state.completed < state.total
+                let changed = state.changed > 0 ? "; updated \(state.changed)"
+                    : (!stopped && state.conflicts == 0 && state.failed == 0 ? "; already up to date" : "")
+                let summary = "\(stopped ? "Stopped after" : "Checked") \(state.completed) of \(state.total) games"
+                    + changed
+                    + (state.conflicts > 0 ? "; \(state.conflicts) need a choice" : "")
+                    + (state.failed > 0 ? "; \(state.failed) failed" : "") + "."
+                Text(summary).font(.caption)
+                    .foregroundStyle(state.failed > 0 || stopped ? .orange : .secondary)
+            }
+        } else if !steam.signedIn {
+            Text("Sign in to Steam to sync cloud saves.").font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 

@@ -401,6 +401,25 @@ final class SteamOwnedLibrary: ObservableObject {
     /// Steam Cloud state of the games checked in this app run, by App ID.
     @Published private(set) var cloud: [Int: SteamCloudState] = [:]
     private var cloudAudited = false
+    private var cloudBatchRunning = false
+
+    /// Settings › Steam's manual whole-library sync. It stays published after
+    /// finishing so the result remains visible if the Settings form rebuilds.
+    struct CloudSyncAllState: Equatable {
+        var running = true
+        var completed = 0
+        var total: Int
+        var current: String?
+        var changed = 0
+        /// Games with at least one save that still needs the user's choice.
+        var conflicts = 0
+        var failed = 0
+    }
+    @Published private(set) var cloudSyncAll: CloudSyncAllState?
+
+    var cloudCanSyncAll: Bool {
+        Self.cloudEnabled && signedIn && !inSession && cloudSyncAll?.running != true
+    }
     /// Copies of the saves a sync replaced, where the Files app shows them
     /// (Madeira › Steam Cloud Backups): `<game> (<App ID>)/<time>/device/...` for a
     /// device file a download replaced, `.../cloud/...` for a cloud file an upload
@@ -453,6 +472,7 @@ final class SteamOwnedLibrary: ObservableObject {
 
     /// Steam Cloud saves was turned on in Settings: sync the installed games now.
     func cloudTurnedOn() {
+        cloudAudited = false
         objectWillChange.send()
         Task { await auditCloudSaves() }
     }
@@ -464,10 +484,61 @@ final class SteamOwnedLibrary: ObservableObject {
         cloudAudited = true
         let games = SteamGamesModel.shared.games.filter(\.installed).prefix(40)
         SteamLog.event("[steam-cloud] sync games=\(games.count) automatic=\(Self.cloudAutomatic ? 1 : 0)")
+        while cloudBatchRunning, !inSession { try? await Task.sleep(nanoseconds: 200_000_000) }
+        guard !inSession, Self.cloudEnabled else { return }
+        cloudBatchRunning = true
+        defer { cloudBatchRunning = false }
         for game in games {
             guard !inSession else { break }
             await syncCloud(game.id)
         }
+    }
+
+    /// Manually syncs every installed Steam game. Unlike the automatic pass,
+    /// this is an explicit request, so it copies safe one-sided changes even
+    /// when `MADEIRA_STEAM_CLOUD_AUTO` is off. Conflicts are still never
+    /// resolved without the user choosing a side on that game's page.
+    func syncAllCloud() async {
+        guard cloudCanSyncAll else { return }
+        let games = SteamGamesModel.shared.games.filter(\.installed)
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        var progress = CloudSyncAllState(total: games.count)
+        cloudSyncAll = progress
+        SteamLog.event("[steam-cloud] manual sync games=\(games.count)")
+
+        // A start-up pass may already own the shared Steam connection. Queue
+        // this explicit pass behind it instead of running two app requests at once.
+        while cloudBatchRunning, !inSession, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard !inSession, !Task.isCancelled, Self.cloudEnabled, signedIn else {
+            progress.running = false; cloudSyncAll = progress
+            return
+        }
+        cloudBatchRunning = true
+        defer { cloudBatchRunning = false }
+
+        for game in games {
+            guard !inSession, !Task.isCancelled else { break }
+            progress.current = game.name
+            cloudSyncAll = progress
+            while cloudBusy.contains(game.id), !inSession, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            guard !inSession, !Task.isCancelled else { break }
+            if await syncCloud(game.id, forceTransfers: true) { progress.changed += 1 }
+            progress.completed += 1
+            if let state = cloud[game.id] {
+                if !state.conflicts.isEmpty { progress.conflicts += 1 }
+                if state.problem != nil { progress.failed += 1 }
+                if case .failed = state.phase { progress.failed += state.problem == nil ? 1 : 0 }
+            }
+            cloudSyncAll = progress
+        }
+        progress.running = false
+        progress.current = nil
+        cloudSyncAll = progress
+        SteamLog.event("[steam-cloud] manual sync done=\(progress.completed)/\(progress.total) changed=\(progress.changed) conflicts=\(progress.conflicts) failed=\(progress.failed)")
     }
 
     /// App IDs of the games whose saves need the user's choice. The library
@@ -545,15 +616,17 @@ final class SteamOwnedLibrary: ObservableObject {
     /// Compares, then copies what changed on one side only: new and changed
     /// cloud saves come down, new and changed device saves go up. Saves that
     /// need a choice are left for the game's page.
-    func syncCloud(_ appID: Int) async {
-        guard !cloudBusy.contains(appID) else { return }
+    @discardableResult
+    func syncCloud(_ appID: Int, forceTransfers: Bool = false) async -> Bool {
+        guard !cloudBusy.contains(appID) else { return false }
         cloudBusy.insert(appID)
         defer { cloudBusy.remove(appID) }
-        guard let plan = await checkCloud(appID), Self.cloudAutomatic else { return }
+        guard let plan = await checkCloud(appID), forceTransfers || Self.cloudAutomatic else { return false }
         var changed = false
         if !plan.download.isEmpty { changed = await download(appID, plan.download) || changed }
         if !plan.upload.isEmpty, !inSession { changed = await upload(appID, plan.upload) || changed }
         if changed { await checkCloud(appID) }
+        return changed
     }
 
     /// The user's choice for the saves that differ: the cloud's replace the
