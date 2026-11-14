@@ -338,6 +338,7 @@ jobs:
             toolchains/ffmpeg-ios
             research/freetype/include
             build/freetype-ios/build/libfreetype.a
+            build/freetype-ios/build/include
             app/Madeira/libav*.a
             app/Madeira/libswresample.a
 
@@ -363,6 +364,7 @@ jobs:
             toolchains/ffmpeg-ios
             research/freetype/include
             build/freetype-ios/build/libfreetype.a
+            build/freetype-ios/build/include
             app/Madeira/libav*.a
             app/Madeira/libswresample.a
 

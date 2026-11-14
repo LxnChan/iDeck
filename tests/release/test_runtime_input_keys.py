@@ -31,6 +31,10 @@ class RuntimeInputKeyChecks(unittest.TestCase):
             "build/fex-ios/build.sh": b"native FEX recipe",
             "build/wine-pe/build-ntdll.sh": b"Windows Wine recipe",
             "build/wintypes-compat/build.sh": b"Windows compatibility helper",
+            "build/dxmt-ios/build-pe.sh": b"Windows DXMT recipe",
+            "build/hidpad/hidparse_ios.c": b"native HID parser",
+            "build/madeira_cfg.h": b"shared native configuration reader",
+            "app/Madeira/Winios/WiniosGamepad.h": b"native gamepad ABI",
             "build/fex-ios/fex-cpuid-bmi-fma.patch": b"existing FEX patch",
             "build/dxmt-patches/existing.patch": b"existing DXMT patch",
             "tools/build/build-wine.sh": b"shared header generator",
@@ -152,6 +156,8 @@ class RuntimeInputKeyChecks(unittest.TestCase):
 
     def test_native_fex_and_converter_changes_do_not_rebuild_windows_farms(self):
         for name in ("build/fex-ios/build.sh", "tools/build/build-native-runtime.sh",
+                     "build/hidpad/hidparse_ios.c", "build/madeira_cfg.h",
+                     "app/Madeira/Winios/WiniosGamepad.h",
                      "madeira-d3d12/src/unix/madeira_ir_unix.mm"):
             with self.subTest(source=name):
                 before = self.keys()
@@ -161,7 +167,7 @@ class RuntimeInputKeyChecks(unittest.TestCase):
 
     def test_windows_recipe_changes_do_not_rebuild_native_libraries(self):
         for name in ("tools/build/build-windows-runtime.sh", "build/wintypes-compat/build.sh",
-                     "build/wine-pe/build-ntdll.sh"):
+                     "build/wine-pe/build-ntdll.sh", "build/dxmt-ios/build-pe.sh"):
             with self.subTest(source=name):
                 before = self.keys()
                 self.write(name, b"updated Windows build input")
