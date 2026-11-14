@@ -556,7 +556,18 @@ jobs:
           SHORT_SHA='${{ steps.package.outputs.short_sha }}'
           python3 tools/build/package-runtime-source.py "output/iDeck-fork-${SHORT_SHA}.source.tar.gz"
           tar -czf "output/iDeck-fork-${SHORT_SHA}.relink.tar.gz" -C build/runtime-relink .
-          (cd output && shasum -a 256 "iDeck-fork-${SHORT_SHA}".* > "iDeck-fork-${SHORT_SHA}.SHA256SUMS")
+
+      - name: Generate artifact checksums
+        run: |
+          set -euo pipefail
+          SHORT_SHA='${{ steps.package.outputs.short_sha }}'
+          cd output
+          # Each download can be verified without fetching the other artifacts.
+          shasum -a 256 "iDeck-fork-${SHORT_SHA}.ipa" \
+            "iDeck-fork-${SHORT_SHA}.inventory.json" \
+            "iDeck-fork-${SHORT_SHA}.runtime.json" > "iDeck-fork-${SHORT_SHA}.SHA256SUMS"
+          shasum -a 256 "iDeck-fork-${SHORT_SHA}.source.tar.gz" > "iDeck-fork-${SHORT_SHA}.source.SHA256SUMS"
+          shasum -a 256 "iDeck-fork-${SHORT_SHA}.relink.tar.gz" > "iDeck-fork-${SHORT_SHA}.relink.SHA256SUMS"
 
       - name: Retain runtime build diagnostics
         if: failure()
@@ -582,9 +593,29 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}
             ${{ steps.package.outputs.inventory_path }}
             output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json
-            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.source.tar.gz
-            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.relink.tar.gz
             output/iDeck-fork-${{ steps.package.outputs.short_sha }}.SHA256SUMS
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload matching source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iDeck-fork-${{ steps.package.outputs.short_sha }}-source
+          path: |
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.source.tar.gz
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.source.SHA256SUMS
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload portable relink artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iDeck-fork-${{ steps.package.outputs.short_sha }}-relink
+          path: |
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.relink.tar.gz
+            output/iDeck-fork-${{ steps.package.outputs.short_sha }}.relink.SHA256SUMS
           retention-days: 14
           compression-level: 0
           if-no-files-found: error

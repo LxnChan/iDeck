@@ -48,9 +48,15 @@ the Windows and native runtime caches to force a fresh full runtime build.
 `legal/runtime-sync.json` in the IPA records pins, patch hashes, native link
 input hashes, and all packaged PE files in the three farms. The post-package
 gate verifies required modules, PE architectures, the exact file set and bytes.
-The artifact includes the IPA, package inventory and a copy of this manifest,
-plus matching source and portable relink companion archives and checksums. The
-relink command is executed against the actual link inputs before upload.
+Downloads are split into three artifacts: `iDeck-fork-<short_sha>` contains only
+the IPA, package inventory, a copy of this manifest and their checksums;
+`iDeck-fork-<short_sha>-source` contains the matching source archive;
+`iDeck-fork-<short_sha>-relink` contains the portable relink archive. Each has
+its own checksum file, so it can be verified without downloading the others.
+Only the IPA download is needed for installation; the source and relink
+companions remain available separately. All retain the same 14-day artifact
+retention. The relink command is executed against the actual link inputs before
+upload.
 These checks establish build/package integrity, not game behavior on a device.
 Wine foreground queries are paired with the existing Madeira op 3 bridge while
 retaining iDeck focus rules. Optional XInput battery queries (op 4) keep their
