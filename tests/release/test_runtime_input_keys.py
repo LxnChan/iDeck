@@ -66,13 +66,14 @@ class RuntimeInputKeyChecks(unittest.TestCase):
         self.assertTrue(revision.startswith("HEAD:"))
         return self.pins[revision.split(":", 1)[1]] + "\n"
 
-    def keys(self):
+    def keys(self, release_tag="v0.1.3-alpha.5"):
         output = self.work / "github-output"
         output.write_bytes(b"")
         with mock.patch.object(runtime_key, "ROOT", self.work), \
                 mock.patch.object(runtime_key.subprocess, "check_output",
                                   side_effect=self.git_output), \
-                mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output),
+                                             "RUNTIME_RELEASE_TAG": release_tag}):
             runtime_key.main()
         values = dict(line.split("=", 1)
                       for line in output.read_text(encoding="utf-8").splitlines())
@@ -153,6 +154,10 @@ class RuntimeInputKeyChecks(unittest.TestCase):
         before = self.keys()
         self.write(".github/workflows/build-ipa.yml", b"changed cache reporting and step order")
         self.assertEqual(self.keys(), before)
+
+    def test_companion_release_change_invalidates_windows_farm_only(self):
+        self.assert_changed_groups(self.keys(), self.keys("different-companion-release"),
+                                   {"windows"})
 
     def test_native_fex_and_converter_changes_do_not_rebuild_windows_farms(self):
         for name in ("build/fex-ios/build.sh", "tools/build/build-native-runtime.sh",

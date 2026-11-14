@@ -58,6 +58,10 @@ def main():
                 inputs[name] = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
         payload = {'schema': 2, 'inputs': inputs,
                    'pins': {name: pins[name] for name in PINS[group]}}
+        if group == 'windows':
+            # The farm also contains externally owned D3D12/driver modules
+            # staged from the selected companion IPA, not rebuilt by Wine.
+            payload['companion_release'] = os.environ['RUNTIME_RELEASE_TAG']
         results[group] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         output.write(''.join(f'{name}={value}\n' for name, value in results.items()))

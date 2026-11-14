@@ -84,6 +84,8 @@ Windows-only recipes and native-only recipes have separate invalidation
 boundaries. Native converter service sources and headers are now included in
 the native key. Wine's configured headers and host tools have their own cache,
 keyed by the Wine pin, toolchain recipe and Apple SDK/compiler identity.
+The Windows farm key also includes the selected companion release, because
+the farm retains externally owned D3D12 and driver modules from that IPA.
 
 The shorter native build runs before Windows compilation to expose integration
 errors earlier. Existing binary integrity, source/relink packaging and IPA
