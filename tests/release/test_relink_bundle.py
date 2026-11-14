@@ -143,6 +143,23 @@ class RelinkBundleTests(unittest.TestCase):
         self.assertNotEqual(changed.returncode, 0)
         self.assertIn("framework hash mismatch", changed.stderr)
 
+    def test_bare_dyld_roots_are_not_response_files(self):
+        roots = ("@executable_path", "@loader_path", "@rpath")
+        response = self.write("dyld.rsp", shlex.join([
+            "-Wl,-rpath," + roots[0], "-Xlinker", "-rpath", "-Xlinker", roots[1],
+            "-rpath", roots[2], "-rpath", roots[0] + "/Frameworks",
+        ]).encode())
+        bundle = self.root / "dyld-roots"
+        TOOL.collect(self.log(self.base() + [str(self.object), "@" + str(response)]), bundle)
+        arguments = json.loads((bundle / "link-args.json").read_text())
+        for root in roots:
+            self.assertIn(root, arguments)
+        self.assertIn("@executable_path/Frameworks", arguments)
+        self.assertEqual(self.recipe(bundle, "--verify-inputs", "--dry-run").returncode, 0)
+        # Similar-looking names remain actual response files and fail closed.
+        with self.assertRaisesRegex(TOOL.RelinkError, "Missing response file"):
+            TOOL.response_tokens(["@executable_path_missing"], self.source)
+
     def test_recursive_or_missing_response_fails(self):
         loop = self.write("loop.rsp", b"@loop.rsp")
         for response, message in [(str(loop), "Recursive"), ("missing.rsp", "Missing")]:

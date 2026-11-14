@@ -18,6 +18,7 @@ class RelinkError(ValueError):
 
 
 RUNTIME_PREFIXES = ("@rpath/", "@loader_path/", "@executable_path/")
+RUNTIME_ROOTS = tuple(value.rstrip("/") for value in RUNTIME_PREFIXES)
 SYSTEM_LIBRARIES = {
     "System", "c", "c++", "objc", "z", "sqlite3", "lzma", "m", "dl", "pthread",
     "resolv", "bz2", "iconv", "xml2", "compression", "archive",
@@ -26,6 +27,12 @@ PRIVATE_SUFFIXES = {".mobileprovision", ".provisionprofile", ".p12", ".pfx", ".p
 PRIVATE_PARTS = {"private", ".ssh", "secrets", "credentials", "valve", "steamapps", "userdata"}
 DISCARD_PATH_OPTIONS = {"-object_path_lto", "-dependency_info", "-add_ast_path", "-map", "-serialize-diagnostics"}
 TEXT_INPUT_OPTIONS = {"-exported_symbols_list", "-unexported_symbols_list", "-order_file"}
+
+
+def is_runtime_path(value):
+    # An rpath can be exactly @executable_path, not just a path below it.
+    # These dyld tokens must never be opened as linker response files.
+    return value in RUNTIME_ROOTS or value.startswith(RUNTIME_PREFIXES)
 
 
 def path_at(value, cwd):
@@ -44,7 +51,7 @@ def sha256_file(path):
 def response_tokens(values, cwd, stack=()):
     result = []
     for value in values:
-        if value.startswith("@") and not value.startswith(RUNTIME_PREFIXES):
+        if value.startswith("@") and not is_runtime_path(value):
             path = path_at(value[1:], cwd).resolve()
             if path in stack:
                 raise RelinkError(f"Recursive response file: {path.name}")
@@ -70,7 +77,7 @@ def normalize_linker_arguments(values, cwd):
         elif value.startswith("-Wl,"):
             result.extend((x, True) for x in response_tokens(value[4:].split(","), cwd))
             i += 1
-        elif value.startswith("@") and not value.startswith(RUNTIME_PREFIXES):
+        elif value.startswith("@") and not is_runtime_path(value):
             result.extend(normalize_linker_arguments(response_tokens([value], cwd), cwd))
             i += 1
         else:
@@ -145,7 +152,7 @@ class Collector:
         self.frameworks = {}
 
     def portable(self, value):
-        if value.startswith(RUNTIME_PREFIXES):
+        if is_runtime_path(value):
             return value
         path = path_at(value, self.cwd).resolve()
         for base, placeholder in ((self.sdk, "@SDK@"), (self.toolchain, "@TOOLCHAIN@")):
@@ -302,7 +309,7 @@ def collect(log_path, output):
         elif not value.startswith("-") and Path(value).suffix.lower() in {".a", ".o", ".bc", ".dylib", ".tbd"}:
             portable = collector.portable(value)
             emit(portable or collector.stage(value, "libraries" if value.endswith(".a") else "objects"), linker)
-        elif not value.startswith(("-",) + RUNTIME_PREFIXES) and ("/" in value or "\\" in value):
+        elif not value.startswith("-") and not is_runtime_path(value) and ("/" in value or "\\" in value):
             portable = collector.portable(value)
             if not portable:
                 raise RelinkError(f"Untranslated host path in link command: {value}")

@@ -101,3 +101,10 @@ and its layer-keyed frame-time producer/reader is included in `Winios.m`.
 and zero donor counters: the later donor allocator is not part of this sync.
 No no-op frame hook, blanket undefined-symbol linker option, or FEX
 implementation change is used to resolve these integration gaps.
+
+The next gate exposed a relink collector parsing bug: Xcode's bare
+`@executable_path` rpath was treated as a response-file name. All three bare
+dyld roots (`@executable_path`, `@loader_path`, `@rpath`) and their child paths
+are now preserved in both driver and linker response forms. Unrecognized
+response files still fail closed. This tooling change does not affect runtime
+binary cache identities.
