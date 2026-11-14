@@ -100,6 +100,20 @@ class RuntimeSourceBundleChecks(unittest.TestCase):
             exported = self.git(repo, "archive", "--format=tar", "HEAD")
             self.assertEqual(item["git_archive_sha256"], hashlib.sha256(exported).hexdigest())
 
+    def test_inherited_dependencies_require_verified_archives_and_are_recorded(self):
+        companion = self.work / 'historical-source.tar.gz'
+        companion.write_bytes(b'original companion sources')
+        expected = hashlib.sha256(companion.read_bytes()).hexdigest()
+        for supplied in ([], [(companion, 'wrong')]):
+            with self.assertRaisesRegex(ValueError, 'required|hash mismatch'):
+                source_bundle.package(self.output, self.root, inherited_dependencies=supplied)
+        manifest = source_bundle.package(self.output, self.root,
+                                         inherited_dependencies=[(companion, expected)])
+        self.assertEqual(manifest['inherited_dependencies'],
+                         [{'path': companion.name, 'sha256': expected}])
+        self.assertNotIn('toolchains/llvm-project', [item['path'] for item in manifest['sources']])
+        self.assertIn('FEX', manifest['pins'])
+
     def test_untracked_ignored_private_files_and_git_metadata_never_enter_archive(self):
         for name in ("untracked.txt", "ignored/credentials.txt", "obj/generated.o"):
             path = self.root / name

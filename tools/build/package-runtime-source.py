@@ -116,7 +116,7 @@ def file_sha(path):
     return digest.hexdigest()
 
 
-def package(output, root=ROOT):
+def package(output, root=ROOT, *, inherited_dependencies=None):
     root, output = Path(root).resolve(), Path(output).resolve()
     if output.exists():
         raise ValueError('refusing to overwrite source package: ' + str(output))
@@ -126,8 +126,20 @@ def package(output, root=ROOT):
                           'System SDKs, binary build outputs and unchanged companion '
                           'runtime source obligations are supplied separately.'}
     repos = discover(root, '', manifest)
-    for label, variable in (('toolchains/llvm-project', 'RUNTIME_LLVM_SOURCE'),
-                            ('research/freetype', 'RUNTIME_FREETYPE_SOURCE')):
+    # Historical diagnostic builds use verified companion archives for unchanged
+    # precompiled dependencies, rather than claiming today's dependency pins.
+    if inherited_dependencies is not None:
+        if not inherited_dependencies:
+            raise ValueError('verified inherited dependency archives are required')
+        manifest['inherited_dependencies'] = []
+        for path, expected in inherited_dependencies:
+            path = Path(path)
+            if file_sha(path) != expected:
+                raise ValueError('inherited dependency archive hash mismatch: ' + path.name)
+            manifest['inherited_dependencies'].append({'path': path.name, 'sha256': expected})
+    for label, variable in (() if inherited_dependencies is not None else
+                           (('toolchains/llvm-project', 'RUNTIME_LLVM_SOURCE'),
+                            ('research/freetype', 'RUNTIME_FREETYPE_SOURCE'))):
         repos.extend(discover(Path(os.environ.get(variable, str(root / label))).resolve(),
                               label, manifest))
     output.parent.mkdir(parents=True, exist_ok=True)
