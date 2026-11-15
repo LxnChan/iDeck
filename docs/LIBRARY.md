@@ -1,10 +1,15 @@
 # Library front end
 
 Madeira starts in a game library. The original diagnostic screen (the
-"developer interface") is still there: **Settings › Interface › Use developer
+"developer interface") is still there: **Settings › Diagnostics › Use developer
 interface** switches to it, and its **Use New Interface** button switches back.
 Either change applies at the next start (close Madeira in the app switcher and
 open it again).
+
+Diagnostics also contains Extended logging and Liquid metal, immediately above
+Credits. The library title shows the installed version, build number and source
+Commit's short ID. Steam Client's crash-handler switch is documented in
+[Steam initialization and crashhandler64.dll](STEAM_CRASHHANDLER.md).
 
 The code is `app/Madeira/Library.swift` and `app/Madeira/GuestDisplay.swift`
 (the virtual monitor and its layout), plus the wiring in `ContentView.swift`

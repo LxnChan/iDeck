@@ -93,6 +93,7 @@
 #include "ios_wow.h"
 #include "wine/list.h"
 #include "wine/debug.h"
+#include "steam_crashhandler_policy.h"
 
 #ifdef WINE_IOS
 #include <os/log.h>
@@ -101,6 +102,29 @@
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
+
+/* Keep the workaround at the load-order boundary, including explicit paths.
+ * A missing optional reporter lets Steam continue; a stalled reporter can
+ * otherwise hold client initialization. This is containment, not a claim that
+ * Wine synchronization or the reporting network request has been repaired.
+ * Read each time: unlike Wine's cached WINEDLLOVERRIDES, Settings can change
+ * this policy between sessions. Unrelated desktop sessions remain unchanged. */
+static enum loadorder ideck_module_load_order( const UNICODE_STRING *name )
+{
+#ifdef WINE_IOS
+    const char *session = getenv( "MADEIRA_STEAM_CLIENT_SESSION" );
+    const char *disable = getenv( "MADEIRA_DISABLE_STEAM_CRASHHANDLER" );
+    if (ideck_block_steam_crashhandler( name->Buffer, name->Length / sizeof(WCHAR),
+                                      session && !strcmp( session, "1" ), 1 ))
+    {
+        int blocked = !disable || strcmp( disable, "0" );
+        fprintf( stderr, "[steam-crashhandler] %s crashhandler64.dll; file preserved\n",
+                 blocked ? "blocked" : "allowed by setting" );
+        if (blocked) return LO_DISABLED;
+    }
+#endif
+    return get_load_order( name );
+}
 
 #if defined __i386__ || defined __x86_64__
 #define SO_DLLS_SUPPORTED
@@ -1191,7 +1215,7 @@ static NTSTATUS load_so_dll( void *args )
     NTSTATUS status;
     DWORD len;
 
-    if (get_load_order( nt_name ) == LO_DISABLED) return STATUS_DLL_NOT_FOUND;
+    if (ideck_module_load_order( nt_name ) == LO_DISABLED) return STATUS_DLL_NOT_FOUND;
     InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSITIVE, 0, 0 );
     if (!get_nt_and_unix_names( &attr, &true_nt_name, &unix_name, FILE_OPEN, FALSE ))
     {
@@ -1792,10 +1816,10 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
      * blows up Wine's loader). The original short-circuit below skips the
      * builtin .so search; we keep that, just gate it on the override. */
     {
-        enum loadorder lo = get_load_order( nt_name );
+        enum loadorder lo = ideck_module_load_order( nt_name );
         if (lo == LO_DISABLED)
         {
-            TRACE( "iOS: %s disabled by WINEDLLOVERRIDES\n", debugstr_us(nt_name) );
+            TRACE( "iOS: %s disabled by load policy\n", debugstr_us(nt_name) );
             return STATUS_DLL_NOT_FOUND;
         }
     }
@@ -1806,7 +1830,7 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
 #else
     NTSTATUS status;
     USHORT search_machine = image_info->machine;
-    enum loadorder loadorder = get_load_order( nt_name );
+    enum loadorder loadorder = ideck_module_load_order( nt_name );
 
     if (loadorder == LO_DISABLED) return STATUS_DLL_NOT_FOUND;
 
@@ -2020,7 +2044,7 @@ static NTSTATUS open_main_image( UNICODE_STRING *nt_name, void **module, SECTION
  */
 NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine, void **module )
 {
-    enum loadorder loadorder = get_load_order( nt_name );
+    enum loadorder loadorder = ideck_module_load_order( nt_name );
     unsigned int status;
     SIZE_T size;
     USHORT search_machine;

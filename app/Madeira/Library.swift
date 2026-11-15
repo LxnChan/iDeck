@@ -14,7 +14,7 @@ import Combine
 // controls). Play starts the same runWineFullSequence the developer interface
 // uses; the session runs full screen with a small in-game menu.
 //
-// The developer interface stays available: Settings › Interface switches back
+// The developer interface stays available: Settings › Diagnostics switches back
 // to it (FrontendChoice), and it has a "Use New Interface" button to return.
 // Every switch below is read with MadeiraConfig.flag, so `env.NAME = 0` in
 // madeira.cfg turns it off.
@@ -1443,9 +1443,8 @@ enum LibraryRendererBadge {
     }
 }
 
-/// "Madeira" as a large title at the leading edge of the navigation bar, on the
-/// row of the toolbar buttons (the system large title would sit on a row of its
-/// own below them), in the large title font, with no Liquid Glass capsule
+/// The app title and build identity at the leading edge of the navigation bar,
+/// on the row of the toolbar buttons, with no Liquid Glass capsule
 /// behind it on iOS 26. LibraryHeaderAlignment lines its first letter up with
 /// the search field below.
 struct LibraryLargeTitle: ToolbarContent {
@@ -1458,26 +1457,42 @@ struct LibraryLargeTitle: ToolbarContent {
     }
 }
 
-/// The title, then a bolt for JIT: a thin outline in the title's colour until
-/// the debugger is attached, then filled in the accent colour (LibraryJITState;
-/// the SF Symbols replace effect animates the change).
-/// The bolt is as tall as the title's capitals and centred on them: an SF
-/// Symbol at the title's own size is nearly twice the height of its M.
+/// Build identity comes from the installed bundle, never a source-code SHA literal.
+enum LibraryBuildIdentity {
+    static func label(_ info: [String: Any]) -> String {
+        let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info["CFBundleVersion"] as? String ?? "unknown"
+        let commit = info["IDeckSourceCommit"] as? String ?? ""
+        let valid = (7...40).contains(commit.count) && commit.utf8.allSatisfy {
+            (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+        }
+        return "v\(version) (\(build)) · \(valid ? String(commit.prefix(7)).lowercased() : "local")"
+    }
+    static var current: String { label(Bundle.main.infoDictionary ?? [:]) }
+}
+
+/// Two compact lines fit the inline toolbar: title + JIT, then build identity.
+/// The bolt follows the title's cap height and reflects the debugger state.
 struct LibraryTitleText: View {
     @ObservedObject private var alignment = LibraryHeaderAlignment.shared
     @ObservedObject private var jitState = LibraryJITState.shared
     var body: some View {
         let jit = jitState.enabled
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(LibraryHeaderAlignment.title).accessibilityAddTraits(.isHeader)
-            Image(systemName: jit ? "bolt.fill" : "bolt")
-                .font(.system(size: LibraryHeaderAlignment.titleFont().pointSize * 0.53, weight: .thin))
-                .foregroundStyle(jit ? Color.accentColor : Color.primary)
-                .contentTransition(.symbolEffect(.replace))
-                .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
-                .accessibilityLabel(jit ? "JIT enabled" : "JIT not enabled")
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(LibraryHeaderAlignment.title).accessibilityAddTraits(.isHeader)
+                Image(systemName: jit ? "bolt.fill" : "bolt")
+                    .font(.system(size: LibraryHeaderAlignment.titleFont().pointSize * 0.53, weight: .thin))
+                    .foregroundStyle(jit ? Color.accentColor : Color.primary)
+                    .contentTransition(.symbolEffect(.replace))
+                    .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
+                    .accessibilityLabel(jit ? "JIT enabled" : "JIT not enabled")
+            }.font(.title2.bold())
+            Text(LibraryBuildIdentity.current)
+                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.7)
+                .accessibilityLabel("Version \(LibraryBuildIdentity.current)")
         }
-        .font(.largeTitle.bold())
         .fixedSize()
         .offset(x: alignment.shift)
         .background(LibraryTitleAnchor())   // after the offset: marks where the text is laid out
@@ -1538,9 +1553,9 @@ final class LibraryHeaderAlignment: ObservableObject {
         if abs(target - shift) > 0.01 { shift = target }
     }
 
-    /// The title's font: the large title style, bold, at the current text size.
+    /// Match the title2 SwiftUI style used above, including its glyph bearings.
     static func titleFont() -> UIFont {
-        let base = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .largeTitle)
+        let base = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .title2)
         return UIFont(descriptor: base.withSymbolicTraits(.traitBold) ?? base, size: 0)
     }
 
@@ -2143,7 +2158,7 @@ enum AmbientArtwork {
     }
 }
 
-/// Whether the app's liquid metal is on: Settings › Appearance › Liquid metal, kept in
+/// Whether the app's liquid metal is on: Settings › Diagnostics › Liquid metal, kept in
 /// madeira.cfg as env.MADEIRA_LIQUID_METAL (off, plain Liquid Glass, unless it is 1). It
 /// covers the Desktop button's fill (LiquidMetalFill) and the bars' glass (GlassSkin), and
 /// applies at once, fading between the two.
@@ -2619,6 +2634,7 @@ struct LibraryView: View {
     // The interface the next start uses (FrontendChoice).
     @State private var developerUI = !FrontendChoice.preferNew
     @State private var restartNotice = false
+    @State private var disableSteamCrashHandler = MadeiraConfig.flag("MADEIRA_DISABLE_STEAM_CRASHHANDLER")
     @State private var settingsSheet: SettingsSheet?
     @State private var settingsRefresh = 0
     @AppStorage("madeiraLibraryLayout") private var layout = "cards"
@@ -2838,11 +2854,6 @@ struct LibraryView: View {
             if settingsShow("proxy", "network", "socks", "socks5", "http", "shadowsocks") {
                 NetworkProxySettingsSection()
             }
-            if settingsShow("diagnostics", "extended logging", "logging", "log") {
-                Section {
-                    Toggle("Extended logging", isOn: $input.diagnostics)
-                } header: { Text("Diagnostics") }
-            }
             if settingsShow("pointer", "mouse", "cursor", "touch", "trackpad", "sensitivity") {
                 Section("Pointer") { LibraryPointerSettings() }
             }
@@ -2852,13 +2863,19 @@ struct LibraryView: View {
                     RuntimeMemorySyncSettings(open: { settingsSheet = $0 }, refresh: settingsRefresh)
                 }
             }
-            if IDeckState.enabled, settingsShow("Steam", "iDeck", "big picture", "launcher", "client", "mode") {
+            if IDeckState.enabled, settingsShow("Steam", "iDeck", "big picture", "launcher", "client", "mode", "crashhandler64.dll", "crash reports") {
                 Section {
                     Picker("Launch mode", selection: $ideck.bigPictureMode) {
                         Text("Desktop Mode (Normal)").tag(false)
                         Text("Big Picture Mode").tag(true)
                     }
                     Toggle("Open Steam automatically", isOn: $ideck.autoStart)
+                    Toggle("Disable crashhandler64.dll", isOn: Binding(get: { disableSteamCrashHandler }, set: { on in
+                        if MadeiraConfig.set("env.MADEIRA_DISABLE_STEAM_CRASHHANDLER", on ? "1" : "0") {
+                            disableSteamCrashHandler = on
+                        } else { model.error = "Could not save the Steam crash-handler setting." }
+                    }))
+                    .disabled(Bundle.main.object(forInfoDictionaryKey: "IDeckSteamCrashHandlerPolicySupported") as? Bool == false || wine_process_is_running() != 0 || wineserver_is_running() != 0)
                     Button {
                         ideckAdvanced = false
                     } label: {
@@ -2868,6 +2885,11 @@ struct LibraryView: View {
                     Text("Steam Client")
                 } footer: {
                     Text("Desktop mode runs genuine Windows Steam without the gamepad UI overhead. Big Picture mode provides the controller-optimized interface.")
+                    if Bundle.main.object(forInfoDictionaryKey: "IDeckSteamCrashHandlerPolicySupported") as? Bool == false {
+                        Text("This historical diagnostic runtime does not support the crashhandler64.dll switch. Use the standard build to test this workaround.")
+                    } else {
+                        Text("Disabling crashhandler64.dll bypasses a Steam initialization hang but reduces crash reporting. On by default, for Steam/Dock launches only; DLL files are unchanged. Restart iDeck first if a session already ran. Restore a manually renamed DLL before testing this switch.")
+                    }
                 }
             }
             if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup", "Cloud", "sync", "saves") {
@@ -2875,25 +2897,20 @@ struct LibraryView: View {
             }
             if settingsShow(".NET", "Mono", "Wine Mono", "framework", "download") { WineMonoSettingsSection() }
             if settingsShow("saves", "backup", "restore", "save games") { SavesSection() }
-            if settingsShow("appearance", "liquid metal", "metal", "glass") {
-                Section {
-                    Toggle("Liquid metal", isOn: $liquidMetal.on)
-                } header: { Text("Appearance") } footer: {
-                    Text("Flowing chrome on the bars and the Desktop button. Off, they use the system's Liquid Glass.")
-                }
-            }
-            if settingsShow("interface", "developer") {
-                Section {
-                    Toggle("Use developer interface", isOn: Binding(get: { developerUI }, set: { on in
-                        developerUI = on; FrontendChoice.choose(new: !on); restartNotice = true
-                    }))
-                } header: { Text("Interface") } footer: {
-                    Text("The developer interface is Madeira's original diagnostic screen. The change applies after Madeira restarts.")
-                }
-            }
             // Search: the matching options of All settings, editable here.
             if !settingsSearch.trimmingCharacters(in: .whitespaces).isEmpty {
                 SettingsSearchResults(query: settingsSearch.trimmingCharacters(in: .whitespaces), refresh: settingsRefresh)
+            }
+            if settingsShow("diagnostics", "extended logging", "logging", "log", "appearance", "liquid metal", "metal", "glass", "interface", "developer") {
+                Section {
+                    Toggle("Extended logging", isOn: $input.diagnostics)
+                    Toggle("Liquid metal", isOn: $liquidMetal.on)
+                    Toggle("Use developer interface", isOn: Binding(get: { developerUI }, set: { on in
+                        developerUI = on; FrontendChoice.choose(new: !on); restartNotice = true
+                    }))
+                } header: { Text("Diagnostics") } footer: {
+                    Text("Liquid metal adds flowing chrome to the bars and Desktop button; off, they use the system's Liquid Glass. The developer interface opens Madeira's original diagnostic screen after restarting the app.")
+                }
             }
             // Credits, last on the Settings page.
             if settingsShow("credits", "thanks", "Will Faust", "Nick", "125hz", "Jfishin", "Jesse", "JesseLovelace", "Dan Perks", "danperks", "bahacan16", "spitefulowl", "meshoklv", "TheHadesc") {

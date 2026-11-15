@@ -102,6 +102,8 @@ jobs:
           python3 -B tests/host/check-development-signing.py
           python3 -B tests/host/check-library-sections.py
           python3 -B tests/host/check-ideck.py
+          python3 -B tests/host/check-config-catalog.py
+          python3 -B tests/host/check-steam-crashhandler-settings.py
 
       - name: Run mouse and touch input regression checks
         run: |
@@ -488,6 +490,7 @@ jobs:
             build 2>&1 | tee build/xcode-runtime-sync.log
 
           APP_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :IDeckSourceCommit string $GITHUB_SHA" "$APP_PLIST"
           HELPER_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/PlugIns/MadeiraJITHelper.appex/Info.plist"
           FRAMEWORK_PLIST="build/DerivedData/Build/Products/$CONFIG-iphoneos/Madeira.app/Frameworks/StikJIT.framework/Info.plist"
           if [ -f "$APP_PLIST" ] && [ -f "$HELPER_PLIST" ]; then

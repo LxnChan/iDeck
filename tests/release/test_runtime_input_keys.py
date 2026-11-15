@@ -28,6 +28,7 @@ class RuntimeInputKeyChecks(unittest.TestCase):
             "build/ffmpeg/build.sh": b"ffmpeg recipe",
             "build/freetype-ios/build.sh": b"freetype recipe",
             "build/ntdll-unix/virtual_ios.c": b"native Wine bridge",
+            "build/ntdll-unix/steam_crashhandler_policy.h": b"Steam load policy",
             "build/fex-ios/build.sh": b"native FEX recipe",
             "build/wine-pe/build-ntdll.sh": b"Windows Wine recipe",
             "build/wintypes-compat/build.sh": b"Windows compatibility helper",
@@ -111,6 +112,11 @@ class RuntimeInputKeyChecks(unittest.TestCase):
     def test_versioned_native_bridge_invalidates_native_cache(self):
         before = self.keys()
         self.write("build/ntdll-unix/virtual_ios.c", b"updated source bridge protocol")
+        self.assert_changed_groups(before, self.keys(), {"native"})
+
+    def test_steam_load_policy_header_invalidates_native_cache(self):
+        before = self.keys()
+        self.write("build/ntdll-unix/steam_crashhandler_policy.h", b"updated Steam load policy")
         self.assert_changed_groups(before, self.keys(), {"native"})
 
     def test_versioned_cpu_and_graphics_patches_invalidate_both_runtime_caches(self):

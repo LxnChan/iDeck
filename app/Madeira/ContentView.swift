@@ -3082,6 +3082,12 @@ struct ContentView: View {
             if steamUI { setenv(SteamUIExperiment.sessionKey, "1", 1) }
             else { unsetenv(SteamUIExperiment.sessionKey) }
             let dockLaunch = MadeiraDock.takeLaunchRequest()
+            // A separate marker from MADEIRA_DOCK_SESSION: disabling the fixed
+            // Steam-ID cleanup must not disable the reporter policy as a side effect.
+            if dockLaunch.dock || steamUI { setenv("MADEIRA_STEAM_CLIENT_SESSION", "1", 1) }
+            else { unsetenv("MADEIRA_STEAM_CLIENT_SESSION") }
+            setenv("MADEIRA_DISABLE_STEAM_CRASHHANDLER", MadeiraConfig.flag("MADEIRA_DISABLE_STEAM_CRASHHANDLER") ? "1" : "0", 1)
+            logStore.log("[steam-crashhandler] steam-session=\(dockLaunch.dock || steamUI ? 1 : 0) disabled=\(MadeiraConfig.flag("MADEIRA_DISABLE_STEAM_CRASHHANDLER") ? 1 : 0)")
             // A Dock session publishes no fixed Steam game identity to its guests
             // (WineProcessBridge.m): Valve's client runs in the host and gives each
             // game its own. Every other launch clears the flag and is unchanged.

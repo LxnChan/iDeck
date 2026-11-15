@@ -35,7 +35,7 @@ import UIKit
 /// like a pill, and the lens that lifts out of the selected tab under a finger keeps its
 /// glass with metal only around its edge, dissolving into the glass toward the middle
 /// (`rim`). The navigation bar's search field gets the same rim. Everything is found by class name and key-value coding; if any of it is
-/// missing the glass stays as it is. Settings › Appearance › Liquid metal (LiquidMetalSetting,
+/// missing the glass stays as it is. Settings › Diagnostics › Liquid metal (LiquidMetalSetting,
 /// env.MADEIRA_LIQUID_METAL in madeira.cfg) turns it on and off at once, with the Desktop
 /// button's liquid metal: off, the app shows plain Liquid Glass.
 @MainActor

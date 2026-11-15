@@ -232,6 +232,8 @@ def build(legacy):
         info['CFBundleVersion'] = number
         if path == app / 'Info.plist':
             info['CFBundleDisplayName'] = 'iDeck RT223'
+            info['IDeckSourceCommit'] = git(ROOT, 'rev-parse', 'HEAD').decode().strip()
+            info['IDeckSteamCrashHandlerPolicySupported'] = False
             info['MadeiraBuild'] = f'{number} runtime223 frontend={frontend} baseline=47dfc1f'
         else:
             info['CFBundleIdentifier'] = bundle_id + '.JITHelper'

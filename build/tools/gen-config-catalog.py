@@ -43,6 +43,15 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "env.MADEIRA_DISABLE_STEAM_CRASHHANDLER": {"category": "Steam & Dock", "title": "Disable crashhandler64.dll",
+                "kind": "bool", "default": "1",
+                "note": "On by default. Refuses this optional reporting DLL during Steam/Dock sessions without "
+                        "changing its files, avoiding an observed initialization stall in report submission. "
+                        "Reduces crash reporting. Restart iDeck between tests; a manually renamed DLL must be "
+                        "restored first. Unsupported by the historical RT223 diagnostic runtime."},
+    "env.MADEIRA_STEAM_CLIENT_SESSION": {"category": "Steam & Dock", "title": "Internal Steam/Dock session marker",
+                "note": "Internal launch marker set and cleared by iDeck. Do not set it in madeira.cfg; it scopes "
+                        "the crashhandler64.dll policy away from ordinary Desktop sessions."},
     "env.MADEIRA_PIN_GRAPHICS_DLLS": {"category": "Memory & JIT pool", "title": "Keep graphics DLLs loaded",
                 "kind": "bool", "default": "0",
                 "note": "Default off. On a D3D12 device/probe call, pins already loaded D3D12, DXGI and Wine Metal "
@@ -870,17 +879,19 @@ def scan():
         out = subprocess.run(["git", "-C", base, "ls-files", "--"] + dirs,
                              capture_output=True, text=True).stdout.split()
         for rel in out:
-            path = os.path.normpath(os.path.join(repo, rel))
+            path = os.path.normpath(os.path.join(repo, rel)).replace(os.sep, "/")
             if not path.endswith(EXT) or any(s in path for s in SKIP):
                 continue
             try:
-                txt = open(os.path.join(ROOT, path), errors="ignore").read()
+                txt = open(os.path.join(ROOT, path), encoding="utf-8", errors="ignore").read()
             except OSError:
                 continue
             lines = txt.split("\n")
             for pat, is_env in ((CFG, False), (ENV, True)):
                 for m in pat.finditer(txt):
                     reader, name, arg = m.group(1), m.group(2), (m.group(3) or "").strip()
+                    if name == "env.":  # Dynamic prefix, not a complete editable key.
+                        continue
                     if is_env or reader == "MadeiraConfig.flag":
                         key = "env." + name
                     else:
@@ -942,13 +953,13 @@ def render(opts):
 def main():
     text = render(scan())
     if "--check" in sys.argv:
-        cur = open(OUT).read() if os.path.exists(OUT) else ""
+        cur = open(OUT, encoding="utf-8").read() if os.path.exists(OUT) else ""
         if cur != text:
             print("ConfigCatalog.generated.swift is out of date: run build/tools/gen-config-catalog.py")
             return 1
         print("ConfigCatalog.generated.swift is current")
         return 0
-    open(OUT, "w").write(text)
+    open(OUT, "w", encoding="utf-8", newline="\n").write(text)
     print(f"wrote {OUT}")
     return 0
 
