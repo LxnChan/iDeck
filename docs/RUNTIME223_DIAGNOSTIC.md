@@ -1,12 +1,14 @@
-# Build 223 runtime diagnostic
+# Build 223 runtime diagnostic (retired)
 
-Opt in with `gh workflow run build-ipa.yml -f runtime_profile=build223`.
-The default push/dispatch profile remains `synced`. The profiles have separate
-concurrency groups; the historical profile never restores or saves synced caches.
+The Build 223 diagnostic job and its manual-dispatch input have been removed.
+`Build iDeck IPA` now runs only the normal source-matched build. This document
+records the retired diagnostic for interpreting previously produced artifacts;
+the standalone tool and its integrity tests are retained for historical analysis,
+but are not invoked to build an IPA by any current workflow.
 
-This tests the Steam session regression after the upstream runtime sync. Desktop
-and most Win32 programs still work; a successful CI build does not prove the
-Steam session regression fixed.
+This diagnostic tested the Steam session regression after the upstream runtime
+sync. Desktop and most Win32 programs still work; a successful CI build does not
+prove the Steam session regression fixed.
 
 The reference is the last known-good **pre-sync** build: Build 223, commit
 `47dfc1f2d9c4acb40c8602751be90e1757f62a17`, Actions run `43383581817`, completed

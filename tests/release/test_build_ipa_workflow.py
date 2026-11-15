@@ -65,6 +65,17 @@ def bash_executable():
     return shutil.which("bash")
 
 
+class BuildIPAWorkflowChecks(unittest.TestCase):
+    def test_only_normal_build_remains(self):
+        workflow = (ROOT / ".github/workflows/build-ipa.yml").read_text(encoding="utf-8")
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        self.assertEqual(re.findall(r"^  ([\w-]+):\s*$", jobs, re.MULTILINE), ["build"])
+        self.assertNotRegex(jobs, r"(?m)^    if:", msg="The normal build must not be profile-gated")
+        self.assertIn("  group: build-ipa-${{ github.ref }}\n", workflow)
+        for retired in ("runtime_profile", "runtime223", "build223", "build-runtime223.py"):
+            self.assertNotIn(retired, workflow)
+
+
 class BuildIPAPackagingChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -23,18 +23,6 @@ class Runtime223Checks(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.work = Path(temp.name)
 
-    def test_workflow_default_and_cache_isolation(self):
-        text = (ROOT / '.github/workflows/build-ipa.yml').read_text(encoding='utf-8')
-        self.assertIn('default: synced', text)
-        self.assertIn("if: inputs.runtime_profile != 'build223'", text)
-        self.assertIn("group: build-ipa-${{ github.ref }}-${{ inputs.runtime_profile || 'synced' }}", text)
-        diagnostic = text.split('\n  runtime223:\n')[1]
-        self.assertIn('ref: ' + runtime.BASELINE, diagnostic)
-        self.assertNotIn('actions/cache', diagnostic)
-        self.assertNotIn('check-synced-runtime', diagnostic)
-        self.assertIn('inherited-source.tar.gz', diagnostic)
-        self.assertIn('persist-credentials: false', diagnostic)
-
     def test_overlay_updates_swift_but_retains_native_bridge(self):
         current, legacy = self.work / 'current', self.work / 'legacy'
         names = ['app/Madeira/Library.swift', 'app/Madeira/Winios/Winios.m', 'app/project']
