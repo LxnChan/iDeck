@@ -95,6 +95,7 @@ jobs:
           python3 -B tests/host/check-ideck.py
           python3 -B tests/host/check-config-catalog.py
           python3 -B tests/host/check-steam-crashhandler-settings.py
+          python3 -B tests/host/check-steam-offline-launch.py
 
       - name: Run mouse and touch input regression checks
         run: |

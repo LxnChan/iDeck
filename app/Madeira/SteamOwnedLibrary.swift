@@ -334,9 +334,11 @@ final class SteamOwnedLibrary: ObservableObject {
     /// Steam's launch configuration for an owned app, for "Start with: The game"
     /// (SteamDirectStart): from the cached library, else asked of Steam once over the
     /// app's own connection (signed in, no session running) and kept in the cache.
-    /// nil when it cannot be had; the Program picker then decides.
-    func launchOptions(appID: Int) async -> [SteamLaunchOption]? {
+    /// nil when it cannot be had; the Program picker then decides. An explicit
+    /// offline launch passes cachedOnly, so missing metadata never opens a connection.
+    func launchOptions(appID: Int, cachedOnly: Bool = false) async -> [SteamLaunchOption]? {
         if let cached = game(appID)?.launches, cached.allSatisfy({ $0.index != nil }) { return cached }
+        guard !cachedOnly else { return nil }
         guard Self.enabled, signedIn, !inSession, appID > 0, appID <= Int(UInt32.max) else { return nil }
         do {
             guard let info = try await fetcher.fetchAppInfo(appID: UInt32(appID)) else { return nil }
@@ -825,10 +827,19 @@ final class SteamOwnedLibrary: ObservableObject {
     /// The game whose saves are being synced before it starts (the library says so).
     @Published private(set) var cloudWaitingFor: Int?
 
-    func cloudHold(_ appID: Int) -> CloudHold? {
+    func cloudHold(_ appID: Int, offline: Bool = false) -> CloudHold? {
         guard Self.cloudPlayCheck, signedIn, !inSession else { return nil }
         if cloudBusy.contains(appID) { return .syncing }
-        guard let state = cloud[appID] else { return .stale }
+        guard let state = cloud[appID] else { return offline ? nil : .stale }
+        // Choosing offline means using local saves without a freshness check.
+        // Still warn about active transfers and conflicts already known locally.
+        if offline {
+            switch state.phase {
+            case .checking, .downloading, .uploading: return .syncing
+            default: break
+            }
+            return state.conflicts.isEmpty ? nil : .conflict(state.conflicts.count)
+        }
         switch state.phase {
         case .checking, .downloading, .uploading: return .syncing
         // No prefix yet (first start): there is nothing to compare with.

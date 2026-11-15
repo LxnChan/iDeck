@@ -396,6 +396,7 @@ enum MadeiraDock {
         if let url = transferURL { try? FileManager.default.removeItem(at: url) }
         unsetenv("MADEIRA_DOCK_AUTH_FILE")
         unsetenv("MADEIRA_DOCK_OFFLINE")
+        unsetenv("MADEIRA_DOCK_FORCE_OFFLINE")
     }
 
     /// Writes the one-use transfer to protected Application Support storage
@@ -431,7 +432,7 @@ enum MadeiraDock {
     }
 
     /// The host's environment for one launch.
-    static func configure(_ game: DockGame, launchOption: UInt32 = 0) {
+    static func configure(_ game: DockGame, launchOption: UInt32 = 0, forceOffline: Bool = false) {
         for key in ["MADEIRA_STEAM_HOST_PROBE", "MADEIRA_STEAM_HOST_SESSION", "MADEIRA_STEAM_HOST_LOGIN", "MADEIRA_STEAM_HOST_LAUNCH"] {
             setenv(key, "1", 1)
         }
@@ -468,7 +469,7 @@ enum MadeiraDock {
         let guardMap = SteamSignIn.flag("MADEIRA_DOCK_IMAGE_MAP_GUARD", default: true)
         if guardMap { setenv("MADEIRA_IMAGE_MAP_GUARD", "1", 1) }
         SteamLog.event("[dock-launch] image-map-guard=\(guardMap ? 1 : 0)")
-        DockOffline.configure(appID: game.id)
+        DockOffline.configure(appID: game.id, forceOffline: forceOffline)
     }
 
     /// Wine's explorer opens a virtual desktop and starts the host in it. With
@@ -502,9 +503,8 @@ enum MadeiraDock {
 /// docs/OFFLINE.md): Madeira decides nothing about ownership and stores no
 /// ticket. What lives here is only what the app needs around it:
 ///
-/// - whether the device has a network path, so a start without one asks for the
-///   offline logon straight away (`MADEIRA_DOCK_OFFLINE=1`) instead of waiting
-///   out a connection that cannot happen;
+/// - whether the device has a network path or the game explicitly requests offline
+///   play, so either asks for offline logon straight away (`MADEIRA_DOCK_OFFLINE=1`);
 /// - a note of the last online start in which Valve's client confirmed a licence
 ///   and said the account can log on offline (the host's
 ///   `session-offline-ready=1`), for the Game details mark. Steam's offline
@@ -580,13 +580,26 @@ enum DockOffline {
     private(set) static var sessionApp: Int?
     private static var sessionMarked = false
 
-    /// Part of MadeiraDock.configure: tells the host when there is no network.
-    static func configure(appID: Int) {
+    /// An explicit offline choice also works while the network path is up.
+    static func requestsOffline(enabled: Bool, networkDown: Bool, forceOffline: Bool) -> Bool {
+        enabled && (forceOffline || networkDown)
+    }
+
+    /// Set after the library profile is applied. The bridge captures this marker
+    /// before config exports, so an explicit offline choice cannot become online.
+    /// Other launches (including installer-only sessions) clear both flags.
+    static func prepareLaunch(dock: Bool, forceOffline: Bool) {
+        setenv("MADEIRA_DOCK_FORCE_OFFLINE", dock && enabled && forceOffline ? "1" : "0", 1)
+        if !dock { unsetenv("MADEIRA_DOCK_OFFLINE") }
+    }
+
+    /// Part of MadeiraDock.configure: automatic detection or a per-game choice.
+    static func configure(appID: Int, forceOffline: Bool = false) {
         sessionApp = appID
         sessionMarked = false
-        let offline = enabled && networkDown
+        let offline = requestsOffline(enabled: enabled, networkDown: networkDown, forceOffline: forceOffline)
         if offline { setenv("MADEIRA_DOCK_OFFLINE", "1", 1) } else { unsetenv("MADEIRA_DOCK_OFFLINE") }
-        SteamLog.event("[dock-offline] enabled=\(enabled ? 1 : 0) network=\(networkDown ? "down" : "up") request=\(offline ? 1 : 0) account-saved=\(accountSaved != nil ? 1 : 0) game-started-online=\(verified(appID) != nil ? 1 : 0)")
+        SteamLog.event("[dock-offline] enabled=\(enabled ? 1 : 0) network=\(networkDown ? "down" : "up") forced=\(forceOffline ? 1 : 0) request=\(offline ? 1 : 0) account-saved=\(accountSaved != nil ? 1 : 0) game-started-online=\(verified(appID) != nil ? 1 : 0)")
     }
 
     /// Follows the host's report (MadeiraDockModel.watchReport): an online start

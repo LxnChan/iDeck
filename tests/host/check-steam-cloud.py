@@ -36,7 +36,7 @@ plan = cloud[cloud.index('// MARK: - What to do with a comparison'):cloud.index(
 # ------------------------------------------------------------------ static
 require('SteamSignIn.flag("MADEIRA_STEAM_CLOUD", default: true)' in owned,
         'Steam Cloud is on unless turned off (env.MADEIRA_STEAM_CLOUD = 0)')
-require('guard let state = cloud[appID] else { return .stale }' in owned,
+require('guard let state = cloud[appID] else { return offline ? nil : .stale }' in owned,
         'Play on a game not checked yet in this app run syncs it first, without asking')
 upload = owned[owned.index('private func upload(_ appID: Int'):owned.index('// MARK: Before Play')]
 require(upload.index('cloudFile(appID, entry)') < upload.index('.cloudBeginAppUploadBatch'),

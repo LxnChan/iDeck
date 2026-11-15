@@ -213,6 +213,23 @@ about ownership.
   it can log on offline, and only then asks it to. The client answers the license
   question from what it cached and starts the game through the same launch call.
   A network that fails after the start falls back the same way 20 s in.
+- **Game details › Steam › Launch offline** explicitly requests the same offline
+  sign-in even when a network path exists. The choice is saved per game and is off
+  by default (off keeps the automatic policy above); it applies only to Madeira
+  Dock, not **Start with: The game**. Launch configuration is read from the local
+  cache only, falling back to Steam's default launch-option key 0 when unavailable.
+  No pre-launch Cloud freshness check or sync is started: this device's saves are
+  used and may be older. Known conflicts and active transfers still prompt; choosing
+  **Wait and sync** explicitly performs a sync. Existing background library/download
+  activity is stopped by the usual Dock handoff. This is not an app-wide network
+  firewall and does not prevent the game itself from connecting.
+  The explicit choice wins over contradictory offline env lines in global or
+  per-game config. If `MADEIRA_DOCK_OFFLINE_LOGON=0` globally disables the feature,
+  the switch cannot be enabled; an already saved offline choice fails with an
+  explanation instead of silently starting online. Cached Steam credentials and
+  licences are still required, and Valve's client can reject offline sign-in or
+  the game licence. First-time preparation, third-party launchers and online-only
+  games can still require a connection. This does not bypass DRM or authentication.
 - **Game details** shows a small line under the title for games the Dock starts:
   "Can be played offline" (green check) once the account is saved; "Start a game
   online to play offline" before that; and "Start once online to play offline" for

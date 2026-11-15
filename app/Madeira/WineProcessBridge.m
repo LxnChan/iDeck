@@ -1605,6 +1605,10 @@ static void *wine_process_thread(void *arg) {
             {
                 /* ml1095: "env.NAME = value" lines of madeira.cfg; the legacy
                  * madeira-env.txt (KEY=VALUE lines) only when madeira.cfg is absent. */
+                /* iDeck offline choice: snapshot the launch worker's marker before
+                 * any global or per-game env lines can replace it. */
+                const char *offlineChoice = getenv("MADEIRA_DOCK_FORCE_OFFLINE");
+                const BOOL forceDockOffline = offlineChoice && !strcmp(offlineChoice, "1");
                 NSString *text = nil;
                 if (madeira_cfg_present()) {
                     NSMutableString *acc = [NSMutableString string];
@@ -1678,6 +1682,13 @@ static void *wine_process_thread(void *arg) {
                     setenv(k.UTF8String, v.UTF8String, 1);
                     LOG("game config env: %{public}s=%{public}s", k.UTF8String, v.UTF8String);
                     fprintf(stderr, "[madeira-env] game %s=%s\n", k.UTF8String, v.UTF8String);
+                }
+                /* An explicit offline launch wins over contradictory env lines.
+                 * The global disable was checked before starting the launch. */
+                if (forceDockOffline) {
+                    setenv("MADEIRA_DOCK_OFFLINE_LOGON", "1", 1);
+                    setenv("MADEIRA_DOCK_OFFLINE", "1", 1);
+                    fprintf(stderr, "[dock-offline] explicit offline launch enforced after config\n");
                 }
                 {   /* madeira-bcd: the server's per-launch switches (fd_ios.c, request_ios.c) */
                     const char *ef = getenv("MADEIRA_SRV_ECO_FOLLOW");   /* 1: the server thread runs at utility QoS while ECO is on */

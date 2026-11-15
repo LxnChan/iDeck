@@ -1218,6 +1218,16 @@ struct SteamEntrySection: View {
                     Text("Madeira Dock needs Valve's client components. Download them in Settings › Steam › Madeira Dock.")
                         .font(.caption).foregroundStyle(.orange)
                 }
+                Toggle("Launch offline", isOn: Binding(get: { entry.steamOffline == true },
+                                                      set: { entry.steamOffline = $0 ? true : nil }))
+                    .disabled(!DockOffline.enabled && entry.steamOffline != true)
+                if !DockOffline.enabled {
+                    Text("Offline launch is disabled by MADEIRA_DOCK_OFFLINE_LOGON. Remove that override to use it.")
+                        .font(.caption).foregroundStyle(.orange)
+                } else {
+                    Text("Saved for this game. Uses Steam's cached sign-in and licences, without online launch checks or Steam Cloud sync. This device's saves may be older. Start online first to prepare offline play. Off keeps automatic network detection. This does not disable networking inside the game.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Toggle("Smaller JIT pool (512 MB) for this launch", isOn: $dock.compactPool)
                 // The game's One-time installs choice (Madeira Dock, DockInstallers).
                 if DockInstallers.choiceEnabled, dock.installPrograms[appID] != nil {

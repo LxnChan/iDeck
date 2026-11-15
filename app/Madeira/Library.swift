@@ -281,6 +281,9 @@ struct LibraryEntry: Codable, Identifiable {
     /// Dock, the default; "game" is the game's own program in Wine, without Steam
     /// (SteamDirectStart).
     var steamStart: String?
+    /// Ask Valve's client to log on offline for this game. nil/false keeps the
+    /// automatic network-based policy. Only applies to Madeira Dock starts.
+    var steamOffline: Bool?
     /// "The game": the program, relative to the install folder ("bin/game.exe"), its
     /// arguments, and its working folder (relative to the install folder; nil: the
     /// program's own folder, "": the install folder), from Steam's launch configuration

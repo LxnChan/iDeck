@@ -2733,10 +2733,11 @@ struct ContentView: View {
     /// is running, the last check failed or never ran, or saves wait for a choice,
     /// an alert asks first; `retry` starts the game again from there. A check that
     /// is only old is repeated first, without asking.
-    private func cloudClear(_ appID: Int, name: String, retry: @escaping () -> Void) -> Bool {
+    /// An explicit offline start skips freshness checks, not known conflicts/transfers.
+    private func cloudClear(_ appID: Int, name: String, offline: Bool = false, retry: @escaping () -> Void) -> Bool {
         guard library.enabled else { return true }
         if library.cloudBypass == appID { library.cloudBypass = nil; return true }
-        guard let hold = SteamOwnedLibrary.shared.cloudHold(appID) else { return true }
+        guard let hold = SteamOwnedLibrary.shared.cloudHold(appID, offline: offline) else { return true }
         library.cloudRetry = retry
         if hold == .stale { cloudWait(appID); return false }
         LogStore.shared.log("[steam-cloud] app=\(appID) before-play: held \(hold)")
@@ -2966,6 +2967,7 @@ struct ContentView: View {
         // contention that blocks the main thread RunLoop, triggering iOS hang detection
         ws_log_quiet = 1
 
+        let dockHasHost = !DockInstallers.installsOnly
         DispatchQueue.global(qos: .userInitiated).async {
             // A library entry's launch profile (executable, arguments, x87
             // precision, frame limit).
@@ -3082,6 +3084,8 @@ struct ContentView: View {
             if steamUI { setenv(SteamUIExperiment.sessionKey, "1", 1) }
             else { unsetenv(SteamUIExperiment.sessionKey) }
             let dockLaunch = MadeiraDock.takeLaunchRequest()
+            DockOffline.prepareLaunch(dock: dockLaunch.dock && dockHasHost,
+                                      forceOffline: profile?.steamOffline == true)
             // A separate marker from MADEIRA_DOCK_SESSION: disabling the fixed
             // Steam-ID cleanup must not disable the reporter policy as a side effect.
             if dockLaunch.dock || steamUI { setenv("MADEIRA_STEAM_CLIENT_SESSION", "1", 1) }
@@ -3675,9 +3679,9 @@ struct ContentView: View {
     /// session then takes that entry's display, performance and on-screen settings.
     private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil) {
         let inLibrary = library.enabled
+        let offline = profile?.steamOffline == true
         guard jitReadyForLaunch(inLibrary: inLibrary, entry: profile?.id,
                                 then: { startDock(game, compactPool: compactPool, profile: profile) }) else { return }
-        guard cloudClear(game.id, name: game.name, retry: { startDock(game, compactPool: compactPool, profile: profile) }) else { return }
         guard wine_process_is_running() == 0, wineserver_is_running() == 0, !inLibrary || library.current == nil else {
             logStore.log("[madeira-dock] a session already ran in this app run; restart Madeira first", level: .error)
             if inLibrary { library.error = "A session is already running." }
@@ -3696,10 +3700,15 @@ struct ContentView: View {
             if inLibrary { library.error = error.localizedDescription }
         }
         do {
+            guard !offline || DockOffline.enabled else {
+                throw DockError.message("Offline launch is disabled by MADEIRA_DOCK_OFFLINE_LOGON. Turn off Launch offline for this game or remove that override.")
+            }
             try MadeiraDock.validate(game, drive: MadeiraDock.drive)
             try profile?.validate()
             guard SteamSignIn.isSignedIn else { throw DockError.message("Sign in to Steam in Madeira before starting Dock.") }
         } catch { fail(error); return }
+        guard cloudClear(game.id, name: game.name, offline: offline,
+                         retry: { startDock(game, compactPool: compactPool, profile: profile) }) else { return }
         // Only one sign-in of the account may be online: the app's own Steam connection
         // (library, playtime, downloads) logs off and its socket closes before the sign-in
         // is handed to Valve's client, and it stays off until the Dock session has ended
@@ -3710,7 +3719,7 @@ struct ContentView: View {
             // Without a choice (no configuration to be had, or no entry whose .exe is on disk:
             // a launcher started through a .bat, say) it is key 0, which every Dock start
             // used before; Dock stops at once if Steam names that entry missing.
-            let options = await SteamOwnedLibrary.shared.launchOptions(appID: game.id)
+            let options = await SteamOwnedLibrary.shared.launchOptions(appID: game.id, cachedOnly: offline)
             let installFolder = MadeiraDock.drive.appendingPathComponent(game.library + "/common/" + game.installDir)
             let chosen = options.flatMap { SteamDirectStart.choose($0, installFolder: installFolder)?.launchIndex }
             let launchOption = chosen ?? 0
@@ -3727,7 +3736,7 @@ struct ContentView: View {
                 }
                 try MadeiraDock.writeHandoff(account: signIn.accountName, token: signIn.refreshToken, appID: game.id)
             } catch { fail(error); return }
-            MadeiraDock.configure(game, launchOption: launchOption)
+            MadeiraDock.configure(game, launchOption: launchOption, forceOffline: offline)
             // The game's one-time installs (its Steam install script) run first, in the same
             // session. No session runs yet, so the registry files can be read and written.
             // madeira-bcd: they run in a session of their own (DockInstallers.installsOnly), and

@@ -43,6 +43,10 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "env.MADEIRA_DOCK_FORCE_OFFLINE": {"category": "Steam & Dock", "title": "Internal offline-launch marker",
+                "note": "Internal launch marker, set and cleared by iDeck. Use Game details > Steam > Launch offline "
+                        "instead of setting this in config. Captured before config exports to preserve an explicit "
+                        "per-game offline choice."},
     "env.MADEIRA_DISABLE_STEAM_CRASHHANDLER": {"category": "Steam & Dock", "title": "Disable crashhandler64.dll",
                 "kind": "bool", "default": "1",
                 "note": "On by default. Refuses this optional reporting DLL during Steam/Dock sessions without "
