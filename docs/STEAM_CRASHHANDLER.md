@@ -29,13 +29,19 @@ The matching instruction locations narrow the stall down substantially:
   releasing that completion semaphore at + `0x64d4`.
 - The other persistently waiting thread's return address, + `0x4d566`, follows
   the DLL's call to `HttpSendRequestW`. The trace also records a successful DNS
-  lookup of `crash.steampowered.com`, followed by a port-443 connection attempt.
+  lookup of `crash.steampowered.com`, followed by a port-443 connection attempt
+  and `[srv-conn-done] event=OUT err=0 peer=YES path=REAL-kernel-completion`.
+  The report thread subsequently loads `schannel.dll` and remains stuck.
 
 Together with the rename test, these observations strongly support a report
 submission that does not finish, holding up Steam initialization. They do not
-distinguish an unreachable/slow reporting endpoint or proxy path from a Wine
-WinINet/socket completion problem. The connection line lacks the necessary
-error and completion details; `ret=-1` alone is not a definitive failure cause.
+distinguish a TLS/HTTP reporting endpoint or proxy-path stall from a Wine
+WinINet/security/socket completion problem. DNS and TCP establishment succeeded
+in several failing runs; that does not establish successful TLS or a completed
+HTTP exchange. Another failing run records an initial connection timeout and a
+later successful retry. `ret=-1` on the initial nonblocking kernel connect is
+not, by itself, proof of connection failure: the server source emits that line
+after accepting either immediate success or `EINPROGRESS`.
 **Network involvement cannot be excluded.** Nor is a wrapped global event
 history evidence that the semaphore producer never ran.
 
