@@ -5,6 +5,7 @@
 # iDeck helper DLLs. FEX, DXMT and i386 Wine are built by their own stages.
 set -euo pipefail
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "$R/build/wine-pe/apply-loader-patches.py"
 : "${LLVM_MINGW:?Set LLVM_MINGW to the verified LLVM-MinGW toolchain directory}"
 TC="$LLVM_MINGW/bin"
 export PATH="$TC:$PATH"

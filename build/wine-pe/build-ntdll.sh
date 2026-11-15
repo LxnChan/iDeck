@@ -11,6 +11,7 @@
 # `make -C dlls/winegstreamer`, which would also try the GStreamer-based .so.
 set -eu
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 "$R/build/wine-pe/apply-loader-patches.py"
 TC="${LLVM_MINGW:-$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal}/bin"
 export PATH="$TC:$PATH"
 B="$R/wine/build-arm64ec"

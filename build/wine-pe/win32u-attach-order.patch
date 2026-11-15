@@ -1,0 +1,46 @@
+From: LxnChan <lingxuanning@outlook.com>
+Subject: [PATCH] ntdll: attach loaded win32u before ARM64EC GUI dependency cycles
+
+SPDX-License-Identifier: LGPL-2.1-or-later
+
+The iDeck PE farm promotes delay imports to eager imports. A GUI cycle
+can initialize comctl32 while gdi32/user32 are still in progress, before
+their win32u dependency is attached. Its first NtGdiCreateBitmap then
+branches through a NULL __wine_syscall_dispatcher.
+
+After kernel32 bootstrap, attach an already loaded win32u before walking
+other nodes. Keep loader locking, recursion guards, pinning, activation
+contexts and failure propagation in process_attach. Other architectures
+and processes without win32u retain their existing attach order.
+
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2224,8 +2224,27 @@
+     if (lpReserved) wm->ldr.LoadCount = -1;  /* pin it if imported by the main exe */
+     if (wm->ldr.ActivationContext) RtlActivateActivationContext( 0, wm->ldr.ActivationContext, &cookie );
+
++#ifdef __arm64ec__
++    /* The PE farm promotes delay imports to ordinary imports to avoid x64
++     * delay thunks in the ARM64EC JIT copy. The resulting GUI dependency
++     * cycles can reach comctl32's DllMain before win32u's DllMain has set
++     * __wine_syscall_dispatcher. Initialize this ntdll-only leaf first.
++     * Do not load it into headless processes or attach it during emulator /
++     * kernel32 bootstrap. The current node is already marked in progress,
++     * so reentrant attaches keep the normal cycle protection. */
++    if (imports_fixup_done)
++    {
++        WINE_MODREF *kernel32 = find_basename_module( L"kernel32.dll" );
++        WINE_MODREF *win32u = find_basename_module( L"win32u.dll" );
++
++        if (kernel32 && (kernel32->ldr.Flags & LDR_PROCESS_ATTACHED) && win32u && win32u != wm)
++            status = process_attach( win32u->ldr.DdagNode, lpReserved );
++    }
++#endif
++
+     /* Recursively attach all DLLs this one depends on */
+-    status = walk_node_dependencies( node, lpReserved, process_attach );
++    if (status == STATUS_SUCCESS)
++        status = walk_node_dependencies( node, lpReserved, process_attach );
+
+     if (!wm->ldr.InInitializationOrderLinks.Flink)
+         InsertTailList(&NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList,
