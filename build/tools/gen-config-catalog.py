@@ -43,6 +43,17 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "env.MADEIRA_SMC_HOT_PAGE": {"category": "x86 emulation (FEX)", "title": "Hot SMC page threshold",
+                "kind": "text", "default": "",
+                "note": "Unset or empty: iDeck disables hot-page promotion for 32-bit WoW64 programs to avoid "
+                        "stale translated code in packed/self-modifying games. Covers library, Desktop and "
+                        "service launches. 64-bit programs keep the emulator default (64 write faults per "
+                        "second). Explicit values win: 0 disables promotion for all inheriting programs; a "
+                        "positive threshold opts back in, including the known WoW64 issue. Disabling promotion "
+                        "can increase CPU use in programs that frequently rewrite code. Restart iDeck "
+                        "after changing this setting.",
+                "sources": ["build/ntdll-unix/env_ios.c", "FEX/Source/Windows/ARM64EC/Module.cpp",
+                            "FEX/Source/Windows/WOW64/Module.cpp"]},
     "env.MADEIRA_DOCK_FORCE_OFFLINE": {"category": "Steam & Dock", "title": "Internal offline-launch marker",
                 "note": "Internal launch marker, set and cleared by iDeck. Use Game details > Steam > Launch offline "
                         "instead of setting this in config. Captured before config exports to preserve an explicit "

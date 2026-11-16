@@ -1012,6 +1012,50 @@ static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *nam
     else append_envW( env, pos, size, name, NULL );
 }
 
+#ifdef WINE_IOS
+/* iDeck compatibility for the bundled WoW64 emulator: hot-page promotion
+ * removes write traps, but its syscall handler does not advertise hot pages
+ * to the translator. Packed x86 code can then execute stale translations.
+ * Keep write traps unless the user explicitly supplies a threshold. Apply to
+ * each Windows environment before any PE/CRT initialization, including the
+ * initial library launch and children started by Desktop or a service.
+ *
+ * The private marker tracks only our own default. Drop that inherited value
+ * before selecting a child's default so a 64-bit descendant keeps its normal
+ * optimization. Never change the shared Unix environment: 32/64-bit guests
+ * can initialize concurrently in the same iDeck process. */
+static void ios_apply_wow64_smc_compat( WCHAR **env, SIZE_T *pos, SIZE_T *size, USHORT machine )
+{
+    static const WCHAR zeroW[] = {'0',0}, oneW[] = {'1',0};
+    WCHAR hotW[32], autoW[32];
+    WCHAR *hot, *marker;
+    BOOL automatic, explicit_value;
+
+    ascii_to_unicode( hotW, "MADEIRA_SMC_HOT_PAGE", sizeof("MADEIRA_SMC_HOT_PAGE") );
+    ascii_to_unicode( autoW, "__IDECK_WOW64_SMC_AUTO", sizeof("__IDECK_WOW64_SMC_AUTO") );
+    hot = find_env_var( *env, *pos, hotW, wcslen(hotW) );
+    marker = find_env_var( *env, *pos, autoW, wcslen(autoW) );
+    if (hot)
+    {
+        /* Windows names ignore case; the bundled emulator's getenv does not. */
+        memcpy( hot, hotW, wcslen(hotW) * sizeof(WCHAR) );
+        hot += wcslen(hotW) + 1;
+    }
+    if (marker) marker += wcslen(autoW) + 1;
+    automatic = marker && marker[0] == '1' && !marker[1] && hot && hot[0] == '0' && !hot[1];
+    explicit_value = hot && *hot && !automatic;
+
+    append_envW( env, pos, size, "__IDECK_WOW64_SMC_AUTO", NULL );
+    if (automatic) append_envW( env, pos, size, "MADEIRA_SMC_HOT_PAGE", NULL );
+    if (machine != IMAGE_FILE_MACHINE_I386 || explicit_value) return;
+
+    append_envW( env, pos, size, "MADEIRA_SMC_HOT_PAGE", zeroW );
+    append_envW( env, pos, size, "__IDECK_WOW64_SMC_AUTO", oneW );
+    dprintf( 2, "[wow64-smc] compat rev=ideck-wow64-smc1: MADEIRA_SMC_HOT_PAGE=0 "
+                "(automatic x86 default; explicit thresholds take precedence)\n" );
+}
+#endif
+
 /* set an environment variable for one of the wine path variables */
 static void add_path_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *name, const char *path )
 {
@@ -2231,6 +2275,12 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
         if (NtCurrentTeb64()) NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR] = FALSE;
     }
 
+#ifdef WINE_IOS
+    /* The fallback launcher, if any, has now selected the final machine. */
+    env_pos--;  /* the helpers expect entries without the final block NUL */
+    ios_apply_wow64_smc_compat( &env, &env_pos, &env_size, main_image_info.Machine );
+    env[env_pos++] = 0;
+#endif
     main_wargv = build_wargv( get_dos_path( nt_name.Buffer ));
     cmdline = build_command_line( main_wargv );
 
@@ -2339,6 +2389,9 @@ void unix_init_startup_info(void)
     env_pos = env_size - 1;
     add_dynamic_environment( &env, &env_pos, &env_size );
     is_prefix_bootstrap = !!find_env_var( env, env_pos, bootstrapW, ARRAY_SIZE(bootstrapW) );
+#ifdef WINE_IOS
+    ios_apply_wow64_smc_compat( &env, &env_pos, &env_size, machine );
+#endif
     env[env_pos++] = 0;
 
     size = (sizeof(*params)
