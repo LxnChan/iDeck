@@ -172,11 +172,16 @@ struct GameProfile {
         }
         nonmutating set {
             guard let u = url else { return }
-            if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                try? FileManager.default.removeItem(at: u)
-            } else {
-                try? (newValue.hasSuffix("\n") ? newValue : newValue + "\n").write(to: u, atomically: true, encoding: .utf8)
-            }
+            do {
+                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) }
+                } else {
+                    try (newValue.hasSuffix("\n") ? newValue : newValue + "\n").write(to: u, atomically: true, encoding: .utf8)
+                }
+                // Explicit config edits/resets supersede drafts even when the
+                // replacement happens to equal the last valid configuration.
+                if let draftURL = childArgumentsDraftURL { try? FileManager.default.removeItem(at: draftURL) }
+            } catch { /* Preserve the current config and draft when the write fails. */ }
         }
     }
 

@@ -160,6 +160,11 @@ func rejects(_ operation: () throws -> Void) {
             case "read-draft":
                 check(profile.childArgumentsDraft?.arguments == "--name \"unfinished", "incomplete quote survives restart")
                 check(ChildLaunchArguments(configuration: profile.text)?.arguments == rawArguments.trimmingCharacters(in: .whitespaces), "invalid draft does not overwrite last valid rule")
+            case "replace-same":
+                profile.text = profile.text
+            case "read-replaced":
+                check(profile.childArgumentsDraft == nil, "explicit reset supersedes draft even if active config is identical")
+                check(ChildLaunchArguments(configuration: profile.text)?.program == "Game Name.exe", "replacing config keeps its active rule")
             case "write-no-program":
                 rejects { _ = try profile.saveChildArguments(program: "", arguments: "--pending") }
             case "read-no-program":
@@ -251,7 +256,7 @@ with tempfile.TemporaryDirectory(prefix='ideck-child-args-') as directory:
                     str(app / 'LibraryPrefs.swift'), str(app / 'LibraryBCD.swift'),
                     '-o', str(executable)], check=True)
     subprocess.run([str(executable), str(folder)], check=True)
-    for mode in ('write-valid', 'read-valid', 'write-draft', 'read-draft', 'write-no-program',
+    for mode in ('write-valid', 'read-valid', 'write-draft', 'read-draft', 'replace-same', 'read-replaced', 'write-no-program',
                  'read-no-program', 'clear', 'read-clear', 'advanced-edit', 'read-advanced'):
         # Each invocation is a fresh process, with the same on-disk game profile.
         subprocess.run([str(executable), str(folder), mode], check=True)
