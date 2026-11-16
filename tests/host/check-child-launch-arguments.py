@@ -83,7 +83,7 @@ func rejects(_ operation: () throws -> Void) {
         check(ChildLaunchArguments(configuration: cleared) == nil && cleared.contains("pool = 768"), "clear only removes this rule")
         let empty = try ChildLaunchArguments.replacing(in: "", program: "", arguments: "")
         check(empty == "", "empty stays empty")
-        check(ChildLaunchArguments.executableName("C:\Games\abc.exe") == "abc.exe", "Windows name")
+        check(ChildLaunchArguments.executableName(#"C:\Games\abc.exe"#) == "abc.exe", "Windows name")
         check(ChildLaunchArguments.executableName("bin/abc.exe") == "abc.exe", "Steam relative name")
         rejects { _ = try ChildLaunchArguments.replacing(in: "", program: "abc.exe", arguments: "-x\nenv.OTHER = 1") }
         rejects { _ = try ChildLaunchArguments.replacing(in: "", program: "abc.exe", arguments: "-name \"unclosed") }
@@ -92,16 +92,16 @@ func rejects(_ operation: () throws -> Void) {
         rejects { _ = try ChildLaunchArguments.replacing(in: "", program: "abc.exe", arguments: Array(repeating: "-x", count: 65).joined(separator: " ")) }
         rejects { _ = try ChildLaunchArguments.replacing(in: "", program: "abc.exe", arguments: "-name 中文") }
 
-        let game = LibraryEntry(windowsPath: "C:\Games\abc.exe")
-        let other = LibraryEntry(windowsPath: "C:\Games\other.exe")
+        let game = LibraryEntry(windowsPath: #"C:\Games\abc.exe"#)
+        let other = LibraryEntry(windowsPath: #"C:\Games\other.exe"#)
         GameProfile(windowsPath: game.windowsPath).text = updated
         check(GameProfile(windowsPath: game.windowsPath).text == updated, "real profile round trip")
         check(GameProfile(windowsPath: other.windowsPath).text.isEmpty, "separate games")
-        setenv("MADEIRA_EXE", "C:\Games\ABC.EXE", 1)
+        setenv("MADEIRA_EXE", #"C:\Games\ABC.EXE"#, 1)
         setenv("MADEIRA_ARGS", "-existing", 1)
         try BCDLaunch.appendInitialArguments(game)
         check(env("MADEIRA_ARGS") == "-existing " + rule.arguments, "initial game gets appended arguments")
-        for executable in ["explorer.exe", "C:\windows\system32\cmd.exe", "steam.exe", "other.exe"] {
+        for executable in ["explorer.exe", #"C:\windows\system32\cmd.exe"#, "steam.exe", "other.exe"] {
             setenv("MADEIRA_EXE", executable, 1)
             setenv("MADEIRA_ARGS", "-existing", 1)
             try BCDLaunch.appendInitialArguments(game)
