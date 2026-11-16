@@ -34,12 +34,26 @@ SOURCES = {
 DLLS = ('opengl32-mesa.dll', 'madeira-mesa-gl.dll')
 PROBE = 'opengl-probe-x64.exe'
 MANIFEST = 'mesa-d3d12.json'
-PATCHES = ((
-    '0001-allow-private-submission-fences.patch',
-    'src/gallium/drivers/d3d12/d3d12_screen.cpp',
-    '38a80a573863b0ec914d371243249168850bfeb46064cb3f5c89e19f6669bcb6',
-    '968e40892d721ebb5391b4ee8eed097ffed3b67fb40d8b8cdaa40f9947407270',
-),)
+PATCHES = (
+    (
+        '0001-allow-private-submission-fences.patch',
+        'src/gallium/drivers/d3d12/d3d12_screen.cpp',
+        '38a80a573863b0ec914d371243249168850bfeb46064cb3f5c89e19f6669bcb6',
+        '5adf786a31dd8080311e4b95c297f821772283024c8d21c8afa17da035e30926',
+    ),
+    (
+        '0002-accept-identical-window-pixel-format.patch',
+        'src/gallium/frontends/wgl/stw_framebuffer.c',
+        '14473de16fba8f0ef2f1f5d0a20899d870850605f3c7738d5467cceccbc84165',
+        '65fc465bcca16c44027c0a2f05e5bef9919d9bc807b0bf491a93447370e3c608',
+    ),
+    (
+        '0003-log-wgl-context-initialization.patch',
+        'src/gallium/frontends/wgl/stw_context.c',
+        '40130452ac8b0b908b4921d18b3e6ba2cf29acc595994bd0b24d1853f5b67312',
+        'f83b63d0b287720449c2ff1a0efad3b2286b7b3450c68800bb55b345c073f98c',
+    ),
+)
 
 
 def sha(path):

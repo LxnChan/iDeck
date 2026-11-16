@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md.
-"""Exercise source integrity and submission-fence fallback without a GPU."""
+"""Exercise source integrity, fence fallback and WGL initialization without a GPU."""
 import hashlib
 import importlib.util
 import io
@@ -19,6 +19,24 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('mesa_build', ROOT / 'build/mesa-d3d12/build.py')
 mesa = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mesa)
+
+
+def run_harness(test, name, code):
+    compiler = os.environ.get('CXX') or shutil.which('c++') or shutil.which('clang++')
+    if not compiler:
+        test.skipTest('C++ compiler unavailable')
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / (name + '.cpp')
+        exe = root / (name + '.exe' if os.name == 'nt' else name)
+        source.write_text(code, encoding='utf-8')
+        command = [compiler, '-std=c++11', str(source), '-o', str(exe)]
+        if os.name == 'nt':
+            command.append('-static')
+        result = subprocess.run(command, capture_output=True, text=True)
+        test.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        test.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class MesaSourceChecks(unittest.TestCase):
@@ -93,9 +111,6 @@ class MesaSourceChecks(unittest.TestCase):
 
 class MesaFenceChecks(unittest.TestCase):
     def test_actual_submission_fence_helper(self):
-        compiler = os.environ.get('CXX') or shutil.which('c++') or shutil.which('clang++')
-        if not compiler:
-            self.skipTest('C++ compiler unavailable')
         patch = (mesa.HERE / 'patches' / mesa.PATCHES[0][0]).read_text(encoding='utf-8')
         additions = '\n'.join(line[1:] for line in patch.splitlines()
                               if line.startswith('+') and not line.startswith('+++'))
@@ -106,6 +121,7 @@ class MesaFenceChecks(unittest.TestCase):
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+#define _debug_printf(...) fprintf(stderr, __VA_ARGS__)
 using HRESULT = int32_t;
 constexpr HRESULT S_OK = 0;
 constexpr HRESULT E_NOTIMPL = static_cast<HRESULT>(0x80004001u);
@@ -151,16 +167,103 @@ int main() {
    check(DXGI_ERROR_UNSUPPORTED, E_FAIL, false, true);
 }
 '''
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source = root / 'fence.cpp'
-            exe = root / ('fence.exe' if os.name == 'nt' else 'fence')
-            source.write_text(harness + helper.group() + cases, encoding='utf-8')
-            command = [compiler, '-std=c++11', str(source), '-o', str(exe)]
-            if os.name == 'nt':
-                command.append('-static')
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+        run_harness(self, 'fence', harness + helper.group() + cases)
+
+
+class MesaPixelFormatChecks(unittest.TestCase):
+    def test_actual_pixel_format_setter(self):
+        patch = (mesa.HERE / 'patches/0002-accept-identical-window-pixel-format.patch').read_text(encoding='utf-8')
+        patched = '\n'.join(line[1:] for line in patch.splitlines()
+                            if line.startswith((' ', '+')) and not line.startswith('+++'))
+        setter = re.search(r'BOOL APIENTRY\nDrvSetPixelFormat\b.*?\n}', patched, re.S)
+        self.assertIsNotNone(setter, 'patch must include the complete setter for regression testing')
+        harness = r'''
+#include <cassert>
+#include <cstdio>
+#include <cstddef>
+using BOOL = bool;
+using HDC = int;
+using LONG = long;
+using uint = unsigned int;
+#define APIENTRY
+#define _debug_printf(...) fprintf(stderr, __VA_ARGS__)
+#define debug_printf(...) fprintf(stderr, __VA_ARGS__)
+enum Owner { STW_FRAMEBUFFER_WGL_WINDOW, STW_FRAMEBUFFER_PBUFFER, STW_FRAMEBUFFER_EGL_WINDOW };
+struct stw_pixelformat_info { int iPixelFormat; };
+struct stw_framebuffer { Owner owner; const stw_pixelformat_info *pfi; };
+struct Device { int fscreen; } device{7}, *stw_dev = &device;
+static stw_pixelformat_info formats[] = {{1}, {2}, {3}};
+static stw_framebuffer storage, *existing;
+static int locks, creates, gdi_format;
+static bool allocation_fails;
+static uint stw_pixelformat_get_count(HDC) { return 3; }
+static stw_framebuffer *stw_framebuffer_from_hdc_locked(HDC hdc) {
+    assert(hdc == 42 && locks == 0);
+    if (existing) ++locks;
+    return existing;
+}
+static void stw_framebuffer_unlock(stw_framebuffer *fb) {
+    assert(fb == existing && locks == 1);
+    --locks;
+}
+static const stw_pixelformat_info *stw_pixelformat_get_info(int format) {
+    assert(format >= 1 && format <= 3);
+    return &formats[format - 1];
+}
+static int WindowFromDC(HDC hdc) { assert(hdc == 42); return 24; }
+static stw_framebuffer *stw_framebuffer_create(int window, const stw_pixelformat_info *pfi,
+                                             Owner owner, int screen) {
+    assert(window == 24 && screen == 7 && locks == 0 && !existing);
+    ++creates;
+    if (allocation_fails) return nullptr;
+    storage = {owner, pfi};
+    existing = &storage;
+    ++locks;
+    return existing;
+}
+static int GetPixelFormat(HDC) { return gdi_format; }
+static BOOL SetPixelFormat(HDC, LONG format, const void *) { gdi_format = format; return true; }
+'''
+        cases = r'''
+static void check_existing(Owner owner, int current, LONG requested, bool expected) {
+    storage = {owner, &formats[current - 1]};
+    existing = &storage;
+    creates = locks = 0;
+    gdi_format = current;
+    assert(DrvSetPixelFormat(42, requested) == expected);
+    assert(creates == 0 && locks == 0 && gdi_format == current);
+    assert(existing->owner == owner && existing->pfi->iPixelFormat == current);
+}
+int main() {
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, 2, true);
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, 2, true);
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, 1, false);
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, 3, false);
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, 0, false);
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, -1, false);
+    check_existing(STW_FRAMEBUFFER_WGL_WINDOW, 2, 4, false);
+    check_existing(STW_FRAMEBUFFER_PBUFFER, 2, 2, true);
+    check_existing(STW_FRAMEBUFFER_PBUFFER, 2, 1, true);
+    check_existing(STW_FRAMEBUFFER_EGL_WINDOW, 2, 2, false);
+    check_existing(STW_FRAMEBUFFER_EGL_WINDOW, 2, 1, false);
+    stw_dev = nullptr;
+    assert(!DrvSetPixelFormat(42, 2));
+    stw_dev = &device;
+    existing = nullptr;
+    creates = locks = gdi_format = 0;
+    assert(DrvSetPixelFormat(42, 2));
+    assert(creates == 1 && locks == 0 && gdi_format == 2);
+    assert(existing->owner == STW_FRAMEBUFFER_WGL_WINDOW && existing->pfi == &formats[1]);
+    assert(DrvSetPixelFormat(42, 2));
+    assert(!DrvSetPixelFormat(42, 3));
+    assert(creates == 1 && locks == 0 && existing->pfi == &formats[1]);
+    existing = nullptr;
+    allocation_fails = true;
+    assert(!DrvSetPixelFormat(42, 1));
+    assert(creates == 2 && locks == 0 && !existing);
+}
+'''
+        run_harness(self, 'pixel_format', harness + setter.group() + cases)
 
 
 if __name__ == '__main__':

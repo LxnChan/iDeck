@@ -1,7 +1,8 @@
 SPDX-License-Identifier: MIT
-Keep Mesa's shared submission fence where supported, with a private timeline
-fallback for backends that explicitly reject shared fences. Retain Mesa's
-existing source notices and license.
+Keep shared submission fences where supported, falling back to a private
+timeline only for explicitly unsupported sharing. Send initialization
+diagnostics to the Windows debugger as well as Mesa's normal log sink.
+Retain Mesa's existing source notices and license.
 
 --- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
 +++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
@@ -20,14 +21,14 @@ existing source notices and license.
 +   if (SUCCEEDED(hr))
 +      return true;
 +   if (hr != E_NOTIMPL && hr != DXGI_ERROR_UNSUPPORTED) {
-+      fprintf(stderr, "[opengl-d3d12] shared submission fence failed: 0x%08lx\n", (unsigned long)hr);
++      _debug_printf("[opengl-d3d12] shared submission fence failed: 0x%08lx\n", (unsigned long)hr);
 +      return false;
 +   }
-+   fprintf(stderr, "[opengl-d3d12] shared submission fence unsupported (0x%08lx); trying a private fence\n", (unsigned long)hr);
++   _debug_printf("[opengl-d3d12] shared submission fence unsupported (0x%08lx); trying a private fence\n", (unsigned long)hr);
 +   hr = screen->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE,
 +                                 IID_PPV_ARGS(&screen->fence));
 +   if (FAILED(hr))
-+      fprintf(stderr, "[opengl-d3d12] private submission fence failed: 0x%08lx\n", (unsigned long)hr);
++      _debug_printf("[opengl-d3d12] private submission fence failed: 0x%08lx\n", (unsigned long)hr);
 +   return SUCCEEDED(hr);
 +}
 +
@@ -39,7 +40,7 @@ existing source notices and license.
  
        if (!screen->dev) {
 -         debug_printf("D3D12: failed to create device\n");
-+         fprintf(stderr, "[opengl-d3d12] failed to create device\n");
++         _debug_printf("[opengl-d3d12] failed to create device\n");
           return false;
        }
     }
@@ -48,35 +49,35 @@ existing source notices and license.
                                                 &screen->opts,
                                                 sizeof(screen->opts)))) {
 -      debug_printf("D3D12: failed to get device options\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device options\n");
++      _debug_printf("[opengl-d3d12] failed to get device options\n");
        return false;
     }
     if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1,
                                                 &screen->opts1,
                                                 sizeof(screen->opts1)))) {
 -      debug_printf("D3D12: failed to get device options\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device options\n");
++      _debug_printf("[opengl-d3d12] failed to get device options\n");
        return false;
     }
     if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2,
                                                 &screen->opts2,
                                                 sizeof(screen->opts2)))) {
 -      debug_printf("D3D12: failed to get device options\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device options\n");
++      _debug_printf("[opengl-d3d12] failed to get device options\n");
        return false;
     }
     if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3,
                                                 &screen->opts3,
                                                 sizeof(screen->opts3)))) {
 -      debug_printf("D3D12: failed to get device options\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device options\n");
++      _debug_printf("[opengl-d3d12] failed to get device options\n");
        return false;
     }
     if (FAILED(screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4,
                                                 &screen->opts4,
                                                 sizeof(screen->opts4)))) {
 -      debug_printf("D3D12: failed to get device options\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device options\n");
++      _debug_printf("[opengl-d3d12] failed to get device options\n");
        return false;
     }
     screen->dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &screen->opts12, sizeof(screen->opts12));
@@ -85,7 +86,7 @@ existing source notices and license.
                                                 &screen->architecture,
                                                 sizeof(screen->architecture)))) {
 -      debug_printf("D3D12: failed to get device architecture\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device architecture\n");
++      _debug_printf("[opengl-d3d12] failed to get device architecture\n");
        return false;
     }
  
@@ -94,7 +95,7 @@ existing source notices and license.
                                                 &feature_levels,
                                                 sizeof(feature_levels)))) {
 -      debug_printf("D3D12: failed to get device feature levels\n");
-+      fprintf(stderr, "[opengl-d3d12] failed to get device feature levels\n");
++      _debug_printf("[opengl-d3d12] failed to get device feature levels\n");
        return false;
     }
  
@@ -111,7 +112,7 @@ existing source notices and license.
 +      return false;
 +
 +   if (!d3d12_init_residency(screen)) {
-+      fprintf(stderr, "[opengl-d3d12] residency fence initialization failed\n");
++      _debug_printf("[opengl-d3d12] residency fence initialization failed\n");
 +      return false;
 +   }
  
@@ -121,7 +122,7 @@ existing source notices and license.
     _mesa_sha1_final(&sha1_ctx, sha1);
     memcpy(screen->device_uuid, sha1, PIPE_UUID_SIZE);
  
-+   fprintf(stderr, "[opengl-d3d12] D3D12 screen initialized (feature level=0x%x, shader model=0x%x)\n",
++   _debug_printf("[opengl-d3d12] D3D12 screen initialized (feature level=0x%x, shader model=0x%x)\n",
 +           (unsigned)screen->max_feature_level, (unsigned)screen->max_shader_model);
     return true;
  }

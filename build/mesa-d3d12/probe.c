@@ -98,8 +98,9 @@ int main(void)
     pfd.nVersion = 1;
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
     pfd.iPixelType = PFD_TYPE_RGBA;
-    pfd.cColorBits = 32;
-    pfd.cAlphaBits = 8;
+    /* Match Godot's normal, non-layered window configuration. */
+    pfd.cColorBits = 24;
+    pfd.cDepthBits = 24;
     /* Wine's GDI32 forwards these calls to the replacement's wgl* exports.
      * Use that same path on a Windows host, whose system GDI uses ICDs. */
     HMODULE gl = GetModuleHandleW(L"opengl32.dll");
@@ -110,10 +111,23 @@ int main(void)
         (void *)GetProcAddress(gl, "wglChoosePixelFormat");
     BOOL (WINAPI *set_format)(HDC, int, const PIXELFORMATDESCRIPTOR *) =
         (void *)GetProcAddress(gl, "wglSetPixelFormat");
-    if (!choose_format || !set_format) fail("Mesa WGL exports");
+    int (WINAPI *get_format)(HDC) = (void *)GetProcAddress(gl, "wglGetPixelFormat");
+    int (WINAPI *describe_format)(HDC, int, UINT, PIXELFORMATDESCRIPTOR *) =
+        (void *)GetProcAddress(gl, "wglDescribePixelFormat");
+    if (!choose_format || !set_format || !get_format || !describe_format)
+        fail("Mesa WGL exports");
     int format = choose_format(dc, &pfd);
     if (!format) fail("choose pixel format");
     if (!set_format(dc, format, &pfd)) fail("set pixel format");
+    /* Godot sets the window format, then repeats it during context creation. */
+    if (!set_format(dc, format, &pfd)) fail("repeat identical pixel format");
+    PIXELFORMATDESCRIPTOR other = {0};
+    int alternative = format == 1 ? 2 : 1;
+    if (describe_format(dc, alternative, sizeof(other), &other) < alternative)
+        fail("describe alternative pixel format");
+    if (set_format(dc, alternative, &other)) fail("different pixel format accepted");
+    if (get_format(dc) != format) fail("window pixel format changed");
+    puts("[opengl-probe] PASS: repeated pixel format accepted; format change rejected");
     HGLRC bootstrap = wglCreateContext(dc);
     if (!bootstrap || !wglMakeCurrent(dc, bootstrap)) fail("bootstrap context");
     HGLRC (WINAPI *create_context)(HDC, HGLRC, const int *) =
@@ -180,6 +194,6 @@ int main(void)
     glDeleteShader(vert); glDeleteShader(frag);
     wglMakeCurrent(NULL, NULL); wglDeleteContext(context);
     ReleaseDC(hwnd, dc); DestroyWindow(hwnd); UnregisterClassA(cls.lpszClassName, cls.hInstance);
-    puts("[opengl-probe] PASS: OpenGL 3.3, GLSL, FBO, readback and SwapBuffers");
+    puts("[opengl-probe] PASS: pixel format, OpenGL 3.3, GLSL, FBO, readback and SwapBuffers");
     return 0;
 }

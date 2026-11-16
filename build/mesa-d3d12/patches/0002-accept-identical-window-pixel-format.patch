@@ -1,0 +1,99 @@
+SPDX-License-Identifier: MIT
+Accept repeated selection of an existing WGL window's identical pixel
+format, without allowing format changes or reassigning EGL windows.
+Preserve the existing pbuffer exception.
+Retain Mesa's existing source notices and license.
+
+--- a/src/gallium/frontends/wgl/stw_framebuffer.c
++++ b/src/gallium/frontends/wgl/stw_framebuffer.c
+@@ -508,78 +508,84 @@
+ struct stw_framebuffer *
+ stw_framebuffer_from_hwnd(HWND hwnd)
+ {
+    struct stw_framebuffer *fb;
+ 
+    stw_lock_framebuffers(stw_dev);
+    fb = stw_framebuffer_from_hwnd_locked(hwnd);
+    stw_unlock_framebuffers(stw_dev);
+ 
+    return fb;
+ }
+ 
+ 
+ BOOL APIENTRY
+ DrvSetPixelFormat(HDC hdc, LONG iPixelFormat)
+ {
+    uint count;
+    uint index;
+    struct stw_framebuffer *fb;
+ 
+    if (!stw_dev)
+       return false;
+ 
+    index = (uint) iPixelFormat - 1;
+    count = stw_pixelformat_get_count(hdc);
+    if (index >= count)
+       return false;
+ 
+    fb = stw_framebuffer_from_hdc_locked(hdc);
+    if (fb) {
+-      /*
+-       * SetPixelFormat must be called only once.  However ignore
+-       * pbuffers, for which the framebuffer object is created first.
+-       */
+-      bool bPbuffer = fb->owner == STW_FRAMEBUFFER_PBUFFER;
++      /* A window's format cannot change, but Godot configures the same
++       * format again before creating its first context. Keep this idempotent.
++       * Pbuffers already own a framebuffer before SetPixelFormat is called. */
++      bool compatible = fb->owner == STW_FRAMEBUFFER_PBUFFER ||
++         (fb->owner == STW_FRAMEBUFFER_WGL_WINDOW &&
++          fb->pfi->iPixelFormat == iPixelFormat);
++      _debug_printf("[opengl-d3d12] existing pixel format: current=%d requested=%ld owner=%u accepted=%u\n",
++                    fb->pfi->iPixelFormat, iPixelFormat, (unsigned)fb->owner,
++                    (unsigned)compatible);
+ 
+       stw_framebuffer_unlock( fb );
+ 
+-      return bPbuffer;
++      return compatible;
+    }
+ 
+    const struct stw_pixelformat_info *pfi = stw_pixelformat_get_info(iPixelFormat);
+ 
+    fb = stw_framebuffer_create(WindowFromDC(hdc), pfi, STW_FRAMEBUFFER_WGL_WINDOW, stw_dev->fscreen);
+    if (!fb) {
++      _debug_printf("[opengl-d3d12] window framebuffer creation failed: format=%ld\n", iPixelFormat);
+       return false;
+    }
+ 
++   _debug_printf("[opengl-d3d12] window pixel format selected: %ld\n", iPixelFormat);
+    stw_framebuffer_unlock( fb );
+ 
+    /* Some applications mistakenly use the undocumented wglSetPixelFormat
+     * function instead of SetPixelFormat, so we call SetPixelFormat here to
+     * avoid opengl32.dll's wglCreateContext to fail */
+    if (GetPixelFormat(hdc) == 0) {
+       BOOL bRet = SetPixelFormat(hdc, iPixelFormat, NULL);
+       if (!bRet) {
+ 	  debug_printf("SetPixelFormat failed\n");
+       }
+    }
+ 
+    return true;
+ }
+ 
+ 
+ int
+ stw_pixelformat_get(HDC hdc)
+ {
+    int iPixelFormat = 0;
+    struct stw_framebuffer *fb;
+ 
+    fb = stw_framebuffer_from_hdc(hdc);
+    if (fb) {
+       iPixelFormat = fb->pfi->iPixelFormat;
+       stw_framebuffer_unlock(fb);
+    }
+ 
+    return iPixelFormat;
+ }

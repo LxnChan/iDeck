@@ -5,12 +5,19 @@ Gallium driver. Windows OpenGL calls execute in the x64 guest; D3D12 calls reach
 Madeira's existing Metal renderer. It does not provide Vulkan, 32-bit OpenGL,
 or a guarantee that any particular game works.
 
-The MIT-licensed patch in `patches/` keeps shared submission fences on capable
+The MIT-licensed patches in `patches/` keep shared submission fences on capable
 backends, and retries with a private fence only when shared creation returns
 `E_NOTIMPL` or `DXGI_ERROR_UNSUPPORTED`. Allocation and device failures still
 fail initialization. This preserves the queue's local synchronization without
 claiming cross-process sharing support. Initialization failures and successful
-screen creation are logged even in release builds.
+screen creation are logged even in release builds through Mesa's Windows debugger
+log sink, so GUI applications without a console also emit them.
+
+WGL accepts repeated selection of a window's existing pixel format. Godot sets
+that format once for the window and again before its first context; upstream
+Mesa 25.0.7 rejects the second call. The patch accepts the identical format,
+continues rejecting changes to another format and retains the pbuffer exception.
+Pixel format decisions and context initialization are logged for device diagnosis.
 
 ## Build and distribution
 
@@ -65,7 +72,8 @@ before applying this option, so disabling it and restarting restores the
 previous path. No game files or registry settings are changed.
 
 For a smaller device test, add `C:\windows\sysx64\opengl-probe-x64.exe` to the
-library and enable the same switch for it. The canary tests a 3.3 core context,
+library and enable the same switch for it. The canary tests repeated identical
+pixel format selection, rejection of a different valid format, a 3.3 core context,
 GLSL 330 compilation/linking, framebuffer clear and triangle draw readbacks,
 window readback, and SwapBuffers. `[opengl-probe] PASS` is the success marker;
 it rejects a software OpenGL renderer and reports the D3D12 adapter name.
@@ -74,6 +82,12 @@ Build 247 reached Mesa and created the Metal-backed D3D12 device on an iPad,
 then failed at Mesa's shared submission fence: Madeira currently returns
 `E_NOTIMPL` for shared fences. The private-fence fallback addresses this specific
 initialization blocker. It does not establish successful device rendering.
+
+Build 248 passed the fence stage but still failed to create Godot's OpenGL
+window. A host reproduction of Godot's repeated pixel format setup failed
+with that build's Mesa behavior and passes with the identical-format patch,
+including subsequent GLSL rendering, readbacks and presentation. The device
+failure did not include the WGL call result; the added diagnostics expose it.
 
 Validation boundary: the Windows-host canary passed using Mesa's D3D12 renderer
 on an NVIDIA GeForce RTX 4060 Laptop GPU. This validates Mesa/WGL/D3D12, not
