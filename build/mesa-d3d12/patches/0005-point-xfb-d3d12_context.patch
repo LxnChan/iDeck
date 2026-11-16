@@ -1,0 +1,19 @@
+--- a/src/gallium/drivers/d3d12/d3d12_context.h
++++ b/src/gallium/drivers/d3d12/d3d12_context.h
+@@ -140,6 +140,7 @@
+    struct pipe_stream_output_target base;
+    struct pipe_resource *fill_buffer;
+    unsigned fill_buffer_offset;
++   unsigned madeira_filled_size;
+ };
+ 
+ struct d3d12_shader_state {
+@@ -248,6 +249,8 @@
+    struct pipe_stream_output_target *fake_so_targets[PIPE_MAX_SO_BUFFERS];
+    D3D12_STREAM_OUTPUT_BUFFER_VIEW fake_so_buffer_views[PIPE_MAX_SO_BUFFERS];
+    unsigned fake_so_buffer_factor;
++   bool madeira_point_xfb;
++   unsigned madeira_xfb_limit;
+    uint8_t patch_vertices;
+    float default_outer_tess_factor[4];
+    float default_inner_tess_factor[2];

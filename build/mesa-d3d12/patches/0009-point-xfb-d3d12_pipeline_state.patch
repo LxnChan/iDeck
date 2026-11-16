@@ -1,0 +1,11 @@
+--- a/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp
+@@ -313,7 +313,7 @@
+       pso_desc.PS = D3D12_SHADER_BYTECODE{ shader->bytecode, shader->bytecode_length };
+    }
+ 
+-   if (state->num_so_targets)
++   if (state->num_so_targets && !state->stages[PIPE_SHADER_VERTEX]->key.madeira_point_xfb)
+       fill_so_declaration(&state->so_info, last_vertex_stage_nir, entries, &num_entries, strides, &num_strides);
+ 
+    D3D12_STREAM_OUTPUT_DESC& stream_output_desc = (D3D12_STREAM_OUTPUT_DESC&)pso_desc.StreamOutput;

@@ -1213,6 +1213,10 @@ static void madeira_link_mesa_opengl(NSFileManager *fm, NSString *prefix,
         [NSString stringWithFormat:@"%s;opengl32=n,b", old] : @"opengl32=n,b";
     setenv("WINEDLLOVERRIDES", overrides.UTF8String, 1);
     setenv("GALLIUM_DRIVER", "d3d12", 1);
+    /* Godot's skeleton/blend passes need stream output, which Madeira's
+     * D3D12 runtime does not implement. Mesa keeps point feedback on the GPU
+     * by writing final vertex values through UAVs for this session. */
+    setenv("MADEIRA_MESA_POINT_XFB", "1", 1);
     setenv("WGL_DISABLE_ERROR_DIALOGS", "1", 0);
     dprintf(STDERR_FILENO, "[opengl-d3d12] experimental Mesa 25.0.7 WGL -> D3D12 enabled (x64 only)\n");
 }

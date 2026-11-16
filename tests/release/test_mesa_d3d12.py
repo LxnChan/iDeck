@@ -40,6 +40,23 @@ def run_harness(test, name, code):
 
 
 class MesaSourceChecks(unittest.TestCase):
+    @unittest.skipUnless((mesa.HERE / 'dist/sources/mesa-25.0.7.tar.xz').is_file(),
+                         'pinned Mesa source archive unavailable')
+    def test_all_patches_apply_to_pristine_upstream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            with tarfile.open(mesa.HERE / 'dist/sources/mesa-25.0.7.tar.xz') as archive:
+                for _, relative, before, _ in mesa.PATCHES:
+                    data = archive.extractfile('mesa-25.0.7/' + relative).read()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), before, relative)
+                    target = source / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+            mesa.apply_patches(source)
+            mesa.apply_patches(source)
+            for _, relative, _, after in mesa.PATCHES:
+                self.assertEqual(mesa.sha(source / relative), after, relative)
+
     def test_source_extraction_rejects_parent_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

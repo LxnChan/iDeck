@@ -1,0 +1,104 @@
+--- a/src/gallium/drivers/d3d12/d3d12_compiler.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_compiler.cpp
+@@ -82,6 +82,77 @@
+    return glsl_type_is_sampler(base_type) && !glsl_type_is_bare_sampler(base_type);
+ }
+ 
++/* Madeira has no native stream output. For direct, non-indexed point
++ * feedback with rasterization discarded (Godot skeleton/blend passes), write
++ * final output values to UAVs in vertex order. Keep the shader on the GPU,
++ * including texture fetches and integer/normalized vertex input conversion.
++ * This is deliberately not a replacement for general primitive stream output.
++ */
++static void
++madeira_lower_point_xfb(nir_shader *nir, const pipe_stream_output_info *so)
++{
++   unsigned base = nir->info.num_ssbos;
++   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
++   nir_builder b = nir_builder_create(impl);
++   b.cursor = nir_after_impl(impl);
++   nir_variable *offset_var = nullptr, *draw_var = nullptr;
++   nir_def *offsets = d3d12_get_state_var(&b, D3D12_STATE_VAR_MADEIRA_XFB_OFFSETS,
++      "madeira_xfb_offsets", glsl_uvec4_type(), &offset_var);
++   nir_def *draw = d3d12_get_state_var(&b, D3D12_STATE_VAR_MADEIRA_XFB_DRAW,
++      "madeira_xfb_draw", glsl_uvec4_type(), &draw_var);
++   // DXIL's NIR backend supplies a draw-local vertex ordinal here, including
++   // when DrawArrays starts at a nonzero input vertex.
++   nir_def *vertex = nir_load_vertex_id_zero_base(&b);
++   nir_push_if(&b, nir_ult(&b, vertex, nir_channel(&b, draw, 1)));
++   for (unsigned i = 0; i < so->num_outputs; ++i) {
++      const pipe_stream_output &out = so->output[i];
++      nir_variable *var = nullptr;
++      nir_foreach_variable_with_modes(v, nir, nir_var_shader_out) {
++         if (v->data.location == out.register_index &&
++             out.start_component >= v->data.location_frac &&
++             out.start_component + out.num_components <=
++                v->data.location_frac + glsl_get_vector_elements(v->type)) {
++            var = v;
++            break;
++         }
++      }
++      assert(var); // eligibility checked before selecting this variant
++      nir_def *value = nir_load_var(&b, var);
++      unsigned swizzle[4] = {};
++      for (unsigned c = 0; c < out.num_components; ++c)
++         swizzle[c] = out.start_component - var->data.location_frac + c;
++      value = nir_swizzle(&b, value, swizzle, out.num_components);
++      nir_def *offset = nir_iadd(&b, nir_channel(&b, offsets, out.output_buffer),
++         nir_iadd_imm(&b, nir_imul_imm(&b, vertex, so->stride[out.output_buffer] * 4),
++                      out.dst_offset * 4));
++      nir_store_ssbo(&b, value, nir_imm_int(&b, base + out.output_buffer), offset,
++         BITFIELD_MASK(out.num_components), (gl_access_qualifier)0, 4, 0);
++   }
++   nir_pop_if(&b, nullptr);
++
++   // The outputs are now shader temporaries, preserving read/modify/write and
++   // conditional assignments until the final capture above. A clipped position
++   // prevents the current Metal runtime from rejecting a void-returning VS and
++   // guarantees this data-only pass produces no fragments or depth writes.
++   nir_foreach_variable_with_modes(var, nir, nir_var_shader_out)
++      var->data.mode = nir_var_shader_temp;
++   nir_fixup_deref_modes(nir);
++   nir_variable *pos = nir_variable_create(nir, nir_var_shader_out, glsl_vec4_type(), "gl_Position");
++   pos->data.location = VARYING_SLOT_POS;
++   pos->data.driver_location = 0;
++   nir_store_var(&b, pos, nir_imm_vec4(&b, 2.0f, 2.0f, 0.0f, 1.0f), 0xf);
++   for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; ++i) {
++      nir_variable *var = nir_variable_create(nir, nir_var_mem_ssbo,
++         glsl_array_type(glsl_uint_type(), 0, 4), "madeira_xfb");
++      var->data.binding = var->data.driver_location = base + i;
++   }
++   nir->info.num_ssbos = base + PIPE_MAX_SO_BUFFERS;
++   NIR_PASS_V(nir, nir_lower_global_vars_to_local);
++   NIR_PASS_V(nir, nir_lower_vars_to_ssa);
++   nir_shader_gather_info(nir, impl);
++   nir_validate_shader(nir, "Madeira point transform feedback");
++}
++
+ static struct d3d12_shader *
+ compile_nir(struct d3d12_context *ctx, struct d3d12_shader_selector *sel,
+             struct d3d12_shader_key *key, struct nir_shader *nir)
+@@ -115,6 +186,9 @@
+ 
+    if (key->stage == PIPE_SHADER_VERTEX && key->vs.needs_format_emulation)
+       dxil_nir_lower_vs_vertex_conversion(nir, key->vs.format_conversion);
++
++   if (key->madeira_point_xfb)
++      madeira_lower_point_xfb(nir, &sel->so_info);
+ 
+    if (key->last_vertex_processing_stage) {
+       if (key->invert_depth)
+@@ -1055,6 +1129,13 @@
+          key->image_format_conversion[i].view_format = sel_ctx->ctx->image_views[stage][i].format;
+    }
+ 
++   key->madeira_point_xfb = stage == PIPE_SHADER_VERTEX && sel_ctx->ctx->madeira_point_xfb;
++   if (key->madeira_point_xfb) {
++      // Keep all feedback outputs through the output liveness pass. They need
++      // not be fragment inputs, and gl_Position may never be written at all.
++      for (unsigned i = 0; i < sel->so_info.num_outputs; ++i)
++         key->next_varying_inputs |= BITFIELD64_BIT(sel->so_info.output[i].register_index);
++   }
+    key->hash = d3d12_shader_key_hash(key);
+ }
+ 

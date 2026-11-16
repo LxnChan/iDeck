@@ -53,6 +53,43 @@ PATCHES = (
         '40130452ac8b0b908b4921d18b3e6ba2cf29acc595994bd0b24d1853f5b67312',
         'f83b63d0b287720449c2ff1a0efad3b2286b7b3450c68800bb55b345c073f98c',
     ),
+    # Point feedback patches (Mesa MIT license, original notices retained).
+    (
+        '0004-point-xfb-d3d12_compiler.patch',
+        'src/gallium/drivers/d3d12/d3d12_compiler.h',
+        '2287466997584154f49f849098abde0cf5607f8fbda200aff93d1ecbb2b9a5af',
+        'a3e72155f48ddfa8098917a7cdb1c45fc35f07aa1ee074ba8ec146a14fa46a5b',
+    ),
+    (
+        '0005-point-xfb-d3d12_context.patch',
+        'src/gallium/drivers/d3d12/d3d12_context.h',
+        'f17e92c2007b0705b69e71e1ba36db4991ed8a05083d02be6c67c92b5469504a',
+        'afd36976610b824c14921b7bbf3e6b1e08b7678c3b02efe70372ff9f2a53ff1a',
+    ),
+    (
+        '0006-point-xfb-d3d12_context_graphics.patch',
+        'src/gallium/drivers/d3d12/d3d12_context_graphics.cpp',
+        '6e763c8116c1cd240c7741410defba0b0250effb1e7f61ca1d2aaa3146cbc0ac',
+        '1c4ed6bbfd4594243d6adb9ee8231c881d3114a5416177cea6dc7587cf60e914',
+    ),
+    (
+        '0007-point-xfb-d3d12_compiler.patch',
+        'src/gallium/drivers/d3d12/d3d12_compiler.cpp',
+        '64fbb20e2048fb933882db171ba353dc4d46f7b29d4fcf3d97087f33bf88d590',
+        '96990764b826fe2c5f87505098582c46ecd8591bf45d22b2c7546bf5978bdca7',
+    ),
+    (
+        '0008-point-xfb-d3d12_draw.patch',
+        'src/gallium/drivers/d3d12/d3d12_draw.cpp',
+        '160644dda40619237a89bdf80221714c18ede9b0ed3156bcb30a4d8cdf9fe3a5',
+        '8dd0b7ca2130ddb460242baf34ea766338b6d130e8ae952ca00b73112a6fa126',
+    ),
+    (
+        '0009-point-xfb-d3d12_pipeline_state.patch',
+        'src/gallium/drivers/d3d12/d3d12_pipeline_state.cpp',
+        'b6085bbee257d59e48c3a68be8c2fea56341792cfeab9e2b09afb04e4dcbb7d6',
+        '5e6bee63ff735e82fd9bb2229d7383419d53b1a14b26f4ebd92ec65e379db515',
+    ),
 )
 
 

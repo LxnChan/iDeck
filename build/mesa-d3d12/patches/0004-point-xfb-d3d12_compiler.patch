@@ -1,0 +1,19 @@
+--- a/src/gallium/drivers/d3d12/d3d12_compiler.h
++++ b/src/gallium/drivers/d3d12/d3d12_compiler.h
+@@ -52,6 +52,8 @@
+    D3D12_STATE_VAR_DEFAULT_INNER_TESS_LEVEL,
+    D3D12_STATE_VAR_DEFAULT_OUTER_TESS_LEVEL,
+    D3D12_STATE_VAR_PATCH_VERTICES_IN,
++   D3D12_STATE_VAR_MADEIRA_XFB_OFFSETS,
++   D3D12_STATE_VAR_MADEIRA_XFB_DRAW,
+    D3D12_MAX_GRAPHICS_STATE_VARS,
+ 
+    D3D12_STATE_VAR_NUM_WORKGROUPS = 0,
+@@ -119,6 +121,7 @@
+          unsigned input_clip_size : 4;
+          unsigned next_has_frac_inputs : 1;
+          unsigned prev_has_frac_outputs : 1;
++         unsigned madeira_point_xfb : 1;
+       };
+       uint32_t common_all;
+    };

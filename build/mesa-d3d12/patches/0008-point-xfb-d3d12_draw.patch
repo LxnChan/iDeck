@@ -1,0 +1,156 @@
+--- a/src/gallium/drivers/d3d12/d3d12_draw.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_draw.cpp
+@@ -41,6 +41,70 @@
+ #include "util/u_prim_restart.h"
+ #include "util/u_math.h"
+ 
++DEBUG_GET_ONCE_BOOL_OPTION(madeira_point_xfb, "MADEIRA_MESA_POINT_XFB", false)
++
++static bool
++madeira_prepare_point_xfb(struct d3d12_context *ctx,
++                          const pipe_draw_info *info,
++                          const pipe_draw_indirect_info *indirect,
++                          const pipe_draw_start_count_bias *draw)
++{
++   ctx->madeira_point_xfb = false;
++   if (!debug_get_option_madeira_point_xfb() ||
++       !ctx->gfx_pipeline_state.num_so_targets ||
++       !ctx->gfx_pipeline_state.rast->base.rasterizer_discard)
++      return true;
++   auto vs = ctx->gfx_stages[PIPE_SHADER_VERTEX];
++   bool supported = vs && vs->so_info.num_outputs && !indirect &&
++      info->mode == MESA_PRIM_POINTS && !info->index_size &&
++      info->instance_count == 1 && !ctx->current_predication &&
++      !ctx->gfx_stages[PIPE_SHADER_TESS_CTRL] &&
++      !ctx->gfx_stages[PIPE_SHADER_TESS_EVAL] &&
++      (!ctx->gfx_stages[PIPE_SHADER_GEOMETRY] || ctx->gfx_stages[PIPE_SHADER_GEOMETRY]->is_variant) &&
++      vs->initial->info.num_ssbos + PIPE_MAX_SO_BUFFERS <= PIPE_MAX_SHADER_BUFFERS;
++   if (supported) {
++      for (unsigned i = 0; i < vs->so_info.num_outputs; ++i) {
++         const pipe_stream_output &out = vs->so_info.output[i];
++         bool found = false;
++         nir_foreach_variable_with_modes(var, vs->initial, nir_var_shader_out) {
++            if (var->data.location == out.register_index &&
++                (glsl_type_is_vector(var->type) || glsl_type_is_scalar(var->type)) &&
++                glsl_get_bit_size(var->type) == 32 && !out.stream &&
++                out.start_component >= var->data.location_frac &&
++                out.start_component + out.num_components <=
++                   var->data.location_frac + glsl_get_vector_elements(var->type))
++               found = true;
++         }
++         supported &= found;
++      }
++   }
++   if (!supported) {
++      static bool warned;
++      if (!warned) {
++         _debug_printf("[madeira-mesa] unsupported transform feedback shape; point UAV fallback not used\n");
++         warned = true;
++      }
++      return false;
++   }
++   ctx->madeira_xfb_limit = draw->count;
++   for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; ++i) {
++      unsigned stride = vs->so_info.stride[i] * 4;
++      if (!stride) continue;
++      auto target = (d3d12_stream_output_target *)ctx->so_targets[i];
++      unsigned remaining = target && target->madeira_filled_size <= target->base.buffer_size ?
++         target->base.buffer_size - target->madeira_filled_size : 0;
++      ctx->madeira_xfb_limit = MIN2(ctx->madeira_xfb_limit, remaining / stride);
++   }
++   ctx->madeira_point_xfb = true;
++   ctx->shader_dirty[PIPE_SHADER_VERTEX] |= D3D12_SHADER_DIRTY_SSBO;
++   static bool announced;
++   if (!announced) {
++      _debug_printf("[madeira-mesa] point transform feedback uses ordered vertex UAV writes\n");
++      announced = true;
++   }
++   return true;
++}
++
+ static const D3D12_RECT MAX_SCISSOR = { 0, 0, 16384, 16384 };
+ 
+ static const D3D12_RECT MAX_SCISSOR_ARRAY[] = {
+@@ -154,6 +218,17 @@
+    for (unsigned i = 0; i < shader->nir->info.num_ssbos; i++)
+    {
+       struct pipe_shader_buffer *view = &ctx->ssbo_views[stage][i];
++      pipe_shader_buffer feedback = {};
++      unsigned xfb_base = ctx->gfx_stages[PIPE_SHADER_VERTEX] ?
++         ctx->gfx_stages[PIPE_SHADER_VERTEX]->initial->info.num_ssbos : 0;
++      if (stage == PIPE_SHADER_VERTEX && shader->key.madeira_point_xfb && i >= xfb_base) {
++         auto target = ctx->so_targets[i - xfb_base];
++         if (target) {
++            feedback.buffer = target->buffer;
++            feedback.buffer_size = target->buffer->width0;
++         }
++         view = &feedback;
++      }
+ 
+       D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
+       uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+@@ -408,6 +483,19 @@
+          memcpy(ptr, ctx->default_outer_tess_factor, sizeof(ctx->default_outer_tess_factor));
+          size += 4;
+          break;
++      case D3D12_STATE_VAR_MADEIRA_XFB_OFFSETS:
++         for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; ++i) {
++            auto target = (d3d12_stream_output_target *)ctx->so_targets[i];
++            ptr[i] = target ? target->base.buffer_offset + target->madeira_filled_size : 0;
++         }
++         size += 4;
++         break;
++      case D3D12_STATE_VAR_MADEIRA_XFB_DRAW:
++         ptr[0] = 0;
++         ptr[1] = ctx->madeira_xfb_limit;
++         ptr[2] = ptr[3] = 0;
++         size += 4;
++         break;
+       case D3D12_STATE_VAR_PATCH_VERTICES_IN:
+          ptr[0] = ctx->patch_vertices;
+          size += 4;
+@@ -969,6 +1057,8 @@
+       ctx->state_dirty |= D3D12_DIRTY_PRIM_MODE;
+    }
+ 
++   if (!madeira_prepare_point_xfb(ctx, dinfo, indirect, &draws[0]))
++      return;
+    d3d12_select_shader_variants(ctx, dinfo);
+    d3d12_validate_queries(ctx);
+    for (unsigned i = 0; i < D3D12_GFX_SHADER_STAGES; ++i) {
+@@ -1178,7 +1268,7 @@
+                                                                               : ctx->so_targets;
+    D3D12_STREAM_OUTPUT_BUFFER_VIEW *so_buffer_views = ctx->fake_so_buffer_factor ? ctx->fake_so_buffer_views
+                                                                                  : ctx->so_buffer_views;
+-   for (unsigned i = 0; i < ctx->gfx_pipeline_state.num_so_targets; ++i) {
++   for (unsigned i = 0; !ctx->madeira_point_xfb && i < ctx->gfx_pipeline_state.num_so_targets; ++i) {
+       struct d3d12_stream_output_target *target = (struct d3d12_stream_output_target *)so_targets[i];
+ 
+       if (!target)
+@@ -1195,7 +1285,7 @@
+       d3d12_transition_resource_state(ctx, so_buffer, D3D12_RESOURCE_STATE_STREAM_OUT, D3D12_TRANSITION_FLAG_ACCUMULATE_STATE);
+       d3d12_transition_resource_state(ctx, fill_buffer, D3D12_RESOURCE_STATE_STREAM_OUT, D3D12_TRANSITION_FLAG_ACCUMULATE_STATE);
+    }
+-   if (ctx->cmdlist_dirty & D3D12_DIRTY_STREAM_OUTPUT)
++   if (!ctx->madeira_point_xfb && (ctx->cmdlist_dirty & D3D12_DIRTY_STREAM_OUTPUT))
+       ctx->cmdlist->SOSetTargets(0, 4, so_buffer_views);
+ 
+    for (int i = 0; i < ctx->fb.nr_cbufs; ++i) {
+@@ -1259,6 +1349,17 @@
+                                      draws[0].start, dinfo->start_instance);
+    }
+ 
++   if (ctx->madeira_point_xfb) {
++      for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; ++i) {
++         auto target = (d3d12_stream_output_target *)ctx->so_targets[i];
++         unsigned stride = ctx->gfx_stages[PIPE_SHADER_VERTEX]->so_info.stride[i] * 4;
++         if (!target || !stride) continue;
++         target->madeira_filled_size += ctx->madeira_xfb_limit * stride;
++         pipe_buffer_write(pctx, target->fill_buffer, target->fill_buffer_offset,
++                           sizeof(target->madeira_filled_size), &target->madeira_filled_size);
++      }
++   }
++
+    ctx->state_dirty &= D3D12_DIRTY_COMPUTE_MASK;
+    batch->pending_memory_barrier = false;
+ 
