@@ -3505,9 +3505,8 @@ struct LibraryDetail: View {
                 // A Steam game starts with Steam's own launch option through Madeira Dock.
                 if entry.desktop != true && entry.steamAppID == nil {
                     Section {
-                        TextField("Launch arguments", text: $entry.arguments, axis: .vertical)
-                            .font(.body.monospaced()).lineLimit(1...4)
-                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        LibraryLaunchArgumentsField(text: $entry.arguments, placeholder: "Launch arguments")
+                            .frame(minHeight: 34)
                         LaunchFlagChips(arguments: $entry.arguments)
                         // What the next start runs (ml1163: in the Wine desktop, a batch file or
                         // the services batch, what starts the program).
@@ -3683,6 +3682,51 @@ struct LibraryDetail: View {
     }
 }
 
+/// Command input must also disable UIKit's smart punctuation: autocorrection
+/// alone still lets an iPad replace -- with a dash or straight quotes with curly ones.
+private struct LibraryLaunchArgumentsField: UIViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.font = .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .body).pointSize, weight: .regular)
+        field.adjustsFontForContentSizeCategory = true
+        field.autocorrectionType = .no
+        field.spellCheckingType = .no
+        field.autocapitalizationType = .none
+        field.smartDashesType = .no
+        field.smartQuotesType = .no
+        field.smartInsertDeleteType = .no
+        field.keyboardType = .asciiCapable
+        field.returnKeyType = .done
+        field.clearButtonMode = .whileEditing
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.delegate = context.coordinator
+        field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        field.placeholder = placeholder
+        field.accessibilityLabel = placeholder
+        if field.text != text, field.markedTextRange == nil { field.text = text }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: LibraryLaunchArgumentsField
+        init(_ parent: LibraryLaunchArgumentsField) { self.parent = parent }
+        @objc func changed(_ field: UITextField) { parent.text = field.text ?? "" }
+        func textFieldShouldReturn(_ field: UITextField) -> Bool {
+            field.resignFirstResponder()
+            return true
+        }
+    }
+}
+
 /// An explicit editor for the per-game process rule, including Steam/Dock games.
 /// The advanced editor and this control share the same GameProfile lines.
 private struct LibraryChildArgumentsSection: View {
@@ -3691,30 +3735,36 @@ private struct LibraryChildArgumentsSection: View {
     @State private var program = ""
     @State private var arguments = ""
     @State private var programs: [String] = []
+    @State private var steamChoice: SteamDirectStart.Choice?
     @State private var savedConfiguration: String?
     @State private var error: String?
     @State private var resolving = false
 
     private func load() {
-        guard savedConfiguration != configuration else { return }
-        savedConfiguration = configuration
-        let rule = ChildLaunchArguments(configuration: configuration)
-        arguments = rule?.arguments ?? ""
-        if let rule { program = rule.program }
+        let profile = GameProfile(windowsPath: entry.windowsPath)
+        let current = profile.text
+        guard savedConfiguration != current else { return }
+        savedConfiguration = current
+        let rule = ChildLaunchArguments(configuration: current)
+        let draft = profile.childArgumentsDraft
+        arguments = draft?.arguments ?? rule?.arguments ?? ""
+        if let draft { program = draft.program }
+        else if let rule { program = rule.program }
         else if entry.steamAppID == nil {
             let name = ChildLaunchArguments.executableName(entry.relativePath)
             program = name.lowercased().hasSuffix(".exe") ? name : ""
-        }
+        } else { program = "" }
         error = nil
+        if draft != nil {
+            do { _ = try ChildLaunchArguments.replacing(in: current, program: program, arguments: arguments) }
+            catch { self.error = "Input saved as a draft. " + error.localizedDescription }
+        }
     }
 
     private func save() {
         do {
-            let updated = try ChildLaunchArguments.replacing(in: configuration, program: program, arguments: arguments)
             let profile = GameProfile(windowsPath: entry.windowsPath)
-            guard let url = profile.url else { throw ChildLaunchArguments.Invalid("Could not locate this game's settings.") }
-            // Report write failures instead of showing an unsaved rule as saved.
-            try updated.write(to: url, atomically: true, encoding: .utf8)
+            let updated = try profile.saveChildArguments(program: program, arguments: arguments)
             savedConfiguration = updated
             configuration = updated
             error = nil
@@ -3723,46 +3773,81 @@ private struct LibraryChildArgumentsSection: View {
 
     private func chooseProgram(_ name: String) {
         program = name
-        if !arguments.isEmpty { save() }
+        save()
+    }
+
+    private var programRoot: String {
+        entry.steamAppID == nil ? LibraryEntry.folder(of: entry.windowsPath) : entry.windowsPath
+    }
+
+    private func matches(_ path: String) -> Bool {
+        ChildLaunchArguments.executableName(path).caseInsensitiveCompare(program) == .orderedSame
+    }
+
+    private var commandPreview: String? {
+        guard !arguments.trimmingCharacters(in: .whitespaces).isEmpty,
+              let config = try? ChildLaunchArguments.replacing(in: "", program: program, arguments: arguments),
+              let rule = ChildLaunchArguments(configuration: config) else { return nil }
+        let executable: String
+        let existing: String
+        if entry.usesLaunchOptions, matches(entry.launchWindowsPath) {
+            executable = entry.launchWindowsPath
+            existing = entry.programArguments
+        } else {
+            let relative = steamChoice.flatMap { matches($0.program) ? $0.program : nil }
+                ?? programs.first(where: { matches($0) }) ?? program
+            executable = programRoot + (programRoot.hasSuffix("\\") ? "" : "\\") + relative.replacingOccurrences(of: "/", with: "\\")
+            existing = steamChoice.flatMap { matches($0.program) ? $0.arguments : nil } ?? ""
+        }
+        return try? rule.commandPreview(executable: executable, existingArguments: existing)
     }
 
     var body: some View {
         Section {
-            TextField("Arguments to append", text: Binding(get: { arguments }, set: { arguments = $0; save() }), axis: .vertical)
-                .font(.body.monospaced()).lineLimit(1...4)
-                .autocorrectionDisabled().textInputAutocapitalization(.never)
-            TextField("Target executable", text: Binding(get: { program }, set: { chooseProgram($0) }))
-                .font(.body.monospaced()).autocorrectionDisabled().textInputAutocapitalization(.never)
-            if !programs.isEmpty {
-                Menu("Choose game program") {
-                    ForEach(programs, id: \.self) { path in
-                        Button(path) { chooseProgram(ChildLaunchArguments.executableName(path)) }
-                    }
+            LibraryLaunchArgumentsField(text: Binding(get: { arguments }, set: { arguments = $0; save() }), placeholder: "Arguments to append")
+                .frame(minHeight: 34)
+            Menu {
+                ForEach(programs, id: \.self) { path in
+                    Button(path) { chooseProgram(ChildLaunchArguments.executableName(path)) }
                 }
+            } label: {
+                LabeledContent("Choose game program", value: program.isEmpty ? "Select…" : program)
             }
+            .disabled(programs.isEmpty)
             if resolving { ProgressView("Finding game program…") }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         } header: {
             Text("Additional launch arguments")
         } footer: {
-            Text("Enter only the arguments, for example --rendering-driver opengl. The game program is detected automatically; choose or edit it if a launcher starts a different .exe. Applied at the next launch from this library, including Steam through Madeira Dock. Clear the arguments to remove this rule.")
+            if arguments.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("Enter arguments in the field above, for example --rendering-driver opengl.")
+            } else if let commandPreview {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Game command preview")
+                    Text(commandPreview).font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }
         }
         .onAppear { load() }
         .onChange(of: configuration) { _, _ in load() }
         .task(id: entry.relativePath) {
-            guard let appID = entry.steamAppID else { return }
             resolving = true
             defer { resolving = false }
-            let folder = LibraryModel.drive.appendingPathComponent(entry.relativePath, isDirectory: true)
+            let target = LibraryModel.drive.appendingPathComponent(entry.relativePath)
+            let folder = entry.steamAppID == nil ? target.deletingLastPathComponent() : target
             let found = await Task.detached(priority: .utility) { SteamDirectStart.programs(in: folder) }.value
             guard !Task.isCancelled else { return }
             programs = found
+            guard let appID = entry.steamAppID else { return }
             let options = await SteamOwnedLibrary.shared.launchOptions(appID: appID, cachedOnly: entry.steamOffline == true)
             let picked = entry.steamProgram
-            let detected = await Task.detached(priority: .utility) {
-                SteamDirectStart.program(picked: picked, options: options, installFolder: folder)
+            let detection = await Task.detached(priority: .utility) {
+                (SteamDirectStart.program(picked: picked, options: options, installFolder: folder),
+                 SteamDirectStart.choose(options ?? [], installFolder: folder))
             }.value
-            guard !Task.isCancelled, program.isEmpty, let detected else { return }
+            guard !Task.isCancelled else { return }
+            steamChoice = detection.1
+            guard program.isEmpty, let detected = detection.0 else { return }
             chooseProgram(ChildLaunchArguments.executableName(detected))
         }
     }

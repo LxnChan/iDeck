@@ -25,10 +25,21 @@ struct ChildLaunchArguments: Equatable {
     let arguments: String
 
     init?(configuration: String) {
-        guard let value = GameProfile.parse(configuration)[Self.key],
-              let space = value.firstIndex(of: " ") else { return nil }
-        program = String(value[..<space])
-        arguments = value[value.index(after: space)...].trimmingCharacters(in: .whitespaces)
+        guard let value = GameProfile.parse(configuration)[Self.key] else { return nil }
+        let remainder: Substring
+        if value.hasPrefix("\"") {
+            let start = value.index(after: value.startIndex)
+            guard let end = value[start...].firstIndex(of: "\""),
+                  value.index(after: end) < value.endIndex,
+                  value[value.index(after: end)] == " " || value[value.index(after: end)] == "\t" else { return nil }
+            program = String(value[start..<end])
+            remainder = value[value.index(after: end)...]
+        } else {
+            guard let space = value.firstIndex(where: { $0 == " " || $0 == "\t" }) else { return nil }
+            program = String(value[..<space])
+            remainder = value[space...]
+        }
+        arguments = remainder.trimmingCharacters(in: .whitespaces)
         guard !program.isEmpty, !arguments.isEmpty else { return nil }
     }
 
@@ -62,10 +73,10 @@ struct ChildLaunchArguments: Equatable {
         let args = arguments.trimmingCharacters(in: .whitespaces)
         let name = program.trimmingCharacters(in: .whitespaces)
         if !args.isEmpty {
-            // child_extra_args has a 64-byte name buffer and splits at a space.
-            guard name.lowercased().hasSuffix(".exe"), name.utf8.count < 64,
-                  name.unicodeScalars.allSatisfy({ (33...126).contains($0.value) && !"/\\\"<>:|?*".unicodeScalars.contains($0) }) else {
-                throw Invalid("Choose an .exe filename without spaces, shorter than 64 ASCII characters.")
+            // Quote filenames with spaces for the native child_extra_args parser.
+            guard name.lowercased().hasSuffix(".exe"), name.utf8.count < 256,
+                  name.unicodeScalars.allSatisfy({ (32...126).contains($0.value) && !"/\\\"<>:|?*".unicodeScalars.contains($0) }) else {
+                throw Invalid("Choose an .exe filename shorter than 256 ASCII characters.")
             }
             try validateArguments(args)
         }
@@ -75,8 +86,24 @@ struct ChildLaunchArguments: Equatable {
             return trimmed[..<equals].trimmingCharacters(in: .whitespaces) != key
         }
         if lines.last == "" { lines.removeLast() }
-        if !args.isEmpty { lines.append("\(key) = \(name) \(args)") }
+        if !args.isEmpty {
+            let target = name.contains(" ") ? "\"\(name)\"" : name
+            lines.append("\(key) = \(target) \(args)")
+        }
         return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The game command, including its existing options and this rule exactly once.
+    func commandPreview(executable: String, existingArguments: String) throws -> String {
+        let combined = try appending(to: existingArguments, executable: executable)
+        return "\"\(executable)\"" + (combined.isEmpty ? "" : " " + combined)
+    }
+
+    /// Raw input survives quitting even while quotes or the program choice are unfinished.
+    struct Draft: Codable {
+        var program: String
+        var arguments: String
+        var configuration: String
     }
 
     /// The initial Wine process does not pass through child_extra_args. Append
@@ -104,6 +131,37 @@ struct GameProfile {
     var url: URL? {
         GameProfile.directory?.appendingPathComponent(
             String(format: "%016llx.cfg", LibraryPrefs.stableHash(windowsPath.lowercased())))
+    }
+
+    private var childArgumentsDraftURL: URL? { url?.appendingPathExtension("child-args.json") }
+
+    var childArgumentsDraft: ChildLaunchArguments.Draft? {
+        guard let url = childArgumentsDraftURL, let data = try? Data(contentsOf: url),
+              let draft = try? JSONDecoder().decode(ChildLaunchArguments.Draft.self, from: data),
+              draft.configuration == text else { return nil }
+        return draft
+    }
+
+    /// Read the current file rather than a view's not-yet-loaded binding. Save raw
+    /// input before validation; only a complete rule replaces the active config.
+    @discardableResult
+    func saveChildArguments(program: String, arguments: String) throws -> String {
+        guard let url, let draftURL = childArgumentsDraftURL else {
+            throw ChildLaunchArguments.Invalid("Could not locate this game's settings.")
+        }
+        let current = text
+        var draft = ChildLaunchArguments.Draft(program: program, arguments: arguments, configuration: current)
+        try JSONEncoder().encode(draft).write(to: draftURL, options: .atomic)
+        let updated: String
+        do {
+            updated = try ChildLaunchArguments.replacing(in: current, program: program, arguments: arguments)
+        } catch {
+            throw ChildLaunchArguments.Invalid("Input saved as a draft. " + error.localizedDescription)
+        }
+        try updated.write(to: url, atomically: true, encoding: .utf8)
+        draft.configuration = updated
+        try JSONEncoder().encode(draft).write(to: draftURL, options: .atomic)
+        return updated
     }
 
     /// The whole file ("" when there is none). Setting "" deletes it.

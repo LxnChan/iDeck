@@ -171,13 +171,25 @@ and check-frontend fails if a setting is hidden from it. A profile holds:
   executable, including Steam games started through Madeira Dock. Enter only
   the switches (for example `--rendering-driver opengl`); the target filename
   is detected from the added program or Steam's launch configuration. Choose
-  another program or edit the filename when a launcher starts a different
-  game process. The control writes `env.MADEIRA_CHILD_ARGS` in this game's
+  another program using **Choose game program** when a launcher starts a
+  different game process; the selected filename is read-only. Programs in the
+  added executable's folder are offered too. Filenames containing spaces are
+  quoted automatically, e.g. `"Game Name.exe" --rendering-driver opengl`.
+  The control writes `env.MADEIRA_CHILD_ARGS` in this game's
   own config; clearing the arguments removes that rule and keeps other lines.
-  It shares storage with **Advanced › This game's config**. The existing
-  runtime accepts an ASCII `.exe` filename without spaces, shorter than 64
-  bytes, and ASCII arguments on one line (balanced double quotes, at most 64
-  tokens and less than 4 KB). A direct initial game start gets the same
+  It shares storage with **Advanced › This game's config**. The
+  runtime accepts an ASCII `.exe` filename shorter than 256 bytes and ASCII
+  arguments on one line (balanced double quotes, at most 64 tokens and less
+  than 4 KB). Argument fields disable smart dashes, smart quotes and automatic
+  correction so `--` and straight quotes remain literal on iPad. Empty input
+  shows a hint; complete input shows the quoted game path with its known
+  original options and appended arguments. Steam or a launcher can supply
+  additional options at runtime. Every edit is saved immediately, including
+  an unfinished input draft and program choice, and restored after reopening
+  the app. Drafts live beside the game's config as `.cfg.child-args.json`;
+  invalid drafts leave the last valid rule active and show an error. Editing
+  the advanced config or resetting it supersedes a draft of the old config.
+  A direct initial game start gets the same
   arguments; desktop, services and Steam starts let Wine append to the child.
   Applies at the next start from this library; the standalone Steam Launcher
   does not load a game's library profile;

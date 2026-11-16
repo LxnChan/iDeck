@@ -1231,29 +1231,39 @@ static int sc_helper_kind( const WCHAR *image, int image_len, const WCHAR *cl, i
     return sc_switch_end( cl, cl_len, "--type=" ) >= 0 ? SC_CHILD : SC_BROWSER;
 }
 
-/* madeira-bcd: env.MADEIRA_CHILD_ARGS = "<exe name> <arguments>" appends the
+/* madeira-bcd: env.MADEIRA_CHILD_ARGS = <exe name> <arguments> appends the
  * arguments to the command line of every started process whose image file is
  * <exe name> (any directory, ASCII case ignored). GTA V's PlayGTAV.exe starts
  * GTA5_Enhanced.exe with its own fixed arguments and there is no
  * commandline.txt to edit easily on the device, so this is how a game file
  * passes e.g. "GTA5_Enhanced.exe -scDebugLogging". Returns the arguments to
- * append, or NULL when `spec` does not name this image. */
+ * append, or NULL when `spec` does not name this image. Quote an exe filename
+ * containing spaces, e.g. "Game Name.exe" --rendering-driver opengl. */
 static const char *child_extra_args( const char *spec, const WCHAR *image, int image_len )
 {
-    char name[64];
-    int n = 0;
+    char name[256];
+    int n = 0, quoted;
 
     if (!spec) return NULL;
-    while (*spec == ' ') spec++;
-    while (spec[n] && spec[n] != ' ' && n < (int)sizeof(name) - 1)
+    while (*spec == ' ' || *spec == '\t') spec++;
+    quoted = *spec == '"';
+    if (quoted) spec++;
+    while (spec[n] && (quoted ? spec[n] != '"' : (spec[n] != ' ' && spec[n] != '\t')) &&
+           n < (int)sizeof(name) - 1)
     {
         char c = spec[n];
         name[n++] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
     }
-    if (!n || (spec[n] && spec[n] != ' ')) return NULL;
+    if (!n) return NULL;
     name[n] = 0;
     spec += n;
-    while (*spec == ' ') spec++;
+    if (quoted)
+    {
+        if (*spec != '"') return NULL;
+        spec++;
+    }
+    if (*spec != ' ' && *spec != '\t') return NULL;
+    while (*spec == ' ' || *spec == '\t') spec++;
     if (!*spec || !ios_image_name_is( image, image_len, name )) return NULL;
     return spec;
 }
