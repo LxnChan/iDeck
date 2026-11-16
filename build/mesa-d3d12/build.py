@@ -34,6 +34,12 @@ SOURCES = {
 DLLS = ('opengl32-mesa.dll', 'madeira-mesa-gl.dll')
 PROBE = 'opengl-probe-x64.exe'
 MANIFEST = 'mesa-d3d12.json'
+PATCHES = ((
+    '0001-allow-private-submission-fences.patch',
+    'src/gallium/drivers/d3d12/d3d12_screen.cpp',
+    '38a80a573863b0ec914d371243249168850bfeb46064cb3f5c89e19f6669bcb6',
+    '968e40892d721ebb5391b4ee8eed097ffed3b67fb40d8b8cdaa40f9947407270',
+),)
 
 
 def sha(path):
@@ -42,7 +48,29 @@ def sha(path):
 
 def recipe_key():
     inputs = {p.name: sha(p) for p in (HERE / 'build.py', HERE / 'probe.c', HERE / 'requirements.txt')}
+    inputs.update(patch_manifest())
     return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+
+def patch_manifest():
+    return {'patches/' + name: sha(HERE / 'patches' / name) for name, *_ in PATCHES}
+
+
+def apply_patches(source):
+    for name, relative, before, after in PATCHES:
+        target = source / relative
+        actual = sha(target)
+        if actual == after:
+            continue
+        if actual != before:
+            raise ValueError('unexpected Mesa patch input: ' + relative)
+        patch = (HERE / 'patches' / name).resolve()
+        command = ['git', '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+                   'apply', '--no-index', '--whitespace=error']
+        subprocess.run(command + ['--check', str(patch)], cwd=source, check=True)
+        subprocess.run(command + [str(patch)], cwd=source, check=True)
+        if sha(target) != after:
+            raise ValueError('Mesa patch output checksum mismatch: ' + relative)
 
 
 def download(path, url, expected):
@@ -78,8 +106,8 @@ def extract(archive, destination):
 def verify(dist):
     manifest = json.loads((dist / MANIFEST).read_text(encoding='utf-8'))
     if manifest.get('recipe') != recipe_key() or manifest.get('sources') != {
-            name: values[1] for name, values in SOURCES.items()}:
-        raise ValueError('cached Mesa recipe or source pins do not match')
+            name: values[1] for name, values in SOURCES.items()} or manifest.get('patches') != patch_manifest():
+        raise ValueError('cached Mesa recipe, patches or source pins do not match')
     required = {*DLLS, PROBE, *('sources/' + name for name in SOURCES)}
     if not required.issubset(manifest['files']):
         raise ValueError('incomplete Mesa distribution')
@@ -125,6 +153,7 @@ def build(args):
         if not (work / directory / 'meson.build').is_file():
             extract(sources / name, work)
     source = work / 'mesa-25.0.7'
+    apply_patches(source)
     headers = source / 'subprojects/DirectX-Headers-1.0'
     if not headers.exists():
         shutil.copytree(work / 'DirectX-Headers-1.614.1', headers)
@@ -188,6 +217,7 @@ def build(args):
         raise ValueError('toolchain is missing its MinGW runtime notices')
     manifest = {'schema': 1, 'recipe': recipe_key(), 'mesa': '25.0.7', 'architecture': 'x86_64',
                 'sources': {name: values[1] for name, values in SOURCES.items()},
+                'patches': patch_manifest(),
                 'options': options, 'files': {p.relative_to(dist).as_posix(): sha(p)
                     for p in sorted(dist.rglob('*')) if p.is_file() and p.name != MANIFEST},
                 'limits': 'Experimental WGL/D3D12 build. Device rendering and game compatibility require testing.'}

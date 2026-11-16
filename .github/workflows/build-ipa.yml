@@ -463,7 +463,7 @@ jobs:
         id: mesa-cache
         uses: actions/cache/restore@v4
         with:
-          key: mesa-d3d12-x64-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build/mesa-d3d12/build.py', 'build/mesa-d3d12/probe.c', 'build/mesa-d3d12/requirements.txt', 'tools/build/setup-llvm-mingw.sh') }}
+          key: mesa-d3d12-x64-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build/mesa-d3d12/build.py', 'build/mesa-d3d12/patches/**', 'build/mesa-d3d12/probe.c', 'build/mesa-d3d12/requirements.txt', 'tools/build/setup-llvm-mingw.sh') }}
           path: build/mesa-d3d12/dist
 
       - name: Build experimental Mesa OpenGL driver

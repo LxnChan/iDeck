@@ -1,9 +1,16 @@
 # Experimental x64 OpenGL through D3D12
 
-This opt-in path builds unmodified Mesa 25.0.7's Windows WGL frontend and D3D12
+This opt-in path builds Mesa 25.0.7's Windows WGL frontend and D3D12
 Gallium driver. Windows OpenGL calls execute in the x64 guest; D3D12 calls reach
 Madeira's existing Metal renderer. It does not provide Vulkan, 32-bit OpenGL,
 or a guarantee that any particular game works.
+
+The MIT-licensed patch in `patches/` keeps shared submission fences on capable
+backends, and retries with a private fence only when shared creation returns
+`E_NOTIMPL` or `DXGI_ERROR_UNSUPPORTED`. Allocation and device failures still
+fail initialization. This preserves the queue's local synchronization without
+claiming cross-process sharing support. Initialization failures and successful
+screen creation are logged even in release builds.
 
 ## Build and distribution
 
@@ -15,6 +22,10 @@ checks PE imports/exports, and stages these files in `arm64ec-windows`:
 - `opengl32-mesa.dll`: Mesa's replacement WGL/OpenGL entry points.
 - `madeira-mesa-gl.dll`: Mesa's OpenGL frontend, NIR/DXIL compiler and D3D12 driver.
 - `opengl-probe-x64.exe`: hidden-window OpenGL 3.3 rendering canary.
+
+Patch inputs and outputs have pinned file hashes. Repeated builds accept only
+the original or exactly patched source. The distribution manifest records patch
+hashes, and both the recipe key and CI cache key include the patches.
 
 With the verified LLVM-MinGW directory in `LLVM_MINGW`:
 
@@ -33,8 +44,9 @@ DXIL directly; that behavior still needs a device test with this Mesa build.
 
 Original component notices are copied into the IPA's `licenses/mesa-d3d12`.
 The matching source companion contains both complete checksum-pinned upstream
-archives under `source/dependencies`, plus these build recipes. Mesa's source
-licenses, third-party notices, DirectX-Headers' MIT grant and the statically
+archives under `source/dependencies`, plus these build recipes and patches.
+The patches retain Mesa's MIT license. Mesa's source licenses, third-party
+notices, DirectX-Headers' MIT grant and the statically
 linked LLVM/MinGW runtime notices are retained;
 iDeck's exception is not applied to those components.
 
@@ -57,6 +69,11 @@ library and enable the same switch for it. The canary tests a 3.3 core context,
 GLSL 330 compilation/linking, framebuffer clear and triangle draw readbacks,
 window readback, and SwapBuffers. `[opengl-probe] PASS` is the success marker;
 it rejects a software OpenGL renderer and reports the D3D12 adapter name.
+
+Build 247 reached Mesa and created the Metal-backed D3D12 device on an iPad,
+then failed at Mesa's shared submission fence: Madeira currently returns
+`E_NOTIMPL` for shared fences. The private-fence fallback addresses this specific
+initialization blocker. It does not establish successful device rendering.
 
 Validation boundary: the Windows-host canary passed using Mesa's D3D12 renderer
 on an NVIDIA GeForce RTX 4060 Laptop GPU. This validates Mesa/WGL/D3D12, not

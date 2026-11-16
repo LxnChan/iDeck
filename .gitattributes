@@ -7,3 +7,4 @@ LICENSES/stikjit-supplemental/** -whitespace
 build/wine-pe/steam-ui-machine-attributes.patch -whitespace
 build/fex-patches/*.patch -whitespace
 build/dxmt-patches/*.patch -whitespace
+build/mesa-d3d12/patches/*.patch text eol=lf -whitespace
