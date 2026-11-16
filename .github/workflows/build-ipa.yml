@@ -1,9 +1,14 @@
 name: Build iDeck IPA
-run-name: Build iDeck IPA
+# Pushes inherit the commit subject; manual builds supply their change title.
+run-name: ${{ inputs.run_title || '' }}
 
 on:
   workflow_dispatch:
     inputs:
+      run_title:
+        description: 'Change-specific run title: type(scope): summary'
+        required: true
+        type: string
       release_tag:
         description: 'Release tag to fetch companion runtime assets & relink libraries'
         required: false
@@ -96,6 +101,7 @@ jobs:
           python3 -B tests/host/check-config-catalog.py
           python3 -B tests/host/check-steam-crashhandler-settings.py
           python3 -B tests/host/check-steam-offline-launch.py
+          python3 -B tests/host/check-child-launch-arguments.py --require-swift
 
       - name: Run mouse and touch input regression checks
         run: |

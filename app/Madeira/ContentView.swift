@@ -2882,6 +2882,8 @@ struct ContentView: View {
         entry.configureLaunch()
         // madeira-bcd: the game's own options (LibraryBCD.swift).
         BCDLaunch.applyLibrary(entry)
+        do { try BCDLaunch.appendInitialArguments(entry) }
+        catch { library.error = error.localizedDescription; return }
         exportBCDDesktopProfile(entry)
         // This run's log under the program's name too (Documents/logs). A Steam game started
         // through Madeira Dock above gets its own from ntdll, once Valve's client starts it.

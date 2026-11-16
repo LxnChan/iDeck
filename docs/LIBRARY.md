@@ -167,6 +167,20 @@ and check-frontend fails if a setting is hidden from it. A profile holds:
   `MADEIRA_FRAMEGEN=1`, and DXMT's present path (D3D11 and D3D12 alike) shows a
   MetalFX-interpolated frame between every two game frames; FPS limits do not
   apply while it is on;
+- **Additional launch arguments**: arguments appended to a selected game
+  executable, including Steam games started through Madeira Dock. Enter only
+  the switches (for example `--rendering-driver opengl`); the target filename
+  is detected from the added program or Steam's launch configuration. Choose
+  another program or edit the filename when a launcher starts a different
+  game process. The control writes `env.MADEIRA_CHILD_ARGS` in this game's
+  own config; clearing the arguments removes that rule and keeps other lines.
+  It shares storage with **Advanced › This game's config**. The existing
+  runtime accepts an ASCII `.exe` filename without spaces, shorter than 64
+  bytes, and ASCII arguments on one line (balanced double quotes, at most 64
+  tokens and less than 4 KB). A direct initial game start gets the same
+  arguments; desktop, services and Steam starts let Wine append to the child.
+  Applies at the next start from this library; the standalone Steam Launcher
+  does not load a game's library profile;
 - launch arguments (double-quoted tokens, at most 64 and 4 KB in total, the
   whole command included; not for Steam games, which start with Steam's own
   launch option, through Madeira Dock or as **The game**), in their own section

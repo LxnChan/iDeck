@@ -17,6 +17,78 @@
 
 import Foundation
 
+/// The per-game process rule, shared by the details control and direct starts.
+/// Keep the on-disk format understood by the bundled Wine runtime.
+struct ChildLaunchArguments: Equatable {
+    static let key = "env.MADEIRA_CHILD_ARGS"
+    let program: String
+    let arguments: String
+
+    init?(configuration: String) {
+        guard let value = GameProfile.parse(configuration)[Self.key],
+              let space = value.firstIndex(of: " ") else { return nil }
+        program = String(value[..<space])
+        arguments = value[value.index(after: space)...].trimmingCharacters(in: .whitespaces)
+        guard !program.isEmpty, !arguments.isEmpty else { return nil }
+    }
+
+    static func executableName(_ path: String) -> String {
+        path.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last.map(String.init) ?? ""
+    }
+
+    struct Invalid: LocalizedError {
+        let errorDescription: String?
+        init(_ message: String) { errorDescription = message }
+    }
+
+    static func validateArguments(_ arguments: String, asciiOnly: Bool = true) throws {
+        guard arguments.utf8.count < 4096,
+              arguments.unicodeScalars.allSatisfy({ $0.value == 9 || ($0.value >= 32 && $0.value != 127 && (!asciiOnly || $0.value <= 126)) }) else {
+            throw Invalid("Use a single line of ASCII launch arguments shorter than 4 KB.")
+        }
+        var quoted = false, inToken = false, tokens = 0
+        for character in arguments {
+            if character == "\"" { quoted.toggle() }
+            if !quoted && (character == " " || character == "\t") { inToken = false }
+            else if !inToken { inToken = true; tokens += 1 }
+        }
+        guard !quoted, tokens <= 64 else {
+            throw Invalid("Use balanced double quotes and at most 64 launch arguments in total.")
+        }
+    }
+
+    /// Update only this rule. Clearing it preserves every other setting/comment.
+    static func replacing(in configuration: String, program: String, arguments: String) throws -> String {
+        let args = arguments.trimmingCharacters(in: .whitespaces)
+        let name = program.trimmingCharacters(in: .whitespaces)
+        if !args.isEmpty {
+            // child_extra_args has a 64-byte name buffer and splits at a space.
+            guard name.lowercased().hasSuffix(".exe"), name.utf8.count < 64,
+                  name.unicodeScalars.allSatisfy({ (33...126).contains($0.value) && !"/\\\"<>:|?*".unicodeScalars.contains($0) }) else {
+                throw Invalid("Choose an .exe filename without spaces, shorter than 64 ASCII characters.")
+            }
+            try validateArguments(args)
+        }
+        var lines = configuration.components(separatedBy: "\n").filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.hasPrefix("#"), let equals = trimmed.firstIndex(of: "=") else { return true }
+            return trimmed[..<equals].trimmingCharacters(in: .whitespaces) != key
+        }
+        if lines.last == "" { lines.removeLast() }
+        if !args.isEmpty { lines.append("\(key) = \(name) \(args)") }
+        return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The initial Wine process does not pass through child_extra_args. Append
+    /// here only when it is the target itself; explorer/cmd/Steam use Wine's hook.
+    func appending(to original: String, executable: String) throws -> String {
+        guard Self.executableName(executable).caseInsensitiveCompare(program) == .orderedSame else { return original }
+        let combined = original.isEmpty ? arguments : original + " " + arguments
+        try Self.validateArguments(combined, asciiOnly: false)
+        return combined
+    }
+}
+
 struct GameProfile {
     let windowsPath: String
 

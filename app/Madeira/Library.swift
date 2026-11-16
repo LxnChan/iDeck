@@ -3499,6 +3499,9 @@ struct LibraryDetail: View {
                         }
                     }
                 }
+                if entry.desktop != true {
+                    LibraryChildArgumentsSection(entry: entry, configuration: $bcd.configText)
+                }
                 // A Steam game starts with Steam's own launch option through Madeira Dock.
                 if entry.desktop != true && entry.steamAppID == nil {
                     Section {
@@ -3676,6 +3679,91 @@ struct LibraryDetail: View {
                 if command == "back" { model.save(entry); dismiss() }
                 if command == "accept" { start() }
             }
+        }
+    }
+}
+
+/// An explicit editor for the per-game process rule, including Steam/Dock games.
+/// The advanced editor and this control share the same GameProfile lines.
+private struct LibraryChildArgumentsSection: View {
+    let entry: LibraryEntry
+    @Binding var configuration: String
+    @State private var program = ""
+    @State private var arguments = ""
+    @State private var programs: [String] = []
+    @State private var savedConfiguration: String?
+    @State private var error: String?
+    @State private var resolving = false
+
+    private func load() {
+        guard savedConfiguration != configuration else { return }
+        savedConfiguration = configuration
+        let rule = ChildLaunchArguments(configuration: configuration)
+        arguments = rule?.arguments ?? ""
+        if let rule { program = rule.program }
+        else if entry.steamAppID == nil {
+            let name = ChildLaunchArguments.executableName(entry.relativePath)
+            program = name.lowercased().hasSuffix(".exe") ? name : ""
+        }
+        error = nil
+    }
+
+    private func save() {
+        do {
+            let updated = try ChildLaunchArguments.replacing(in: configuration, program: program, arguments: arguments)
+            let profile = GameProfile(windowsPath: entry.windowsPath)
+            guard let url = profile.url else { throw ChildLaunchArguments.Invalid("Could not locate this game's settings.") }
+            // Report write failures instead of showing an unsaved rule as saved.
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            savedConfiguration = updated
+            configuration = updated
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func chooseProgram(_ name: String) {
+        program = name
+        if !arguments.isEmpty { save() }
+    }
+
+    var body: some View {
+        Section {
+            TextField("Arguments to append", text: Binding(get: { arguments }, set: { arguments = $0; save() }), axis: .vertical)
+                .font(.body.monospaced()).lineLimit(1...4)
+                .autocorrectionDisabled().textInputAutocapitalization(.never)
+            TextField("Target executable", text: Binding(get: { program }, set: { chooseProgram($0) }))
+                .font(.body.monospaced()).autocorrectionDisabled().textInputAutocapitalization(.never)
+            if !programs.isEmpty {
+                Menu("Choose game program") {
+                    ForEach(programs, id: \.self) { path in
+                        Button(path) { chooseProgram(ChildLaunchArguments.executableName(path)) }
+                    }
+                }
+            }
+            if resolving { ProgressView("Finding game program…") }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        } header: {
+            Text("Additional launch arguments")
+        } footer: {
+            Text("Enter only the arguments, for example --rendering-driver opengl. The game program is detected automatically; choose or edit it if a launcher starts a different .exe. Applied at the next launch from this library, including Steam through Madeira Dock. Clear the arguments to remove this rule.")
+        }
+        .onAppear { load() }
+        .onChange(of: configuration) { _, _ in load() }
+        .task(id: entry.relativePath) {
+            guard let appID = entry.steamAppID else { return }
+            resolving = true
+            defer { resolving = false }
+            let folder = LibraryModel.drive.appendingPathComponent(entry.relativePath, isDirectory: true)
+            let found = await Task.detached(priority: .utility) { SteamDirectStart.programs(in: folder) }.value
+            guard !Task.isCancelled else { return }
+            programs = found
+            let options = await SteamOwnedLibrary.shared.launchOptions(appID: appID, cachedOnly: entry.steamOffline == true)
+            let picked = entry.steamProgram
+            let detected = await Task.detached(priority: .utility) {
+                SteamDirectStart.program(picked: picked, options: options, installFolder: folder)
+            }.value
+            guard !Task.isCancelled, program.isEmpty, let detected else { return }
+            chooseProgram(ChildLaunchArguments.executableName(detected))
         }
     }
 }

@@ -13,6 +13,17 @@ import Foundation
 
 /// What a launch exports on top of the exe, its arguments and its screen.
 enum BCDLaunch {
+    /// Direct game starts need the same rule as games created later by Steam.
+    /// The actual initial executable keeps desktop/services routes from adding twice.
+    static func appendInitialArguments(_ entry: LibraryEntry) throws {
+        guard entry.desktop != true,
+              let rule = ChildLaunchArguments(configuration: GameProfile(windowsPath: entry.windowsPath).text),
+              let executable = getenv("MADEIRA_EXE"), let arguments = getenv("MADEIRA_ARGS") else { return }
+        let original = String(cString: arguments)
+        let combined = try rule.appending(to: original, executable: String(cString: executable))
+        if combined != original { setenv("MADEIRA_ARGS", combined, 1) }
+    }
+
     /// The switches every launch of a game applies. Everything is set or unset, so a
     /// previous launch's choice never leaks into this one.
     static func applyExtras(avx: Bool, wineVCRT: Bool, nvidia: Bool, profile: GameProfile?) {
