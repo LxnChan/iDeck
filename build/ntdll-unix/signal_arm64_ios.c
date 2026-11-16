@@ -1612,6 +1612,68 @@ done:
              why, written, total, path );
 }
 
+/* Only unchanged, consecutive fault contexts are evidence of a retry loop.
+ * Observe every Mach fault before any handler changes its registers: counting
+ * guest deliveries alone misses progress serviced by the other handlers.
+ * BreakQuest's MoleBox code repeatedly decrypts/re-encrypts the same byte at
+ * the same PC while the game keeps rendering, so PC/address alone is not an
+ * identical context either. The exception server is a single thread. */
+static struct ios_redelivery_entry
+{
+    thread_t thread;
+    uintptr_t addr;
+    int exception;
+    uint64_t code;
+    arm_thread_state64_t state;
+    arm_neon_state64_t neon;
+    int have_neon;
+    unsigned n;
+} ios_redeliveries[16];
+
+static struct ios_redelivery_entry *ios_redelivery_entry( thread_t thread )
+{
+    return &ios_redeliveries[((uint64_t)thread * 0x9E3779B97F4A7C15ull) >> 60];
+}
+
+static void ios_redelivery_observe( thread_t thread, const arm_thread_state64_t *state,
+                                    const arm_neon_state64_t *neon, int have_neon,
+                                    int exception, uint64_t code, uintptr_t addr )
+{
+    struct ios_redelivery_entry *entry = ios_redelivery_entry( thread );
+    const arm_thread_state64_t *prev = &entry->state;
+
+    if (entry->thread != thread || entry->addr != addr || entry->exception != exception ||
+        entry->code != code || memcmp( prev->__x, state->__x, sizeof(state->__x) ) ||
+        arm_thread_state64_get_pc( *prev ) != arm_thread_state64_get_pc( *state ) ||
+        arm_thread_state64_get_sp( *prev ) != arm_thread_state64_get_sp( *state ) ||
+        arm_thread_state64_get_fp( *prev ) != arm_thread_state64_get_fp( *state ) ||
+        arm_thread_state64_get_lr( *prev ) != arm_thread_state64_get_lr( *state ) ||
+        prev->__cpsr != state->__cpsr || entry->have_neon != have_neon ||
+        (have_neon && (memcmp( entry->neon.__v, neon->__v, sizeof(neon->__v) ) ||
+                       entry->neon.__fpsr != neon->__fpsr || entry->neon.__fpcr != neon->__fpcr)))
+    {
+        entry->thread = thread;
+        entry->addr = addr;
+        entry->exception = exception;
+        entry->code = code;
+        entry->state = *state;
+        entry->have_neon = have_neon;
+        if (have_neon) entry->neon = *neon;
+        entry->n = 0;
+    }
+}
+
+static void ios_redelivery_serviced( thread_t thread )
+{
+    struct ios_redelivery_entry *entry = ios_redelivery_entry( thread );
+    if (entry->thread == thread) entry->n = 0;
+}
+
+static unsigned ios_redelivery_count( thread_t thread )
+{
+    return ++ios_redelivery_entry( thread )->n;
+}
+
 static void *ios_mach_exception_thread( void *arg )
 {
     mach_port_t port = (mach_port_t)(uintptr_t)arg;
@@ -2182,6 +2244,8 @@ static void *ios_mach_exception_thread( void *arg )
         if (kr == KERN_SUCCESS)
         {
             uintptr_t fault_addr = (uintptr_t)req->code[1];
+            ios_redelivery_observe( thread, &state, &neon_state, have_neon,
+                                    req->exception, req->code[0], fault_addr );
 #ifdef WINE_IOS
             /* ml939: THE SUB-FLOOR SERVICE BELONGS HERE, NOT IN segv_handler.
              *
@@ -5091,6 +5155,7 @@ skip_reclaim_band: ;
              * spins at one pc until the script kills the app at 8 stops).
              * Deliver to the guest from here instead. d==2 means the page
              * machinery fixed it (guard/watch): resume with state as-is. */
+            if (handled) ios_redelivery_serviced( thread );
             if (!handled && (req->exception == EXC_BAD_ACCESS ||
                              req->exception == EXC_BAD_INSTRUCTION))
             {
@@ -8424,15 +8489,15 @@ dispatch:
                  (unsigned long long)fault_addr, frame_addr, (void *)thread_teb, dispatcher );
     deliver_logs++;
 
-    /* iOS-Madeira ml461 (#76): identical-fault redelivery TERMINAL. A host-C++
+    /* iOS-Madeira ml461 (#76): identical-context redelivery TERMINAL. A host-C++
      * fault misdelivered down the guest SEH path can never be handled — the
      * guest restores the context and refaults, forever. ml452 stormed 65k×,
      * ml459 70k×, ml460 326,500× (rpmalloc free-list bucket holding x86 code
      * bytes; the wedged thread was the chrome-ipc pump and the run died of
-     * log/CPU burn instead of saying anything). No legitimate guest pattern
-     * redelivers the SAME (thread,pc,addr) thousands of times — handled
-     * retries (redirects, USD, unaligned) never reach this point. This sits
-     * at delivery-complete so every route counts, including the goto-dispatch
+     * log/CPU burn instead of saying anything). Repeated PC/address pairs
+     * alone do not prove a loop: SMC can recur during normal execution. Count
+     * only unchanged register contexts with no intervening serviced fault.
+     * This sits at delivery-complete so every route counts, including the goto-dispatch
      * one that bypasses the rep[] debounce above. Single server thread: no
      * atomics needed. At the threshold: dump raw memory near the faulting
      * thread's pointer registers (the ml460 corruption lived at [x10+x9*8]
@@ -8447,32 +8512,18 @@ dispatch:
      * once per loop iteration (FEX emulates, it cannot back-patch an LSE
      * atomic), and counting those would kill the pseudo-process for making
      * progress. */
-    if (!is_align)
+    if (is_align) ios_redelivery_serviced( thread );
+    else
     {
-        /* Count CONSECUTIVE identical deliveries per thread, not lifetime hits
-         * of a (thread,pc,addr) key. Slots used to be chosen by the key itself,
-         * so a fault that recurs once per frame with real progress in between
-         * kept its count for as long as no other key landed in its slot. Dark
-         * Souls Remastered's Settings menu re-writes Arxan-guarded .text every
-         * frame; each write is a self-modifying-code fault FEX handles, the
-         * game keeps running, yet 7 keys cycling once per frame reached 2000 in
-         * ~35 s and this guard killed a healthy game. A real storm refaults the
-         * same instruction back to back on one thread, so the slot is chosen by
-         * thread and any other fault on that thread restarts the run. */
-        static struct { uint64_t thread, key; uint32_t n; } redeliv[16];
+        /* The original context was observed at Mach entry, before dispatch
+         * rewrote state. A different context or a serviced fault resets this
+         * thread's count, including faults that never reach guest delivery. */
         static volatile int ios_redeliv_terminating;
-        uint64_t rkey = ((uint64_t)thread << 48) ^ pc ^ ((uint64_t)fault_addr << 1);
-        int rslot = (int)(((uint64_t)thread * 0x9E3779B97F4A7C15ull) >> 60);
-        if (redeliv[rslot].thread != (uint64_t)thread || redeliv[rslot].key != rkey)
-        {
-            redeliv[rslot].thread = (uint64_t)thread;
-            redeliv[rslot].key = rkey;
-            redeliv[rslot].n = 1;
-        }
-        else if (++redeliv[rslot].n == 256)
-            dprintf( 2, "[redeliv] 256 identical redeliveries pc=0x%llx addr=0x%llx — storm forming rev=ml461\n",
+        unsigned n = ios_redelivery_count( thread );
+        if (n == 256)
+            dprintf( 2, "[redeliv] 256 identical redeliveries pc=0x%llx addr=0x%llx — unchanged fault context rev=ideck-redelivery2\n",
                      (unsigned long long)pc, (unsigned long long)fault_addr );
-        else if (redeliv[rslot].n >= 2000 && !ios_redeliv_terminating)
+        else if (n >= 2000 && !ios_redeliv_terminating)
         {
             /* ml463: was `== 2000` + exit(76) — one shot, and exit() on iOS is
              * the wine_ios_exit shim which LONGJMPS instead of terminating (the
@@ -8489,7 +8540,7 @@ dispatch:
             ios_redeliv_terminating = 1;
             static const int fregs[] = { 0, 8, 9, 10, 16, 19, 20 };
             unsigned fi;
-            dprintf( 2, "[redeliv] 2000 identical redeliveries pc=0x%llx addr=0x%llx — unrecoverable host fault misdelivered to guest rev=ml461\n",
+            dprintf( 2, "[redeliv] 2000 identical redeliveries pc=0x%llx addr=0x%llx — unchanged fault context rev=ideck-redelivery2\n",
                      (unsigned long long)pc, (unsigned long long)fault_addr );
             for (fi = 0; fi < sizeof(fregs) / sizeof(fregs[0]); fi++)
             {
@@ -8636,6 +8687,7 @@ static int ios_mach_deliver_guest_exception( thread_t thread, arm_thread_state64
     ios_in_mach_exc = 1;
     r = ios_mach_deliver_guest_exception_inner( thread, state, neon, have_neon,
                                                 exception, fault_addr, thread_teb );
+    if (r == 2) ios_redelivery_serviced( thread );
     ios_in_mach_exc = 0;
     return r;
 }
