@@ -43,6 +43,12 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "opengl-d3d12": {"category": "Graphics & presentation", "title": "OpenGL support (experimental)",
+                "kind": "bool", "default": "0",
+                "note": "Opt-in x64 Mesa WGL -> D3D12 -> Metal prototype. Replaces only the 64-bit prefix "
+                        "OpenGL link for this launch session. Does not implement Vulkan or 32-bit OpenGL. "
+                        "Restart iDeck after changes. Device/game compatibility and performance are unverified.",
+                "sources": ["app/Madeira/WineProcessBridge.m"]},
     "env.MADEIRA_SMC_HOT_PAGE": {"category": "x86 emulation (FEX)", "title": "Hot SMC page threshold",
                 "kind": "text", "default": "",
                 "note": "Unset or empty: iDeck disables hot-page promotion for 32-bit WoW64 programs to avoid "

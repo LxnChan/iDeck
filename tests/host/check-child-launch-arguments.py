@@ -157,6 +157,18 @@ func rejects(_ operation: () throws -> Void) {
                 check(env("MADEIRA_ARGS") == "--base " + rule.arguments, "restored rule is active at launch")
             case "write-draft":
                 rejects { _ = try profile.saveChildArguments(program: "Game Name.exe", arguments: "--name \"unfinished") }
+            case "enable-opengl":
+                try profile.saveOpenGLD3D12(true)
+            case "read-opengl":
+                check(GameProfile.parse(profile.text)["opengl-d3d12"] == "1", "renderer choice survives restart")
+                check(profile.childArgumentsDraft?.arguments == rawArguments, "renderer change keeps raw argument input")
+                check(ChildLaunchArguments(configuration: profile.text)?.arguments == rawArguments.trimmingCharacters(in: .whitespaces), "renderer change keeps active arguments")
+            case "disable-opengl-with-draft":
+                try profile.saveOpenGLD3D12(false)
+            case "read-disabled-opengl":
+                check(GameProfile.parse(profile.text)["opengl-d3d12"] == "0", "disabled choice is explicitly saved across restart")
+                check(profile.childArgumentsDraft?.arguments == "--name \"unfinished", "renderer change keeps unfinished argument draft")
+                check(ChildLaunchArguments(configuration: profile.text)?.arguments == rawArguments.trimmingCharacters(in: .whitespaces), "renderer change keeps last valid arguments")
             case "read-draft":
                 check(profile.childArgumentsDraft?.arguments == "--name \"unfinished", "incomplete quote survives restart")
                 check(ChildLaunchArguments(configuration: profile.text)?.arguments == rawArguments.trimmingCharacters(in: .whitespaces), "invalid draft does not overwrite last valid rule")
@@ -224,6 +236,13 @@ func rejects(_ operation: () throws -> Void) {
         GameProfile(windowsPath: game.windowsPath).text = updated
         check(GameProfile(windowsPath: game.windowsPath).text == updated, "real profile round trip")
         check(GameProfile(windowsPath: other.windowsPath).text.isEmpty, "separate games")
+        let rendererProfile = GameProfile(windowsPath: #"C:\Games\renderer.exe"#)
+        rendererProfile.text = "# opengl-d3d12 = keep\npool = 768\nopengl-d3d12 = 0\n opengl-d3d12 = false\n"
+        let rendererConfig = try rendererProfile.saveOpenGLD3D12(true)
+        check(GameProfile.parse(rendererConfig)["opengl-d3d12"] == "1", "duplicate renderer settings replaced")
+        check(rendererConfig.contains("# opengl-d3d12 = keep\npool = 768\n"), "renderer save keeps comments and other settings")
+        check(rendererConfig.components(separatedBy: "\n").filter { $0.hasPrefix("opengl-d3d12 =") }.count == 1, "one active renderer setting")
+        check(!GameProfile(windowsPath: game.windowsPath).text.contains("opengl-d3d12"), "renderer choice is per game")
         setenv("MADEIRA_EXE", #"C:\Games\ABC.EXE"#, 1)
         setenv("MADEIRA_ARGS", "-existing", 1)
         try BCDLaunch.appendInitialArguments(game)
@@ -256,7 +275,8 @@ with tempfile.TemporaryDirectory(prefix='ideck-child-args-') as directory:
                     str(app / 'LibraryPrefs.swift'), str(app / 'LibraryBCD.swift'),
                     '-o', str(executable)], check=True)
     subprocess.run([str(executable), str(folder)], check=True)
-    for mode in ('write-valid', 'read-valid', 'write-draft', 'read-draft', 'replace-same', 'read-replaced', 'write-no-program',
+    for mode in ('write-valid', 'read-valid', 'enable-opengl', 'read-opengl', 'write-draft', 'read-draft',
+                 'disable-opengl-with-draft', 'read-disabled-opengl', 'replace-same', 'read-replaced', 'write-no-program',
                  'read-no-program', 'clear', 'read-clear', 'advanced-edit', 'read-advanced'):
         # Each invocation is a fresh process, with the same on-disk game profile.
         subprocess.run([str(executable), str(folder), mode], check=True)

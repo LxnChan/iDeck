@@ -6,6 +6,7 @@ import argparse
 import copy
 import hashlib
 import io
+import importlib.util
 import json
 import os
 import posixpath
@@ -116,7 +117,7 @@ def file_sha(path):
     return digest.hexdigest()
 
 
-def package(output, root=ROOT, *, inherited_dependencies=None):
+def package(output, root=ROOT, *, inherited_dependencies=None, additional_sources=()):
     root, output = Path(root).resolve(), Path(output).resolve()
     if output.exists():
         raise ValueError('refusing to overwrite source package: ' + str(output))
@@ -126,6 +127,19 @@ def package(output, root=ROOT, *, inherited_dependencies=None):
                           'System SDKs, binary build outputs and unchanged companion '
                           'runtime source obligations are supplied separately.'}
     repos = discover(root, '', manifest)
+    verified_sources = []
+    for path, expected, url in additional_sources:
+        path = Path(path)
+        if not path.name.endswith(('.tar.gz', '.tar.xz')) or file_sha(path) != expected:
+            raise ValueError('downloaded source archive hash mismatch or invalid name: ' + path.name)
+        name = 'source/dependencies/' + path.name
+        if any(item[0] == name for item in verified_sources):
+            raise ValueError('duplicate downloaded source archive: ' + path.name)
+        verified_sources.append((name, path, expected, url))
+    if verified_sources:
+        manifest['downloaded_sources'] = [
+            {'path': name, 'sha256': expected, 'origin': url}
+            for name, _, expected, url in verified_sources]
     # Historical diagnostic builds use verified companion archives for unchanged
     # precompiled dependencies, rather than claiming today's dependency pins.
     if inherited_dependencies is not None:
@@ -145,6 +159,13 @@ def package(output, root=ROOT, *, inherited_dependencies=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(output, 'w:gz', format=tarfile.PAX_FORMAT) as destination:
+            for name, path, expected, _ in verified_sources:
+                # Recheck immediately before reading so a replaced build input
+                # cannot silently become the corresponding-source archive.
+                data = path.read_bytes()
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise ValueError('downloaded source changed during export: ' + path.name)
+                add_bytes(destination, name, data)
             for repo, label, head in repos:
                 with tempfile.TemporaryDirectory(prefix='ideck-source-archive-') as temp:
                     exported = Path(temp) / 'source.tar'
@@ -195,5 +216,14 @@ def package(output, root=ROOT, *, inherited_dependencies=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--mesa-sources', type=Path,
+                        help='Include exact Mesa and DirectX-Headers source archives from this directory')
     args = parser.parse_args()
-    package(args.output)
+    extra = []
+    if args.mesa_sources:
+        spec = importlib.util.spec_from_file_location('mesa_source_pins', ROOT / 'build/mesa-d3d12/build.py')
+        mesa = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mesa)
+        extra = [(args.mesa_sources / name, expected, url)
+                 for name, (url, expected, _) in mesa.SOURCES.items()]
+    package(args.output, additional_sources=extra)

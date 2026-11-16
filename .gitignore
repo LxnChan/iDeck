@@ -206,3 +206,8 @@ lxnchan-research.md
 
 # Generated runtime provenance is embedded in the IPA, never committed.
 app/Madeira/legal/runtime-sync.json
+
+# Reproducible experimental Mesa WGL build and generated bundled notices.
+build/mesa-d3d12/work/
+build/mesa-d3d12/dist/
+app/Madeira/licenses/mesa-d3d12/

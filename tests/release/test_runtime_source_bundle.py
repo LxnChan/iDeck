@@ -114,6 +114,26 @@ class RuntimeSourceBundleChecks(unittest.TestCase):
         self.assertNotIn('toolchains/llvm-project', [item['path'] for item in manifest['sources']])
         self.assertIn('FEX', manifest['pins'])
 
+    def test_downloaded_sources_are_embedded_with_their_exact_hashes(self):
+        source = self.work / 'mesa-source.tar.xz'
+        source.write_bytes(b'checksum-pinned upstream source archive')
+        expected = hashlib.sha256(source.read_bytes()).hexdigest()
+        with mock.patch.dict(os.environ, self.env):
+            manifest = source_bundle.package(self.output, self.root, additional_sources=[
+                (source, expected, 'https://example.invalid/mesa-source.tar.xz')])
+        name = 'source/dependencies/' + source.name
+        with tarfile.open(self.output) as archive:
+            self.assertEqual(archive.extractfile(name).read(), source.read_bytes())
+        self.assertEqual(manifest['downloaded_sources'][0]['sha256'], expected)
+
+    def test_changed_downloaded_source_is_rejected_before_export(self):
+        source = self.work / 'mesa-source.tar.xz'
+        source.write_bytes(b'replaced source input')
+        with mock.patch.dict(os.environ, self.env), self.assertRaisesRegex(ValueError, 'hash mismatch'):
+            source_bundle.package(self.output, self.root,
+                                  additional_sources=[(source, '0' * 64, 'https://example.invalid/source')])
+        self.assertFalse(self.output.exists())
+
     def test_untracked_ignored_private_files_and_git_metadata_never_enter_archive(self):
         for name in ("untracked.txt", "ignored/credentials.txt", "obj/generated.o"):
             path = self.root / name

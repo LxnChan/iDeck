@@ -1170,6 +1170,53 @@ static void madeira_seed_winsxs_x86(NSFileManager *fm, NSString *prefix, NSStrin
             seeded, count, skipped);
 }
 
+/* Optional x64 WGL replacement. The normal farm-link pass above restores Wine's
+ * opengl32 at every session start. Never replace files in a game's directory or
+ * the i386/AArch64 farms; a 32-bit Steam launcher keeps its existing DLLs. */
+static void madeira_link_mesa_opengl(NSFileManager *fm, NSString *prefix,
+                                    NSString *bundle, BOOL arm64ecSession)
+{
+    if (!madeira_cfg_bool("opengl-d3d12", 0)) return;
+    NSString *source = [bundle stringByAppendingPathComponent:@"arm64ec-windows"];
+    for (NSString *name in @[@"opengl32-mesa.dll", @"madeira-mesa-gl.dll"]) {
+        if (![fm fileExistsAtPath:[source stringByAppendingPathComponent:name]]) {
+            dprintf(STDERR_FILENO, "[opengl-d3d12] unavailable: missing %s\n", name.UTF8String);
+            return;
+        }
+    }
+    NSString *mesa = [source stringByAppendingPathComponent:@"opengl32-mesa.dll"];
+    NSString *builtin = [source stringByAppendingPathComponent:@"opengl32.dll"];
+    NSArray<NSString *> *farms = arm64ecSession ? @[@"sysx64", @"system32"] : @[@"sysx64"];
+    NSMutableArray<NSString *> *changed = [NSMutableArray array];
+    for (NSString *farm in farms) {
+        NSString *directory = [prefix stringByAppendingPathComponent:
+            [@"drive_c/windows/" stringByAppendingString:farm]];
+        NSString *target = [directory stringByAppendingPathComponent:@"opengl32.dll"];
+        NSString *temporary = [directory stringByAppendingPathComponent:@".opengl32-mesa-link"];
+        [fm removeItemAtPath:temporary error:nil];
+        if (![fm createSymbolicLinkAtPath:temporary withDestinationPath:mesa error:nil] ||
+            rename(temporary.fileSystemRepresentation, target.fileSystemRepresentation)) {
+            [fm removeItemAtPath:temporary error:nil];
+            for (NSString *previous in changed) {
+                [fm removeItemAtPath:previous error:nil];
+                [fm createSymbolicLinkAtPath:previous withDestinationPath:builtin error:nil];
+            }
+            dprintf(STDERR_FILENO, "[opengl-d3d12] unavailable: could not install WGL link\n");
+            return;
+        }
+        [changed addObject:target];
+    }
+    /* Wine's last override wins; retain unrelated user overrides. Native-first
+     * falls back to the normal builtin for the untouched 32-bit launcher. */
+    const char *old = getenv("WINEDLLOVERRIDES");
+    NSString *overrides = (old && *old) ?
+        [NSString stringWithFormat:@"%s;opengl32=n,b", old] : @"opengl32=n,b";
+    setenv("WINEDLLOVERRIDES", overrides.UTF8String, 1);
+    setenv("GALLIUM_DRIVER", "d3d12", 1);
+    setenv("WGL_DISABLE_ERROR_DIALOGS", "1", 0);
+    dprintf(STDERR_FILENO, "[opengl-d3d12] experimental Mesa 25.0.7 WGL -> D3D12 enabled (x64 only)\n");
+}
+
 /* FEX's WOW64 module cannot call sysctl, and without an answer it assumes the
  * newest cores' feature set. A wrong "present" is silent corruption, not a
  * crash (FEAT_AFP claimed on a core without it leaves FPCR.NEP RES0, so every
@@ -1895,6 +1942,7 @@ static void *wine_process_thread(void *arg) {
                 madeira_link_syswow64_wbem(fm, prefix, bundlePath);
                 madeira_seed_winsxs_x86(fm, prefix, bundlePath);
             }
+            madeira_link_mesa_opengl(fm, prefix, bundlePath, use_arm64ec);
             madeira_link_wine_mono(fm, prefix, bundlePath);
             madeira_link_nls(fm, prefix, bundlePath);
             madeira_setup_cjk_fonts(prefix);

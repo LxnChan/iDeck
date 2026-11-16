@@ -164,6 +164,27 @@ struct GameProfile {
         return updated
     }
 
+    /// Persist the renderer choice without losing an unfinished argument draft.
+    @discardableResult
+    func saveOpenGLD3D12(_ enabled: Bool) throws -> String {
+        guard let url else { throw ChildLaunchArguments.Invalid("Could not locate this game's settings.") }
+        let current = text
+        let draft = childArgumentsDraft
+        let lines = current.components(separatedBy: .newlines).filter { raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { return true }
+            return line[..<eq].trimmingCharacters(in: .whitespaces) != "opengl-d3d12"
+        }
+        let preserved = lines.joined(separator: "\n").trimmingCharacters(in: .newlines)
+        let updated = (preserved.isEmpty ? "" : preserved + "\n") + "opengl-d3d12 = \(enabled ? "1" : "0")\n"
+        try updated.write(to: url, atomically: true, encoding: .utf8)
+        if var draft, let draftURL = childArgumentsDraftURL {
+            draft.configuration = updated
+            try JSONEncoder().encode(draft).write(to: draftURL, options: .atomic)
+        }
+        return updated
+    }
+
     /// The whole file ("" when there is none). Setting "" deletes it.
     var text: String {
         get {

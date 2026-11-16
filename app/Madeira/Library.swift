@@ -3464,6 +3464,21 @@ struct LibraryDetail: View {
                     Text("MetalFX upscaling renders at the resolution above and scales the picture up with Apple's MetalFX spatial scaler before it reaches the screen (Direct3D 11 and 12 programs). Use it with a small resolution for frame rate.")
                 }
                 Section {
+                    Toggle("OpenGL support (experimental)", isOn: Binding(get: {
+                        ["1", "true", "yes", "on"].contains(
+                            (GameProfile.parse(bcd.configText)["opengl-d3d12"] ?? "0").lowercased())
+                    }, set: { enabled in
+                        let profile = GameProfile(windowsPath: entry.windowsPath)
+                        do { bcd.configText = try profile.saveOpenGLD3D12(enabled) }
+                        catch let failure {
+                            bcd.configText = profile.text
+                            error = failure.localizedDescription
+                        }
+                    }))
+                } header: { Text("Graphics compatibility") } footer: {
+                    Text("For 64-bit OpenGL games. Game compatibility is still being tested. Restart iDeck after changing this setting.")
+                }
+                Section {
                     Toggle("Microphone mapping", isOn: Binding(get: { entry.microphone ?? false }, set: { entry.microphone = $0 ? true : nil }))
                     if entry.microphone == true {
                         Text("Maps iPad microphone into Windows for in-game voice chat. With Bluetooth headphones, audio output remains in full A2DP stereo fidelity by utilizing the iPad's built-in microphone array.")
