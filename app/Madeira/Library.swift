@@ -1120,20 +1120,18 @@ final class LibraryModel: ObservableObject {
     /// Play is enabling JIT before starting this entry (ContentView.jitReadyForLaunch):
     /// its Play button reads Starting JIT, with a spinner, until JIT is on or fails.
     @Published var startingJIT: UUID?
-    /// A Steam game's saves may not be the latest (SteamOwnedLibrary.cloudHold):
-    /// the alert Play shows before starting it.
+    /// The selected game's pre-launch sync, including retry/conflict choices.
     struct CloudNotice: Equatable {
         enum Kind { case syncing, unchecked, conflict }
         var appID: Int
+        var name: String
         var kind: Kind
         var title: String
         var message: String
     }
     @Published var cloudNotice: CloudNotice?
-    /// Starts the game the notice is about again.
+    /// Continues this launch with its Cloud step already completed or skipped.
     var cloudRetry: (() -> Void)?
-    /// The game (App ID) allowed to start once without the check ("Launch anyway").
-    var cloudBypass: Int?
     /// The entry whose details page the library should open (the notice's "Choose").
     @Published var showDetail: UUID?
 

@@ -1423,6 +1423,10 @@ struct ContentView: View {
     @State private var jitStatus: JITStatus = .unknown
     /// Play without JIT: the start that waits for Enable JIT (jitReadyForLaunch).
     @State private var launchAfterJIT: (() -> Void)?
+    @State private var cloudTask: Task<Void, Never>?
+    @State private var cloudAttempt: UUID?
+    @State private var cloudAfterDismiss: (() -> Void)?
+    @State private var cloudSheetPresented = false
     @State private var entitlements: EntitlementStatus?
     @State private var debuggerAttached = isDebuggerAttached()
     @ObservedObject private var input = InputSettings.shared
@@ -1503,27 +1507,36 @@ struct ContentView: View {
                 Button("Later", role: .cancel) { library.jitNotice = nil }
             } message: { Text(library.jitNotice ?? "") }
             .sheet(isPresented: $jitCoordinator.showSetup) { JITSetupView() }
-            // A Steam game's saves may not be the latest (cloudClear).
-            .alert(library.cloudNotice?.title ?? "Steam Cloud", isPresented: Binding(get: { library.cloudNotice != nil },
-                                                                                     set: { if !$0 { library.cloudNotice = nil } })) {
-                if let notice = library.cloudNotice {
-                    switch notice.kind {
-                    case .syncing: Button("Wait and sync") { library.cloudNotice = nil; cloudWait(notice.appID) }
-                    case .unchecked: Button("Try again") { library.cloudNotice = nil; cloudWait(notice.appID) }
-                    case .conflict:
-                        Button("Choose") {
-                            library.cloudNotice = nil; library.cloudRetry = nil
-                            library.showDetail = library.entries.first { $0.steamAppID == notice.appID }?.id
+            .sheet(isPresented: Binding(get: { cloudSheetPresented },
+                                       set: { if !$0 { finishCloudLaunch(launch: false) } }),
+                   onDismiss: cloudDismissed) {
+                SteamCloudLaunchSheet(
+                    retry: { if let notice = library.cloudNotice { cloudWait(notice.appID) } },
+                    skip: { finishCloudLaunch(launch: true) },
+                    cancel: { finishCloudLaunch(launch: false) },
+                    choose: {
+                        let appID = library.cloudNotice?.appID
+                        finishCloudLaunch(launch: false)
+                        cloudAfterDismiss = {
+                            library.showDetail = library.entries.first { $0.steamAppID == appID }?.id
                         }
+                    })
+                    .onAppear {
+                        if let notice = library.cloudNotice, notice.kind == .syncing { cloudWait(notice.appID) }
                     }
-                    Button("Launch anyway") {
-                        LogStore.shared.log("[steam-cloud] app=\(notice.appID) before-play: launched anyway")
-                        library.cloudNotice = nil; library.cloudBypass = notice.appID
-                        let retry = library.cloudRetry; library.cloudRetry = nil; retry?()
+            }
+            .onChange(of: library.cloudNotice != nil) { _, showing in
+                if showing {
+                    devSheet = nil
+                    // The game details/settings sheet closes first, as it does
+                    // when opening a downloaded game's details from its sheet.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        if library.cloudNotice != nil { cloudSheetPresented = true }
                     }
-                    Button("Cancel", role: .cancel) { library.cloudNotice = nil; library.cloudRetry = nil }
+                } else {
+                    cloudSheetPresented = false
                 }
-            } message: { Text(library.cloudNotice?.message ?? "") }
+            }
             // The full-screen Steam session has no visible log list. Keep raw
             // capture, but avoid parsing every guest debug line and publishing
             // SwiftUI list updates behind the Steam/game display.
@@ -2733,18 +2746,22 @@ struct ContentView: View {
         return false
     }
 
-    /// Whether a Steam game may start as far as its Steam Cloud saves go. If a sync
-    /// is running, the last check failed or never ran, or saves wait for a choice,
-    /// an alert asks first; `retry` starts the game again from there. A check that
-    /// is only old is repeated first, without asking.
-    /// An explicit offline start skips freshness checks, not known conflicts/transfers.
+    /// Every online Play syncs only this game before requesting JIT. The
+    /// continuation carries that decision through the rest of this launch.
+    /// Explicit offline launches retain their known-conflict/transfer warnings.
     private func cloudClear(_ appID: Int, name: String, offline: Bool = false, retry: @escaping () -> Void) -> Bool {
-        guard library.enabled else { return true }
-        if library.cloudBypass == appID { library.cloudBypass = nil; return true }
-        guard let hold = SteamOwnedLibrary.shared.cloudHold(appID, offline: offline) else { return true }
+        guard library.enabled, SteamOwnedLibrary.cloudPlayCheck, SteamOwnedLibrary.shared.signedIn else { return true }
+        guard library.cloudNotice == nil else { return false }
+        let hold: SteamOwnedLibrary.CloudHold
+        if offline {
+            guard let known = SteamOwnedLibrary.shared.cloudHold(appID, offline: offline) else { return true }
+            hold = known == .syncing
+                ? .unchecked("A Steam Cloud transfer is already running for this game.")
+                : known
+        } else {
+            hold = .syncing
+        }
         library.cloudRetry = retry
-        if hold == .stale { cloudWait(appID); return false }
-        LogStore.shared.log("[steam-cloud] app=\(appID) before-play: held \(hold)")
         library.cloudNotice = cloudNotice(appID, name: name, hold: hold)
         return false
     }
@@ -2752,30 +2769,55 @@ struct ContentView: View {
     private func cloudNotice(_ appID: Int, name: String, hold: SteamOwnedLibrary.CloudHold) -> LibraryModel.CloudNotice {
         switch hold {
         case .syncing, .stale:
-            return .init(appID: appID, kind: .syncing, title: "Steam Cloud is still syncing",
-                         message: "\(name)'s saves are still being checked or downloaded. Starting now may leave you on older saves.")
+            return .init(appID: appID, name: name, kind: .syncing, title: "Syncing Steam Cloud",
+                         message: "Syncing saves for \(name) before starting. You can skip this sync and play with this device's saves.")
         case .unchecked(let why):
-            return .init(appID: appID, kind: .unchecked, title: "Steam Cloud could not be checked",
-                         message: "Madeira does not know whether \(name)'s saves on this device are the latest."
+            return .init(appID: appID, name: name, kind: .unchecked, title: "Steam Cloud could not sync",
+                         message: "iDeck could not finish syncing \(name)'s saves."
                             + (why.map { " (\($0))" } ?? "") + " If another device has newer saves, starting now means choosing between them later.")
         case .conflict(let count):
-            return .init(appID: appID, kind: .conflict, title: "Saves differ from Steam Cloud",
+            return .init(appID: appID, name: name, kind: .conflict, title: "Saves differ from Steam Cloud",
                          message: "\(count) of \(name)'s save\(count == 1 ? "" : "s") differ\(count == 1 ? "s" : "") between this device and Steam Cloud. Choose which to keep on the game's page, or start with this device's saves.")
         }
     }
 
-    /// Syncs the game's saves, then starts it; if the saves are still not settled, asks again.
+    /// Started when the sheet appears, so even a fast failure has a visible
+    /// presentation. A cancelled attempt cannot complete a later launch.
     private func cloudWait(_ appID: Int) {
-        guard SteamOwnedLibrary.shared.cloudWaitingFor == nil else { return }
-        let name = MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == appID }?.name ?? "This game"
-        Task { @MainActor in
+        guard cloudTask == nil, let notice = library.cloudNotice, notice.appID == appID else { return }
+        let attempt = UUID()
+        cloudAttempt = attempt
+        library.cloudNotice = cloudNotice(appID, name: notice.name, hold: .syncing)
+        cloudTask = Task { @MainActor in
             let hold = await SteamOwnedLibrary.shared.settleCloud(appID)
+            guard !Task.isCancelled, cloudAttempt == attempt else { return }
+            cloudTask = nil
+            cloudAttempt = nil
             if let hold {
-                library.cloudNotice = cloudNotice(appID, name: name, hold: hold)
+                library.cloudNotice = cloudNotice(appID, name: notice.name, hold: hold)
             } else {
-                let retry = library.cloudRetry; library.cloudRetry = nil; retry?()
+                finishCloudLaunch(launch: true)
             }
         }
+    }
+
+    private func finishCloudLaunch(launch: Bool) {
+        guard let notice = library.cloudNotice else { return }
+        cloudAttempt = nil
+        cloudTask?.cancel()
+        cloudTask = nil
+        LogStore.shared.log("[steam-cloud] app=\(notice.appID) before-play: \(launch ? "continue" : "cancel")")
+        cloudAfterDismiss = launch ? library.cloudRetry : nil
+        library.cloudRetry = nil
+        library.cloudNotice = nil
+        cloudSheetPresented = false
+    }
+
+    /// Request JIT only once the sync sheet has finished dismissing.
+    private func cloudDismissed() {
+        let proceed = cloudAfterDismiss
+        cloudAfterDismiss = nil
+        proceed?()
     }
 
     /// A Home Screen shortcut waiting for the library (a link opened at a cold start
@@ -2827,11 +2869,11 @@ struct ContentView: View {
     /// Play in the library (Library.swift): checks that a session can start,
     /// applies the entry's launch profile and runs the same full sequence as the
     /// developer interface's buttons.
-    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false) {
+    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false) {
         // Dock launches use the same notice in startDock, including starts outside the library.
         if entry.startsSteamGameDirectly, !compatibilityConfirmed,
            let prompt = SteamCompatibilityPrompt(appID: entry.steamAppID, action: .launch,
-               proceed: { launchLibraryEntry(entry, compatibilityConfirmed: true) }) {
+                proceed: { launchLibraryEntry(entry, compatibilityConfirmed: true, cloudConfirmed: cloudConfirmed) }) {
             library.compatibilityPrompt = prompt
             return
         }
@@ -2851,12 +2893,13 @@ struct ContentView: View {
             // madeira-bcd: the game's own options (AVX, NVIDIA, Wine's C++ runtime, its
             // config file) -- this path never reached BCDLaunch, so a Steam game ran without them.
             BCDLaunch.applyLibrary(entry)
-            startDock(game, compactPool: MadeiraDockModel.shared.compactPool, profile: entry)
+            startDock(game, compactPool: MadeiraDockModel.shared.compactPool, profile: entry,
+                      cloudConfirmed: cloudConfirmed)
             return
         }
         if let appID = entry.steamAppID {
-            guard cloudClear(appID, name: entry.title,
-                             retry: { launchLibraryEntry(entry, compatibilityConfirmed: true) }) else { return }
+            guard cloudConfirmed || cloudClear(appID, name: entry.title,
+                             retry: { launchLibraryEntry(entry, compatibilityConfirmed: true, cloudConfirmed: true) }) else { return }
             guard entry.steamProgram?.isEmpty == false else {
                 library.error = "Choose the program to start in Game details › Steam › Program."; return
             }
@@ -3692,17 +3735,16 @@ struct ContentView: View {
     /// `profile` is a Steam game's library entry (its Game details page): the
     /// session then takes that entry's display, performance and on-screen settings.
     private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil,
-                           compatibilityConfirmed: Bool = false) {
+                           compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false) {
         if !compatibilityConfirmed,
            let prompt = SteamCompatibilityPrompt(appID: game.id, action: .launch,
-               proceed: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) {
+                proceed: { startDock(game, compactPool: compactPool, profile: profile,
+                                     compatibilityConfirmed: true, cloudConfirmed: cloudConfirmed) }) {
             library.compatibilityPrompt = prompt
             return
         }
         let inLibrary = library.enabled
         let offline = profile?.steamOffline == true
-        guard jitReadyForLaunch(inLibrary: inLibrary, entry: profile?.id,
-                                then: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) else { return }
         guard wine_process_is_running() == 0, wineserver_is_running() == 0, !inLibrary || library.current == nil else {
             logStore.log("[madeira-dock] a session already ran in this app run; restart Madeira first", level: .error)
             if inLibrary { library.error = "A session is already running." }
@@ -3728,8 +3770,12 @@ struct ContentView: View {
             try profile?.validate()
             guard SteamSignIn.isSignedIn else { throw DockError.message("Sign in to Steam in Madeira before starting Dock.") }
         } catch { fail(error); return }
-        guard cloudClear(game.id, name: game.name, offline: offline,
-                         retry: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) else { return }
+        guard cloudConfirmed || cloudClear(game.id, name: game.name, offline: offline,
+                         retry: { startDock(game, compactPool: compactPool, profile: profile,
+                                            compatibilityConfirmed: true, cloudConfirmed: true) }) else { return }
+        guard jitReadyForLaunch(inLibrary: inLibrary, entry: profile?.id,
+                                then: { startDock(game, compactPool: compactPool, profile: profile,
+                                                   compatibilityConfirmed: true, cloudConfirmed: true) }) else { return }
         // Only one sign-in of the account may be online: the app's own Steam connection
         // (library, playtime, downloads) logs off and its socket closes before the sign-in
         // is handed to Valve's client, and it stays off until the Dock session has ended

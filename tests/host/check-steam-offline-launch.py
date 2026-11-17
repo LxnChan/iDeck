@@ -47,7 +47,7 @@ assert '.onDisappear { if !leaving { model.save(entry) } }' in detail
 assert 'model.save(entry)' in detail
 start = block(content, 'private func startDock(')
 assert 'let offline = profile?.steamOffline == true' in start
-assert start.index('guard !offline || DockOffline.enabled') < start.index('guard cloudClear(')
+assert start.index('guard !offline || DockOffline.enabled') < start.index('guard cloudConfirmed || cloudClear(')
 assert 'name: game.name, offline: offline' in start
 assert 'launchOptions(appID: game.id, cachedOnly: offline)' in start
 assert 'MadeiraDock.configure(game, launchOption: launchOption, forceOffline: offline)' in start

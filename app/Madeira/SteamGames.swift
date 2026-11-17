@@ -1061,6 +1061,60 @@ func steamActionLabel(_ title: String, symbol: String) -> some View {
 /// download of cloud saves. A save that differs on the two sides is never
 /// replaced without the user choosing it here (docs/STEAM_CLOUD.md).
 /// The session menu's "Upload saves and close Madeira" (SteamOwnedLibrary.uploadForQuit).
+/// One selected game's launch sync. It stays open for retries and conflicts;
+/// the launch continues only after the sheet has finished dismissing.
+struct SteamCloudLaunchSheet: View {
+    let retry: () -> Void
+    let skip: () -> Void
+    let cancel: () -> Void
+    let choose: () -> Void
+    @ObservedObject private var library = LibraryModel.shared
+    @ObservedObject private var steam = SteamOwnedLibrary.shared
+
+    var body: some View {
+        VStack(spacing: 20) {
+            if let notice = library.cloudNotice {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(notice.title).font(.title2.bold())
+                        Text(notice.name).font(.headline)
+                        Text(notice.message).foregroundStyle(.secondary)
+                        if notice.kind == .syncing {
+                            switch steam.cloud[notice.appID]?.phase {
+                            case .downloading(let done, let total):
+                                ProgressView(value: Double(done), total: Double(max(total, 1))) {
+                                    Text("Downloading \(done) of \(total)")
+                                }
+                            case .uploading(let done, let total):
+                                ProgressView(value: Double(done), total: Double(max(total, 1))) {
+                                    Text("Uploading \(done) of \(total)")
+                                }
+                            default:
+                                HStack { ProgressView(); Text("Checking saves…") }
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                VStack(spacing: 12) {
+                    if notice.kind == .syncing {
+                        Button("Skip", action: skip).buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Retry", action: retry).buttonStyle(.borderedProminent)
+                        Button("Launch Anyway", action: skip).buttonStyle(.bordered)
+                        if notice.kind == .conflict {
+                            Button("Choose which saves to keep", action: choose)
+                        }
+                    }
+                    Button("Cancel", role: .cancel, action: cancel)
+                }
+            }
+        }
+        .padding(24)
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled()
+    }
+}
+
 struct SteamCloudQuitRow: View {
     let appID: Int
     @ObservedObject private var steam = SteamOwnedLibrary.shared
@@ -1145,7 +1199,7 @@ struct SteamCloudSection: View {
             } header: {
                 Text("Steam Cloud")
             } footer: {
-                Text("Saves sync with Steam Cloud when Madeira starts and when this page opens, not while you play: use Upload saves and close Madeira in the game menu when you stop, or what you played is uploaded the next time Madeira starts. A save that differs on both sides, or that is missing on this device, is never replaced without asking, and a save a sync replaces is kept in Files › Madeira › Steam Cloud Backups.")
+                Text("Saves sync with Steam Cloud before this game starts and when this page first checks them, not while you play. You can skip the launch sync. Use Upload saves and close Madeira in the game menu when you stop, or sync later from this page, Settings, or the next time you start this game. A save that differs on both sides, or that is missing on this device, is never replaced without asking, and a save a sync replaces is kept in Files › Madeira › Steam Cloud Backups.")
             }
         }
     }

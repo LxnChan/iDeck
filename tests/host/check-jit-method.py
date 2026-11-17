@@ -185,7 +185,8 @@ require(enable_jit.count("launchAfterJITEnded(started: false)") == 2 and enable_
 play = function(content, "private func launchLibraryEntry(")
 require("guard jitReadyForLaunch(inLibrary: true, entry: entry.id, then: { startLibraryEntry(entry) }) else { return }" in play
         and play.index("cloudClear(") < play.index("jitReadyForLaunch(")
-        and "then: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) else { return }" in content,
+        and re.search(r"then: \{ startDock\(game, compactPool: compactPool, profile: profile,\s*"
+                      r"compatibilityConfirmed: true, cloudConfirmed: true\) \}\) else \{ return \}", content),
         "Play and Dock starts continue after JIT without repeating the checks already passed")
 
 print("check-jit-method: PASS")
