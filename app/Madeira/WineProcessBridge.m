@@ -54,6 +54,21 @@ static os_log_t wine_proc_log(void) {
 
 #define LOG(fmt, ...) os_log(wine_proc_log(), "[WineProc] " fmt, ##__VA_ARGS__)
 
+/* Queried by the native WASAPI driver on client threads, never from RemoteIO.
+ * Round through hardware frames so Wine's integer conversion back to frames
+ * cannot turn a 1024-frame I/O cycle into a 1023-frame engine period. */
+uint64_t madeira_audio_output_period_100ns(void) {
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    double duration = session.IOBufferDuration;
+    double rate = session.sampleRate;
+    if (!(duration > 0.0 && duration <= 1.0 && rate >= 8000.0 && rate <= 384000.0))
+        return 0;
+    uint64_t frames = (uint64_t)(duration * rate + 0.5);
+    double period = (double)frames * 10000000.0 / rate;
+    uint64_t ticks = (uint64_t)period;
+    return ticks + (period > (double)ticks);
+}
+
 /* ---- ml581: undo the hand-made AppData skeleton ------------------------
  *
  * While chasing the Steam login window I hand-created
@@ -1472,6 +1487,10 @@ static void *wine_process_thread(void *arg) {
                           aerr.localizedDescription.UTF8String);
             else LOG("AVAudioSession active: rate=%.0f latency=%.1fms mic=%d",
                      session.sampleRate, session.outputLatency * 1000.0, micEnabled ? 1 : 0);
+            if (!aerr)
+                fprintf(stderr, "[ios_audio] session active: rate=%.0f Hz I/O buffer=%.3f ms output latency=%.3f ms mic=%d\n",
+                        session.sampleRate, session.IOBufferDuration * 1000.0,
+                        session.outputLatency * 1000.0, micEnabled ? 1 : 0);
         }
 
         /* 2026-07-04 BISECT RESULT: arm A (this env set, all handler fixes

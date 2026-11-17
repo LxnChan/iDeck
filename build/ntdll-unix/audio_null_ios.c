@@ -1494,8 +1494,8 @@ static NTSTATUS ios_timer_loop(void *args) {
             continue;
         }
 
-        if (!s->event || !s->started || !ios_stream_is_live(s) || !ios_audio_lead_ms()) {
-            /* null-mode, nothing to drive yet, or MADEIRA_AUDIO_LEAD_MS=0: the plain 10 ms beat */
+        if (!s->started || !ios_stream_is_live(s)) {
+            /* Null-mode or nothing to drive yet: the plain 10 ms beat. */
             usleep(10000); /* device period, 10 ms */
             if (s->event && s->started)
                 NtSetEvent(s->event, NULL);
@@ -1519,7 +1519,13 @@ static NTSTATUS ios_timer_loop(void *args) {
         if (pad < pad_min) pad_min = pad;
         if (pad > pad_max) pad_max = pad;
 
-        if (pad < lead) {
+        /* Polling clients do not install an event. They still need the
+         * underrun report below; previously the early continue hid every
+         * dropped frame for Godot's flags=0 WASAPI streams. */
+        if (!s->event || !ios_audio_lead_ms()) {
+            if (s->event) NtSetEvent(s->event, NULL);
+            sleep_ns = 10000000;
+        } else if (pad < lead) {
             if (wr != sig_wr) unanswered = 0;
             if (wr != sig_wr || now - sig_ns >= 10000000) {
                 if (wr == sig_wr) unanswered++;
@@ -1551,10 +1557,10 @@ static NTSTATUS ios_timer_loop(void *args) {
             uint64_t clamped = atomic_load_explicit(&g_dev.clamped, memory_order_relaxed);
             double secs = (double)(now - rep_ns) / 1e9;
             double wrote = (double)(wr - rep_wr) / rate;
-            fprintf(stderr, "[ios_audio] ml1230 pacing stream=%p lead %u ms: client wrote %.2f s of audio in %.2f s "
+            fprintf(stderr, "[ios_audio] ml1230 pacing stream=%p mode=%s lead %u ms: client wrote %.2f s of audio in %.2f s "
                     "(%.1f%%) over %u wakes; device short %.1f ms in %u of %u passes (largest pass %u frames); "
                     "ring %llu..%llu frames; worst late wake %.1f ms; clamped %llu samples\n",
-                    (void *)s, ios_audio_lead_ms(), wrote, secs, secs > 0 ? 100.0 * wrote / secs : 0.0, wakes,
+                    (void *)s, s->event ? "event" : "poll", ios_audio_lead_ms(), wrote, secs, secs > 0 ? 100.0 * wrote / secs : 0.0, wakes,
                     (double)(shrt - rep_short) * 1000.0 / rate, scbs - rep_short_cbs, cbs - rep_cbs,
                     atomic_load_explicit(&s->st_cb_max, memory_order_relaxed),
                     (unsigned long long)pad_min, (unsigned long long)pad_max, late_max_ns / 1e6,
@@ -1793,10 +1799,23 @@ static NTSTATUS ios_get_mix_format(void *args) {
     return STATUS_SUCCESS;
 }
 
+/* AVAudioSession is owned by the app bridge. Read its current I/O quantum on
+ * the calling Wine thread, including before the first RemoteIO stream exists.
+ * Fixed 10/5 ms periods let clients choose a render block shorter than one
+ * hardware callback, leaving low-latency clients vulnerable to periodic gaps. */
+extern uint64_t madeira_audio_output_period_100ns(void);
+
+static REFERENCE_TIME ios_audio_device_period(REFERENCE_TIME floor) {
+    uint64_t period = madeira_audio_output_period_100ns();
+    if (period > 10000000ull) period = 0;
+    return period > (uint64_t)floor ? (REFERENCE_TIME)period : floor;
+}
+
 static NTSTATUS ios_get_device_period(void *args) {
     struct get_device_period_params *p = args;
-    if (p->def_period) *p->def_period = 100000; /* 10 ms in 100ns units */
-    if (p->min_period) *p->min_period = 50000;  /* 5 ms */
+    REFERENCE_TIME period = ios_audio_device_period(50000);
+    if (p->def_period) *p->def_period = period > 100000 ? period : 100000;
+    if (p->min_period) *p->min_period = period;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -1813,7 +1832,7 @@ static NTSTATUS ios_get_buffer_size(void *args) {
 
 static NTSTATUS ios_get_latency(void *args) {
     struct get_latency_params *p = args;
-    if (p->latency) *p->latency = 100000; /* 10 ms */
+    if (p->latency) *p->latency = ios_audio_device_period(100000);
     p->result = S_OK;
     return STATUS_SUCCESS;
 }

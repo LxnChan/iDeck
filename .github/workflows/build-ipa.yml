@@ -103,6 +103,12 @@ jobs:
           python3 -B tests/host/check-steam-offline-launch.py
           python3 -B tests/host/check-child-launch-arguments.py --require-swift
 
+      - name: Run audio regression checks
+        run: |
+          python3 -B tests/host/check-audio-period.py
+          python3 -B tests/host/check-audio-downmix.py
+          python3 -B tests/host/check-audio-wow64.py
+
       - name: Run mouse and touch input regression checks
         run: |
           python3 -B tests/host/check-hardware-input.py
