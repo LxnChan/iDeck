@@ -1463,7 +1463,7 @@ struct ContentView: View {
                     sessionBody
                         .navigationBarHidden(true)
                 } else if library.enabled {
-                    LibraryView(play: launchLibraryEntry, enableJIT: enableJIT,
+                    LibraryView(play: { launchLibraryEntry($0) }, enableJIT: enableJIT,
                                 startDock: { startDock($0, compactPool: $1) },
                                 startSteam: { bigPicture in
                                     ideck.bigPictureMode = bigPicture
@@ -1479,6 +1479,10 @@ struct ContentView: View {
             // The library keeps a material bar only before iOS 26 (or when built with a pre-iOS 26 SDK).
             // From iOS 26 with the native SDK, the system draws its soft scroll edge effect instead.
             .toolbarBackground(library.enabled && !Self.systemScrollEdge ? .visible : .automatic, for: .navigationBar)
+            .steamCompatibilityAlert($library.compatibilityPrompt)
+            .onChange(of: library.compatibilityPrompt != nil) { _, showing in
+                if showing { devSheet = nil }
+            }
             // Confirmed launch/preflight failures only. Observed child failures
             // are nonmodal diagnostics in iDeck options, not a global alert.
             .alert("Steam startup failed", isPresented: Binding(get: { ideck.startupFailure != nil }, set: { if !$0 { ideck.startupFailure = nil } })) {
@@ -2823,7 +2827,14 @@ struct ContentView: View {
     /// Play in the library (Library.swift): checks that a session can start,
     /// applies the entry's launch profile and runs the same full sequence as the
     /// developer interface's buttons.
-    private func launchLibraryEntry(_ entry: LibraryEntry) {
+    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false) {
+        // Dock launches use the same notice in startDock, including starts outside the library.
+        if entry.startsSteamGameDirectly, !compatibilityConfirmed,
+           let prompt = SteamCompatibilityPrompt(appID: entry.steamAppID, action: .launch,
+               proceed: { launchLibraryEntry(entry, compatibilityConfirmed: true) }) {
+            library.compatibilityPrompt = prompt
+            return
+        }
         // madeira-bcd: a game seen for the first time starts with Madeira's recommended
         // settings (GameRecommendationsApply.swift).
         var entry = entry
@@ -2844,7 +2855,8 @@ struct ContentView: View {
             return
         }
         if let appID = entry.steamAppID {
-            guard cloudClear(appID, name: entry.title, retry: { launchLibraryEntry(entry) }) else { return }
+            guard cloudClear(appID, name: entry.title,
+                             retry: { launchLibraryEntry(entry, compatibilityConfirmed: true) }) else { return }
             guard entry.steamProgram?.isEmpty == false else {
                 library.error = "Choose the program to start in Game details › Steam › Program."; return
             }
@@ -3679,11 +3691,18 @@ struct ContentView: View {
     /// show in the library, and the session gets the full-screen game view.
     /// `profile` is a Steam game's library entry (its Game details page): the
     /// session then takes that entry's display, performance and on-screen settings.
-    private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil) {
+    private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil,
+                           compatibilityConfirmed: Bool = false) {
+        if !compatibilityConfirmed,
+           let prompt = SteamCompatibilityPrompt(appID: game.id, action: .launch,
+               proceed: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) {
+            library.compatibilityPrompt = prompt
+            return
+        }
         let inLibrary = library.enabled
         let offline = profile?.steamOffline == true
         guard jitReadyForLaunch(inLibrary: inLibrary, entry: profile?.id,
-                                then: { startDock(game, compactPool: compactPool, profile: profile) }) else { return }
+                                then: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) else { return }
         guard wine_process_is_running() == 0, wineserver_is_running() == 0, !inLibrary || library.current == nil else {
             logStore.log("[madeira-dock] a session already ran in this app run; restart Madeira first", level: .error)
             if inLibrary { library.error = "A session is already running." }
@@ -3710,7 +3729,7 @@ struct ContentView: View {
             guard SteamSignIn.isSignedIn else { throw DockError.message("Sign in to Steam in Madeira before starting Dock.") }
         } catch { fail(error); return }
         guard cloudClear(game.id, name: game.name, offline: offline,
-                         retry: { startDock(game, compactPool: compactPool, profile: profile) }) else { return }
+                         retry: { startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: true) }) else { return }
         // Only one sign-in of the account may be online: the app's own Steam connection
         // (library, playtime, downloads) logs off and its socket closes before the sign-in
         // is handed to Valve's client, and it stays off until the Dock session has ended

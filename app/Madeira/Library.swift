@@ -1115,6 +1115,8 @@ final class LibraryModel: ObservableObject {
     /// CS_DEBUGGED is set but no debugger is attached (JIT was enabled outside
     /// Madeira): the text of the alert that offers Madeira's own Enable JIT.
     @Published var jitNotice: String?
+    /// The launch warning lives above details sheets so cancelling returns to the library.
+    @Published var compatibilityPrompt: SteamCompatibilityPrompt?
     /// Play is enabling JIT before starting this entry (ContentView.jitReadyForLaunch):
     /// its Play button reads Starting JIT, with a spinner, until JIT is on or fails.
     @Published var startingJIT: UUID?
@@ -3171,6 +3173,7 @@ struct LibraryView: View {
         .onChange(of: model.restartNotice) { _, notice in if notice != nil { selected = nil } }
         .onChange(of: model.jitNotice) { _, notice in if notice != nil { selected = nil } }
         .onChange(of: model.cloudNotice) { _, notice in if notice != nil { selected = nil } }
+        .onChange(of: model.compatibilityPrompt != nil) { _, showing in if showing { selected = nil } }
         .onChange(of: jit.showSetup) { _, show in if show { selected = nil } }
         .onChange(of: model.showDetail) { _, id in
             guard let id else { return }

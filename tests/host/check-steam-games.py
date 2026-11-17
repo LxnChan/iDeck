@@ -51,8 +51,10 @@ require(games.startswith('// SPDX-License-Identifier: GPL-3.0-or-later\n// Copyr
 require('/* SteamGames.swift in Sources */,' in project and 'path = "SteamGames.swift"' in project,
         'SteamGames.swift is built by the Xcode project')
 content_view = (app / 'ContentView.swift').read_text()
-require('SteamGamesSection(search: search, layout: layout, sort: sort, width: viewport.size.width,\n'
-        '                                      part: .installed, open: { selected = $0 })' in library,
+require(re.search(re.escape('SteamGamesSection(search: search, layout: layout, sort: sort, width: viewport.size.width,')
+                  + r'\s+' + re.escape('part: .installed,')
+                  + r'(?:\s+focused: controller\.connected \? focused : nil,)?\s+'
+                  + re.escape('open: { selected = $0 })'), library) is not None,
         "Library: the Steam section is in the library and opens the library's Game details page")
 require('MadeiraDock.games(drive: drive)' in games and 'let drive = MadeiraDock.drive' in games,
         "the section lists exactly what Dock's own discovery finds")

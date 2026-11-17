@@ -857,6 +857,71 @@ struct SteamDownloadStatus: View {
     }
 }
 
+// MARK: - Known game compatibility
+
+/// A per-attempt notice, keyed by Steam identity rather than a title or program name.
+/// Continuing applies only to this action; future downloads and launches warn again.
+struct SteamCompatibilityPrompt {
+    enum Action {
+        case download, launch
+
+        var continueTitle: String {
+            switch self {
+            case .download: return "Download Anyway"
+            case .launch: return "Launch Anyway"
+            }
+        }
+    }
+
+    let action: Action
+    let proceed: () -> Void
+
+    init?(appID: Int?, action: Action, proceed: @escaping () -> Void) {
+        guard appID == 3527290 else { return nil }
+        self.action = action
+        self.proceed = proceed
+    }
+
+    var title: String { "PEAK is currently unplayable" }
+    var message: String {
+        """
+        PEAK is not currently playable in iDeck. Menus and the airport may open, but entering a level can stall before a playable character appears.
+
+        Observed in testing on an 8 GB iPad:
+        • Long level loading coincided with Photon server timeouts. Reconnection and Steam authentication then failed; switching to offline play after a timeout did not recover gameplay.
+        • Some runs exited unexpectedly while memory usage was high.
+        • Prolonged loading kept the CPU and GPU busy, causing severe heating, screen dimming and reduced performance.
+        • Null-reference errors appeared during save and bundle checks; their role in the loading problem is unconfirmed.
+
+        Reduced texture settings and file-backed memory did not resolve level loading. The underlying causes have not been confirmed.
+        """
+    }
+}
+
+private struct SteamCompatibilityAlert: ViewModifier {
+    @Binding var prompt: SteamCompatibilityPrompt?
+
+    func body(content: Content) -> some View {
+        content.alert(prompt?.title ?? "Game compatibility", isPresented: Binding(
+            get: { prompt != nil }, set: { if !$0 { prompt = nil } }
+        ), presenting: prompt) { request in
+            Button("Cancel", role: .cancel) { prompt = nil }
+            Button(request.action.continueTitle) {
+                prompt = nil
+                request.proceed()
+            }
+        } message: { request in
+            Text(request.message)
+        }
+    }
+}
+
+extension View {
+    func steamCompatibilityAlert(_ prompt: Binding<SteamCompatibilityPrompt?>) -> some View {
+        modifier(SteamCompatibilityAlert(prompt: prompt))
+    }
+}
+
 // MARK: - Download sheet
 
 /// A game the account owns that is not installed: Install, Pause, Resume and
@@ -872,6 +937,7 @@ struct SteamGameSheet: View {
     @State private var freeSpace: Int64?
     @State private var partial = false
     @State private var confirmCancel = false
+    @State private var compatibilityPrompt: SteamCompatibilityPrompt?
 
     var body: some View {
         let owned = SteamOwnedLibrary.enabled ? steam.owned : []
@@ -924,6 +990,7 @@ struct SteamGameSheet: View {
             }
             .navigationTitle("Steam").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .steamCompatibilityAlert($compatibilityPrompt)
             .task(id: steam.downloads[appID]?.state) {
                 partial = steam.hasPartialDownload(appID)
                 let values = try? URL.documentsDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
@@ -955,16 +1022,25 @@ struct SteamGameSheet: View {
                 Button { steam.pause(appID) } label: { steamActionLabel("Pause", symbol: "pause.fill") }
                     .buttonStyle(.bordered)
             case .paused:
-                Button { steam.install(appID) } label: { steamActionLabel("Resume", symbol: "arrow.down.circle.fill") }
+                Button { requestDownload() } label: { steamActionLabel("Resume", symbol: "arrow.down.circle.fill") }
                     .buttonStyle(.borderedProminent)
             case .failed:
-                Button { steam.install(appID) } label: { steamActionLabel("Try again", symbol: "arrow.clockwise") }
+                Button { requestDownload() } label: { steamActionLabel("Try again", symbol: "arrow.clockwise") }
                     .buttonStyle(.borderedProminent)
             }
         } else if item.owned != nil {
-            Button { steam.install(appID) } label: {
+            Button { requestDownload() } label: {
                 steamActionLabel(partial ? "Resume download" : "Install", symbol: "arrow.down.circle.fill")
             }.buttonStyle(.borderedProminent).disabled(!steam.signedIn)
+        }
+    }
+
+    private func requestDownload() {
+        let proceed = { steam.install(appID) }
+        if let prompt = SteamCompatibilityPrompt(appID: appID, action: .download, proceed: proceed) {
+            compatibilityPrompt = prompt
+        } else {
+            proceed()
         }
     }
 }
@@ -1174,6 +1250,7 @@ struct SteamEntrySection: View {
     @ObservedObject private var steam = SteamOwnedLibrary.shared
     @ObservedObject private var games = SteamGamesModel.shared
     @State private var confirmUninstall = false
+    @State private var compatibilityPrompt: SteamCompatibilityPrompt?
     @State private var freeSpace: Int64?
     /// "The game": the install folder's programs (the Program picker) and whether
     /// Steam's launch configuration is being read.
@@ -1243,14 +1320,14 @@ struct SteamEntrySection: View {
                 SteamDownloadStatus(download: download)
                 switch download.state {
                 case .active, .queued: Button("Pause update") { steam.pause(appID) }
-                case .paused, .failed: Button("Resume update") { steam.install(appID) }
+                case .paused, .failed: Button("Resume update") { requestDownload(appID) }
                 }
             } else if downloads, steam.updateAvailable(appID: appID, installedBuild: games.builds[appID]) {
-                Button { steam.install(appID) } label: { Label("Update available — download", systemImage: "arrow.down.circle") }
+                Button { requestDownload(appID) } label: { Label("Update available — download", systemImage: "arrow.down.circle") }
                     .disabled(!steam.signedIn)
             }
             if downloads, download == nil {
-                Button { steam.repair(appID) } label: { Label("Repair installed files", systemImage: "arrow.triangle.2.circlepath") }
+                Button { requestDownload(appID, repair: true) } label: { Label("Repair installed files", systemImage: "arrow.triangle.2.circlepath") }
                     .disabled(!steam.signedIn)
                 Text("Checks installed content and downloads missing or changed files from the current Steam build.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1275,6 +1352,7 @@ struct SteamEntrySection: View {
                 Text("Madeira Dock starts the game through Valve's own Steam client, without the Steam desktop window. Valve's client signs in with your account and decides whether the game may run.")
             }
         }
+        .steamCompatibilityAlert($compatibilityPrompt)
         .onAppear { dock.refresh(); games.refresh() }
         .task(id: download?.state) {
             let values = try? URL.documentsDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
@@ -1287,6 +1365,17 @@ struct SteamEntrySection: View {
                 if let installed { steam.uninstall(installed) }
                 uninstalled()
             }
+        }
+    }
+
+    private func requestDownload(_ appID: Int, repair: Bool = false) {
+        let proceed = {
+            if repair { steam.repair(appID) } else { steam.install(appID) }
+        }
+        if let prompt = SteamCompatibilityPrompt(appID: appID, action: .download, proceed: proceed) {
+            compatibilityPrompt = prompt
+        } else {
+            proceed()
         }
     }
 
