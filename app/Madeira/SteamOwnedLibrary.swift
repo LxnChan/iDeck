@@ -1154,10 +1154,13 @@ final class SteamOwnedLibrary: ObservableObject {
 
     private func run(_ appID: Int) async {
         var outcome = SteamDownloadBackground.Outcome.paused
+        var stage = "metadata"
         do {
+            SteamLog.event("[steam-depot] preparing app=\(appID) stage=\(stage)")
             guard let info = try await fetcher.fetchInstallInfo(appID: UInt32(appID)) else {
                 throw SteamError.appInfoNotFound(UInt32(appID))
             }
+            stage = "content"
             try FileManager.default.createDirectory(at: SteamInstallPaths.common(drive: Self.drive), withIntermediateDirectories: true)
             let folder = try await downloader.install(info, steamApps: Self.steamApps,
                                                       ownedDepots: { [weak self] in try? await self?.fetcher.ownedDepotIDs() }) { [weak self] progress in
@@ -1183,7 +1186,7 @@ final class SteamOwnedLibrary: ObservableObject {
                 outcome = .failed(SteamSignIn.message(error))
             } else {
                 downloads[appID]?.state = .failed(SteamSignIn.message(error))
-                SteamLog.event("[steam-depot] failed app=\(appID) reason=\(Self.reason(error))")
+                SteamLog.event("[steam-depot] failed app=\(appID) stage=\(stage) reason=\(Self.reason(error))")
                 outcome = .failed(SteamSignIn.message(error))
             }
         }

@@ -102,6 +102,7 @@ jobs:
           python3 -B tests/host/check-steam-crashhandler-settings.py
           python3 -B tests/host/check-steam-offline-launch.py
           python3 -B tests/host/check-steam-cloud-launch.py --require-swift
+          python3 -B tests/host/check-steam-cm-transport.py --require-swift
           python3 -B tests/host/check-child-launch-arguments.py --require-swift
 
       - name: Run audio regression checks
