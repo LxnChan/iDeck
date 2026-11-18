@@ -20,6 +20,7 @@ private final class SteamWebSocketDelegate: NSObject, URLSessionWebSocketDelegat
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
+        SteamLog.connection("cm websocket handshake protocol=\(`protocol` ?? "none")")
         // This is the ground truth — what protocol the server actually agreed to.
         // If nil, the server did not echo "steamdataport" in its 101 response.
         SteamLog.trace("WS handshake complete — server protocol: \(`protocol` ?? "(none, server did not echo)")")
@@ -31,14 +32,20 @@ private final class SteamWebSocketDelegate: NSObject, URLSessionWebSocketDelegat
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
+        SteamLog.connection("cm websocket closed code=\(closeCode.rawValue) reason-bytes=\(reason?.count ?? 0)")
         let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         SteamLog.trace("WS server closed — code: \(closeCode.rawValue) reason: \"\(reasonStr)\"")
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
+            SteamLog.connection("cm websocket completed reason=\(SteamCMTransportPolicy.sanitized(error))")
             SteamLog.trace("WS task completed with error: \(error.localizedDescription)")
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        SteamNetworkMetrics.log(metrics, kind: "cm-websocket")
     }
 }
 
@@ -77,6 +84,8 @@ actor SteamConnection {
             catch { throw lastFailure ?? error }
             guard activeConnect == generation else { throw CancellationError() }
             tried.insert(server.endpoint)
+            let began = Date()
+            SteamLog.connection("cm connect attempt=\(attempt) endpoint=\(server.endpoint) app-proxy=\(NetworkProxySettings.shared.isAppActive ? 1 : 0)")
             do {
                 try await connect(to: server)
                 guard activeConnect == generation else { throw CancellationError() }
@@ -84,6 +93,7 @@ actor SteamConnection {
                 guard activeConnect == generation else { throw CancellationError() }
                 guard let task = webSocketTask else { throw CancellationError() }
                 scheduleReceive(task)
+                SteamLog.connection("cm connected endpoint=\(server.endpoint) elapsed-ms=\(Int(Date().timeIntervalSince(began) * 1000))")
                 SteamLog.trace("WebSocket connected — ready for protocol messages")
                 return
             } catch {
@@ -94,6 +104,7 @@ actor SteamConnection {
                 }
                 await serverList.markFailed(endpoint: server.endpoint)
                 let failure = SteamCMTransportPolicy.sanitized(error)
+                SteamLog.connection("cm failed endpoint=\(server.endpoint) elapsed-ms=\(Int(Date().timeIntervalSince(began) * 1000)) reason=\(failure)")
                 SteamLog.event("[steam-cm-transport] attempt=\(attempt) reason=\(failure)")
                 lastFailure = failure
                 guard attempt < 3, SteamCMTransportPolicy.canTryAnotherServer(error) else { throw failure }

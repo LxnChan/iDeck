@@ -2895,11 +2895,11 @@ struct LibraryView: View {
                     }
                 }
             }
-            if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup", "Cloud", "sync", "saves") {
+            if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup") {
                 SteamSettingsSection(open: { settingsSheet = $0 })
             }
+            if settingsShow("Steam Cloud", "Cloud", "sync", "saves", "backup", "restore", "save games") { SavesSection() }
             if settingsShow(".NET", "Mono", "Wine Mono", "framework", "download") { WineMonoSettingsSection() }
-            if settingsShow("saves", "backup", "restore", "save games") { SavesSection() }
             // Search: the matching options of All settings, editable here.
             if !settingsSearch.trimmingCharacters(in: .whitespaces).isEmpty {
                 SettingsSearchResults(query: settingsSearch.trimmingCharacters(in: .whitespaces), refresh: settingsRefresh)

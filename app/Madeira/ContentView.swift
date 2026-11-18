@@ -1537,6 +1537,10 @@ struct ContentView: View {
                     cloudSheetPresented = false
                 }
             }
+            // Stop the optional directory warmup for every game/Steam session.
+            .onChange(of: library.current != nil || ideck.running, initial: true) { _, active in
+                SteamCMDirectoryWarmup.shared.sessionChanged(active: active)
+            }
             // The full-screen Steam session has no visible log list. Keep raw
             // capture, but avoid parsing every guest debug line and publishing
             // SwiftUI list updates behind the Steam/game display.

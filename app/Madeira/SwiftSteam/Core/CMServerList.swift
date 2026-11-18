@@ -39,6 +39,17 @@ actor CMServerList {
 
     // MARK: - Public API
 
+    /// A separate warmup instance refreshes only the persistent directory cache;
+    /// it never logs in or changes a live connection's endpoint/health state.
+    func cacheFreshServerList() async throws -> Int {
+        let fresh = try await fetchServerList()
+        try Task.checkCancellation()
+        servers = fresh
+        lastFetched = Date()
+        cacheServerList()
+        return fresh.count
+    }
+
     /// Get the best available CM server to connect to
     func getServer(excluding: Set<String> = []) async throws -> CMServer {
         if servers.isEmpty || isListStale {
@@ -128,6 +139,8 @@ actor CMServerList {
 
     /// Fetch WebSocket CM server list from Steam Web API
     private func fetchServerList() async throws -> [CMServer] {
+        let began = Date()
+        SteamLog.connection("directory request host=api.steampowered.com path=/ISteamDirectory/GetCMListForConnect/v1/ request-timeout=10 resource-timeout=12 app-proxy=\(NetworkProxySettings.shared.isAppActive ? 1 : 0)")
         let urlString = "https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/?cellid=0&cmtype=websockets"
         guard let url = URL(string: urlString) else {
             throw SteamError.connectionFailed("Invalid CM directory URL")
@@ -142,11 +155,12 @@ actor CMServerList {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 10
             config.timeoutIntervalForResource = 12
-            let http = NetworkProxySettings.shared.makeSession(configuration: config)
+            let http = NetworkProxySettings.shared.makeSession(configuration: config, delegate: SteamNetworkMetrics(kind: "directory"))
             defer { http.finishTasksAndInvalidate() }
             (data, response) = try await http.data(for: request)
         }
 
+        SteamLog.connection("directory response status=\((response as? HTTPURLResponse)?.statusCode ?? 0) bytes=\(data.count) elapsed-ms=\(Int(Date().timeIntervalSince(began) * 1000))")
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             throw SteamError.connectionFailed("CM directory HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
@@ -186,6 +200,8 @@ actor CMServerList {
     private func cacheServerList() {
         if let data = try? JSONEncoder().encode(servers) {
             defaults.set(data, forKey: cacheKey)
+            defaults.set(Date(), forKey: cacheKey + "_fetched_at")
+            SteamLog.connection("directory cache written servers=\(servers.count)")
         }
     }
 
@@ -195,6 +211,83 @@ actor CMServerList {
             return nil
         }
         var seen = Set<String>()
+        let age = (defaults.object(forKey: cacheKey + "_fetched_at") as? Date)
+            .map { String(max(0, Int(Date().timeIntervalSince($0)))) } ?? "unknown"
+        SteamLog.connection("directory cache read servers=\(cached.count) age-seconds=\(age)")
         return cached.filter { Self.validHost($0.host) && $0.port > 0 && seen.insert($0.endpoint).inserted }
+    }
+}
+
+/// One optional, low-priority task per app run. Failures sleep rather than poll;
+/// a game cancels both an in-flight URLSession request and any retry sleep.
+/// The foreground Steam connection keeps its existing retry/fallback policy.
+@MainActor
+final class SteamCMDirectoryWarmup {
+    static let shared = SteamCMDirectoryWarmup()
+    private let directory: CMServerList
+    private let sleep: @Sendable (UInt64) async throws -> Void
+    private var task: Task<Void, Never>?
+    private var started = false
+    private var gameActive = false
+    private(set) var completed = false
+
+    init(directory: CMServerList = CMServerList(),
+         sleep: @escaping @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }) {
+        self.directory = directory
+        self.sleep = sleep
+    }
+
+    func start() {
+        started = true
+        schedule()
+    }
+
+    func sessionChanged(active: Bool) {
+        guard gameActive != active else { return }
+        gameActive = active
+        if active {
+            task?.cancel()
+            SteamLog.connection("directory warmup paused for game")
+        } else {
+            schedule()
+        }
+    }
+
+    static func retryDelay(attempt: Int) -> UInt64 {
+        let seconds: [UInt64] = [5, 15, 30, 60, 120, 300]
+        return seconds[min(max(attempt - 1, 0), seconds.count - 1)] * 1_000_000_000
+    }
+
+    private func schedule() {
+        guard started, !gameActive, !completed, task == nil else { return }
+        task = Task(priority: .utility) { await self.run() }
+    }
+
+    private func run() async {
+        defer {
+            task = nil
+            // If a game ended while cancellation was draining, resume only now:
+            // two warmup requests must never overlap.
+            schedule()
+        }
+        var attempt = 0
+        while !Task.isCancelled && !gameActive && !completed {
+            attempt += 1
+            let began = Date()
+            do {
+                let count = try await directory.cacheFreshServerList()
+                try Task.checkCancellation()
+                completed = true
+                SteamLog.event("[steam-cm-warmup] cached servers=\(count) attempt=\(attempt)")
+            } catch {
+                guard !Task.isCancelled, !gameActive else { return }
+                let delay = Self.retryDelay(attempt: attempt)
+                let failure = (error as? SteamError) ?? SteamCMTransportPolicy.sanitized(error)
+                SteamLog.connection("directory warmup failed attempt=\(attempt) elapsed-ms=\(Int(Date().timeIntervalSince(began) * 1000)) "
+                    + "reason=\(failure) retry-seconds=\(delay / 1_000_000_000)")
+                do { try await sleep(delay) }
+                catch { return }
+            }
+        }
     }
 }

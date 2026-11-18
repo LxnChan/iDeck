@@ -680,8 +680,6 @@ struct SteamSettingsSection: View {
     let open: (SettingsSheet) -> Void
     @ObservedObject private var signIn = SteamSignInModel.shared
     @ObservedObject private var dock = MadeiraDockModel.shared
-    @ObservedObject private var steam = SteamOwnedLibrary.shared
-    @ObservedObject private var cloudSetting = SteamCloudSetting.shared
     @ObservedObject private var onboarding = OnboardingModel.shared
     @State private var confirmSignOut = false
 
@@ -702,18 +700,6 @@ struct SteamSettingsSection: View {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if SteamOwnedLibrary.enabled {
-                Toggle("Steam Cloud saves", isOn: $cloudSetting.on)
-                if cloudSetting.on {
-                    Button {
-                        Task { await steam.syncAllCloud() }
-                    } label: {
-                        Label("Sync all Steam Cloud saves", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .disabled(!steam.cloudCanSyncAll)
-                    cloudSyncStatus
-                }
-            }
             if onboarding.available {
                 Button { onboarding.rerun() } label: { Label("Run setup again", systemImage: "wand.and.stars") }
             }
@@ -727,6 +713,27 @@ struct SteamSettingsSection: View {
         }
         .onAppear { signIn.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: SteamSignIn.didChange)) { _ in signIn.refresh() }
+    }
+}
+
+/// The existing Cloud controls live with local save backup/restore in Settings.
+struct SteamCloudSettingsRows: View {
+    @ObservedObject private var steam = SteamOwnedLibrary.shared
+    @ObservedObject private var cloudSetting = SteamCloudSetting.shared
+
+    var body: some View {
+        if SteamOwnedLibrary.enabled {
+            Toggle("Steam Cloud saves", isOn: $cloudSetting.on)
+            if cloudSetting.on {
+                Button {
+                    Task { await steam.syncAllCloud() }
+                } label: {
+                    Label("Sync all Steam Cloud saves", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(!steam.cloudCanSyncAll)
+                cloudSyncStatus
+            }
+        }
     }
 
     @ViewBuilder private var cloudSyncStatus: some View {

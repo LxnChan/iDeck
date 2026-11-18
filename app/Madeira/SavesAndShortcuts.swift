@@ -307,6 +307,7 @@ struct SavesSection: View {
 
     var body: some View {
         Section {
+            SteamCloudSettingsRows()
             Button {
                 busy = true
                 message = nil

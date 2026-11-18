@@ -54,7 +54,7 @@ require('syncCloud(game.id, forceTransfers: true)' in manual and 'forceTransfers
         'manual sync copies safe one-sided changes even when automatic copying is disabled')
 require('Button {' in settings and 'Label("Sync all Steam Cloud saves"' in settings
         and 'await steam.syncAllCloud()' in settings and '.disabled(!steam.cloudCanSyncAll)' in settings,
-        'Settings › Steam has a guarded manual whole-library Cloud sync button')
+        'Settings › Saves has a guarded manual whole-library Cloud sync button')
 require('"Cloud", "sync", "saves"' in library,
         'Settings search finds the Steam Cloud sync controls')
 

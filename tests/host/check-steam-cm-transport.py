@@ -17,6 +17,7 @@ core = root / 'app/Madeira/SwiftSteam/Core'
 connection = (core / 'SteamConnection.swift').read_text(encoding='utf-8')
 servers = (core / 'CMServerList.swift').read_text(encoding='utf-8')
 errors = (core / 'SteamError.swift').read_text(encoding='utf-8')
+logging = (root / 'app/Madeira/SwiftSteam/Helpers/SteamLog.swift').read_text(encoding='utf-8')
 
 
 def function(signature):
@@ -33,7 +34,7 @@ assert 'serverList.getServer(excluding: tried)' in connection
 assert 'didReceive challenge' not in connection, 'TLS trust validation must stay enabled'
 assert 'timeoutIntervalForRequest = 10' in servers
 assert 'timeoutIntervalForResource = 12' in servers
-assert 'NetworkProxySettings.shared.makeSession(configuration: config)' in servers
+assert 'NetworkProxySettings.shared.makeSession(configuration: config, delegate: SteamNetworkMetrics' in servers
 assert 'defer { http.finishTasksAndInvalidate() }' in servers
 model = (root / 'app/Madeira/SteamOwnedLibrary.swift').read_text(encoding='utf-8')
 assert 'stage=\\(stage) reason=\\(Self.reason(error))' in model
@@ -47,22 +48,28 @@ import FoundationNetworking
 final class NetworkProxySettings: @unchecked Sendable {
     static let shared = NetworkProxySettings()
     let isAppActive = false
-    func makeSession(configuration: URLSessionConfiguration) -> URLSession {
+    func makeSession(configuration: URLSessionConfiguration, delegate: URLSessionDelegate? = nil) -> URLSession {
         fatalError("Host tests must never contact Steam")
     }
 }
-enum SteamLog {
-    private static let lock = NSLock()
-    private static var lines: [String] = []
-    static func trace(_ line: String) {}
-    static func event(_ line: String) {
+enum SteamSignIn {
+    static func flag(_ key: String, default fallback: Bool) -> Bool { false }
+}
+enum TestDiagnostics { static var enabled = false }
+func madeira_get_diag_enabled() -> Int32 { TestDiagnostics.enabled ? 1 : 0 }
+final class LogStore: @unchecked Sendable {
+    static let shared = LogStore()
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func log(_ line: String) {
         lock.lock(); defer { lock.unlock() }; lines.append(line)
     }
-    static var events: String {
+    var events: String {
         lock.lock(); defer { lock.unlock() }; return lines.joined(separator: "\n")
     }
 }
-''' + errors + '\n' + servers + r'''
+''' + errors + '\n' + logging + '\n' + servers + r'''
+extension SteamLog { static var events: String { LogStore.shared.events } }
 extension CMServerList {
     func seed(_ count: Int, stale: Bool = false) {
         servers = (0..<count).map { CMServer(host: "cm\($0).steampowered.com", port: 443) }
@@ -74,12 +81,16 @@ extension CMServerList {
     }
 }
 actor DirectoryScript {
-    enum Reply: Sendable { case fail(Int), http(Int, String), waitForCancellation }
+    enum Reply: Sendable { case fail(Int), http(Int, String), waitForCancellation, heldSuccess }
     var replies: [Reply]
     var requests: [URLRequest] = []
+    var held: CheckedContinuation<Void, Never>?
+    var inFlight = 0, maximumInFlight = 0
     init(_ replies: [Reply]) { self.replies = replies }
     func respond(_ request: URLRequest) async throws -> (Data, URLResponse) {
         requests.append(request)
+        inFlight += 1; maximumInFlight = max(maximumInFlight, inFlight)
+        defer { inFlight -= 1 }
         precondition(!replies.isEmpty, "directory exceeded its request budget")
         switch replies.removeFirst() {
         case .fail(let code):
@@ -93,10 +104,27 @@ actor DirectoryScript {
         case .waitForCancellation:
             try await Task.sleep(nanoseconds: 30_000_000_000)
             fatalError("request was not cancelled")
+        case .heldSuccess:
+            await withCheckedContinuation { held = $0 }
+            return (Data(#"{"response":{"serverlist":[{"endpoint":"cm-late.steampowered.com:443"}]}}"#.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
     }
     var count: Int { requests.count }
+    func release() { held?.resume(); held = nil }
 }
+actor RetrySleeper {
+    var delays: [UInt64] = []
+    var block = false
+    init(block: Bool = false) { self.block = block }
+    func sleep(_ delay: UInt64) async throws {
+        delays.append(delay)
+        if block { try await Task.sleep(nanoseconds: 30_000_000_000) }
+        else { await Task.yield() }
+    }
+    var count: Int { delays.count }
+}
+extension SteamCMDirectoryWarmup { var warming: Bool { task != nil } }
 final class FakeTask {
     enum CloseCode { case goingAway }
     var cancelled = false
@@ -246,9 +274,94 @@ actor Harness {
         }
         print("PASS: production CM selection, cleanup, certificate validation, cancellation and transport retry bounds")
     }
+    @MainActor static func until(_ condition: @MainActor () async -> Bool) async throws {
+        for _ in 0..<2000 {
+            if await condition() { return }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        fatalError("warmup did not reach the expected state")
+    }
+    @MainActor static func checkWarmup() async throws {
+        defer { for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) } }
+        // A cached list does not count as a successful refresh: keep trying
+        // beyond the foreground budget, then stop for the rest of this app run.
+        let cached = [CMServerList.CMServer(host: "cm-cached.steampowered.com", port: 443)]
+        let (list, script, defaults) = directory([
+            .fail(-1001), .fail(-1200), .fail(-1009), .fail(-1202),
+            .http(503, ""), .http(200, "invalid"), .fail(-1001), .http(200, success),
+        ], cached: cached)
+        let sleeper = RetrySleeper()
+        let warmup = SteamCMDirectoryWarmup(directory: list, sleep: { try await sleeper.sleep($0) })
+        warmup.start(); warmup.start()
+        try await until { warmup.completed && !warmup.warming }
+        let count = await script.count; assert(count == 8)
+        let delays = await sleeper.delays
+        assert(delays == [5, 15, 30, 60, 120, 300, 300].map { UInt64($0) * 1_000_000_000 })
+        let stored = try JSONDecoder().decode([CMServerList.CMServer].self,
+            from: defaults.data(forKey: "swiftsteam_cm_servers_websocket")!)
+        assert(stored[0].host == "cm-new.steampowered.com")
+        assert(defaults.object(forKey: "swiftsteam_cm_servers_websocket_fetched_at") is Date)
+        warmup.start(); warmup.sessionChanged(active: true); warmup.sessionChanged(active: false)
+        await Task.yield()
+        let afterSuccess = await script.count; assert(afterSuccess == 8 && !warmup.warming)
+
+        // A game cancels the actual request and cannot persist its late result.
+        let (cancelList, cancelScript, cancelDefaults) = directory([.waitForCancellation, .http(200, success)])
+        let cancelled = SteamCMDirectoryWarmup(directory: cancelList)
+        cancelled.start(); cancelled.start()
+        try await until { await cancelScript.count == 1 }
+        cancelled.sessionChanged(active: true)
+        try await until { !cancelled.warming }
+        assert(!cancelled.completed && cancelDefaults.data(forKey: "swiftsteam_cm_servers_websocket") == nil)
+        cancelled.start(); await Task.yield(); assert(!cancelled.warming)
+        cancelled.sessionChanged(active: false)
+        try await until { cancelled.completed && !cancelled.warming }
+        let resumed = await cancelScript.count; assert(resumed == 2)
+
+        // Retry sleeps are cancellable too; nothing polls in game.
+        let (sleepList, sleepScript, _) = directory([.fail(-1001), .http(200, success)])
+        let blocking = RetrySleeper(block: true)
+        let sleeping = SteamCMDirectoryWarmup(directory: sleepList, sleep: { try await blocking.sleep($0) })
+        sleeping.start(); try await until { await blocking.count == 1 }
+        sleeping.sessionChanged(active: true); try await until { !sleeping.warming }
+        let pausedCount = await sleepScript.count; assert(pausedCount == 1)
+        sleeping.sessionChanged(active: false)
+        try await until { sleeping.completed && !sleeping.warming }
+
+        // Drain cancellation before restarting, even if the response ignores it.
+        let (lateList, lateScript, lateDefaults) = directory([.heldSuccess, .http(200, success)])
+        let late = SteamCMDirectoryWarmup(directory: lateList)
+        late.start(); try await until { await lateScript.held != nil }
+        late.sessionChanged(active: true); late.sessionChanged(active: false); late.start()
+        await Task.yield()
+        let beforeRelease = await lateScript.count; assert(beforeRelease == 1)
+        assert(lateDefaults.data(forKey: "swiftsteam_cm_servers_websocket") == nil)
+        await lateScript.release()
+        try await until { late.completed && !late.warming }
+        let peak = await lateScript.maximumInFlight; assert(peak == 1)
+        let final = try JSONDecoder().decode([CMServerList.CMServer].self,
+            from: lateDefaults.data(forKey: "swiftsteam_cm_servers_websocket")!)
+        assert(final[0].host == "cm-new.steampowered.com")
+        print("PASS: startup warmup retries through outages, bounded backoff, single flight, persistence and game cancellation/resume")
+    }
+    static func checkLogging() {
+        SteamLog.connection("extended-disabled-marker")
+        assert(!SteamLog.events.contains("extended-disabled-marker"))
+        TestDiagnostics.enabled = true
+        SteamLog.connection("extended-enabled-marker")
+        assert(SteamLog.events.contains("extended-enabled-marker"))
+        assert(SteamNetworkMetrics.milliseconds(nil, Date()) == "-")
+        assert(SteamNetworkMetrics.milliseconds(Date(timeIntervalSince1970: 1), Date(timeIntervalSince1970: 2)) == "1000")
+        TestDiagnostics.enabled = false
+        print("PASS: production Extended logging gate and missing-phase timings")
+    }
     static func main() async throws {
+        checkLogging()
+        TestDiagnostics.enabled = true
         try await checkDirectory()
         try await checkTransport()
+        try await checkWarmup()
+        assert(!SteamLog.events.contains("secret-token") && !SteamLog.events.contains("private.invalid"))
     }
 }
 '''

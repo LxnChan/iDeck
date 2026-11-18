@@ -975,6 +975,7 @@ final class SteamOwnedLibrary: ObservableObject {
     /// continue afterwards; the app's Steam connection is closed for the whole
     /// session (SteamConnectionGate). Idempotent.
     func sessionChanged(active running: Bool) {
+        if running { SteamCMDirectoryWarmup.shared.sessionChanged(active: true) }
         guard Self.enabled, running != inSession else { return }
         if running {
             inSession = true
@@ -990,6 +991,7 @@ final class SteamOwnedLibrary: ObservableObject {
             // Madeira Dock may still hold the account (dockEnded() releases it).
             guard gate.reopen(sessionRunning: false) else { return }
             inSession = false
+            SteamCMDirectoryWarmup.shared.sessionChanged(active: false)
             let resume = resumeAfterSession.sorted()
             resumeAfterSession.removeAll()
             for id in resume { install(id) }
