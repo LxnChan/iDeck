@@ -1119,13 +1119,27 @@ struct SteamCloudQuitRow: View {
 
     private var working: Bool { if case .working = steam.cloudQuit { return true }; if case .done = steam.cloudQuit { return true }; return false }
     private var succeeded: Bool { if case .done = steam.cloudQuit { return true }; return false }
+    private var savedLocally: Bool { if case .failed = steam.cloudQuit { return true }; return false }
+    private var actionColor: Color {
+        if succeeded { return .green }
+        if savedLocally { return .orange }
+        return Color.primary.opacity(0.08)
+    }
 
     private func run(replaceCloud: Bool) {
         Task {
             await steam.uploadForQuit(appID, replaceCloud: replaceCloud)
-            guard case .done(let count) = steam.cloudQuit else { return }
-            LogStore.shared.log("[steam-cloud] app=\(appID) quit-upload done files=\(count): closing Madeira")
-            try? await Task.sleep(nanoseconds: 2_500_000_000)   // show the green success button before closing
+            switch steam.cloudQuit {
+            case .done(let count):
+                LogStore.shared.log("[steam-cloud] app=\(appID) quit-upload done files=\(count): closing Madeira")
+            case .failed:
+                // Uploads never change the device's saves. Every online Play
+                // compares them again through the existing launch-sync flow.
+                LogStore.shared.log("[steam-cloud] app=\(appID) quit-upload deferred to next online launch: closing Madeira")
+            default:
+                return      // Conflicts still require the user's choice.
+            }
+            try? await Task.sleep(nanoseconds: 2_500_000_000)   // leave time to read the result before closing
             exit(0)
         }
     }
@@ -1140,23 +1154,22 @@ struct SteamCloudQuitRow: View {
                                 if case .working = steam.cloudQuit {
                                     ProgressView().tint(.primary)
                                 } else {
-                                    Image(systemName: succeeded ? "checkmark.circle.fill" : "icloud.and.arrow.up")
+                                    Image(systemName: succeeded ? "checkmark.circle.fill" : (savedLocally ? "internaldrive.fill" : "icloud.and.arrow.up"))
                                         .font(.system(size: 28, weight: .medium))
                                 }
                             }.frame(height: 32)
-                            Text(succeeded ? "Saves uploaded" : "Upload saves and close Madeira")
+                            Text(succeeded ? "Saves uploaded" : (savedLocally ? "Saved locally" : "Upload saves and close Madeira"))
                                 .font(.subheadline.weight(.semibold))
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(12)
                         .frame(width: 144, height: 144)
-                        .foregroundStyle(succeeded ? Color.white : Color.primary)
-                        .background(succeeded ? Color.green : Color.primary.opacity(0.08),
-                                    in: RoundedRectangle(cornerRadius: 16))
+                        .foregroundStyle(succeeded || savedLocally ? Color.white : Color.primary)
+                        .background(actionColor, in: RoundedRectangle(cornerRadius: 16))
                     }
                     .buttonStyle(.plain)
-                    .disabled(working)
+                    .disabled(working || savedLocally)
                     .accessibilityLabel("Upload saves and close Madeira")
                     Spacer(minLength: 0)
                 }
@@ -1167,7 +1180,9 @@ struct SteamCloudQuitRow: View {
                     Label(count == 0 ? "Steam Cloud is already up to date. Closing…" : "Uploaded \(count) save\(count == 1 ? "" : "s"). Closing…",
                           systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green)
                 case .failed(let message):
-                    Text("Not uploaded, Madeira stays open: \(message)").font(.callout).foregroundStyle(.orange)
+                    Label("Saves kept locally. They will sync on this game's next online launch. Closing…",
+                          systemImage: "internaldrive.fill").font(.callout).foregroundStyle(.orange)
+                    Text("Upload failed: \(message)").font(.caption).foregroundStyle(.secondary)
                 case .conflict(let count):
                     Text("Not uploaded: \(count) save\(count == 1 ? " was" : "s were") also changed in Steam Cloud, by another device or with no record of a sync here. Uploading would replace the cloud's \(count == 1 ? "copy" : "copies").")
                         .font(.callout).foregroundStyle(.orange)
@@ -1179,7 +1194,7 @@ struct SteamCloudQuitRow: View {
                 case nil:
                     EmptyView()
                 }
-                Text("Save in the game first. Uploads this game's saves to Steam Cloud, then closes Madeira; Steam in this session is signed out when the upload starts.")
+                Text("Save in the game first. Uploads this game's saves to Steam Cloud, then closes Madeira. If upload fails, local saves are kept for the next online launch. Steam in this session is signed out when the upload starts.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

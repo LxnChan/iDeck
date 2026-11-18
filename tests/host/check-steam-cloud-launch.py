@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the production launch-sync controller and transfer sequencing without Steam."""
+"""Exercise production launch sync, upload-and-quit outcomes and transfer sequencing without Steam."""
 from pathlib import Path
 import argparse
 import shutil
@@ -56,6 +56,11 @@ print("PASS: no startup sync; sync precedes JIT; skip/retry UI and transfer canc
 
 notice = block(library, "struct CloudNotice: Equatable")
 hold = block(owned, "enum CloudHold: Equatable")
+quit_row = block(games, "struct SteamCloudQuitRow: View")
+quit_controller = block(quit_row, "private func run(").replace("private func ", "func ", 1)
+quit_properties = "\n".join(block(quit_row, signature).replace("private var ", "var ", 1) for signature in [
+    "private var succeeded:", "private var savedLocally:",
+])
 controller = "\n".join(block(content, signature).replace("private func ", "func ", 1) for signature in [
     "private func cloudClear(", "private func cloudNotice(", "private func cloudWait(",
     "private func finishCloudLaunch(", "private func cloudDismissed(",
@@ -76,9 +81,16 @@ enum SteamLog { static func event(_ text: String) {} }
 @MainActor final class SteamOwnedLibrary {
     static let shared = SteamOwnedLibrary()
     static var cloudPlayCheck = true
-''' + hold + r'''
+''' + hold + "\n" + block(owned, "enum CloudQuit: Equatable") + r'''
     var signedIn = true
     var knownHold: CloudHold?
+    var cloudQuit: CloudQuit?
+    var quitOutcome: CloudQuit?
+    var quitUploads: [Int] = []
+    func uploadForQuit(_ appID: Int, replaceCloud: Bool = false) async {
+        quitUploads.append(appID)
+        cloudQuit = quitOutcome
+    }
     var calls: [Int] = []
     var outcomes: [Int: CloudHold] = [:]
     var paused = false
@@ -99,6 +111,14 @@ enum SteamLog { static func event(_ text: String) {} }
     var cloudAfterDismiss: (() -> Void)?
     var cloudSheetPresented = true
 ''' + controller + r'''
+}
+@MainActor final class QuitHarness {
+    let appID = 42
+    let steam = SteamOwnedLibrary.shared
+    var closedAt: Date?
+    // Shadow process exit so the production quit controller can be exercised.
+    func exit(_ status: Int32) { precondition(status == 0); closedAt = Date() }
+''' + quit_properties + "\n" + quit_controller + r'''
 }
 @MainActor final class SyncHarness {
     static let cloudEnabled = true, cloudPlayCheck = true, cloudAutomatic = true
@@ -272,6 +292,56 @@ enum SteamLog { static func event(_ text: String) {} }
         assert(!sync.uploads.contains(45) && sync.checks.filter { $0 == 45 }.count == 1)
         assert(!sync.cloudBusy.contains(45) && sync.cloudWaitingFor == nil)
         print("PASS: real sync methods retain bidirectional transfers, report failures, retry and stop on cancellation")
+
+        // Both terminal outcomes close only after their result was visible for
+        // 2.5 s. A network failure is local-only, never a successful upload.
+        let quit = QuitHarness()
+        for outcome in [SteamOwnedLibrary.CloudQuit.done(1), .failed("No internet connection") ] {
+            steam.quitOutcome = outcome
+            quit.closedAt = nil
+            let started = Date()
+            quit.run(replaceCloud: false)
+            await spin { steam.cloudQuit == outcome }
+            switch outcome {
+            case .done:
+                assert(quit.succeeded && !quit.savedLocally)
+            case .failed:
+                assert(!quit.succeeded && quit.savedLocally)
+            default:
+                preconditionFailure("Unexpected test outcome")
+            }
+            for _ in 0..<100 where quit.closedAt == nil {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard let closed = quit.closedAt else { preconditionFailure("Result did not close Madeira") }
+            assert(closed.timeIntervalSince(started) >= 2.5)
+        }
+        assert(steam.quitUploads == [42, 42])
+
+        // A deferred quit rejoins the regular selected-game launch sync. It
+        // does not bypass the fresh comparison or start a second sync queue.
+        let beforeDeferred = steam.calls.count, beforeLaunch = launches
+        steam.outcomes[42] = nil
+        steam.knownHold = nil
+        assert(!play())
+        flow.cloudWait(42)
+        await spin { flow.cloudTask == nil }
+        assert(steam.calls.count == beforeDeferred + 1 && steam.calls.last == 42)
+        flow.cloudDismissed()
+        assert(launches == beforeLaunch + 1)
+
+        // An unresolved conflict, an unfinished transfer, or no result keeps
+        // the app open and never reports a local-only terminal outcome.
+        for outcome: SteamOwnedLibrary.CloudQuit? in [.conflict(1), .working("Checking"), nil] {
+            quit.closedAt = nil
+            steam.cloudQuit = nil
+            steam.quitOutcome = outcome
+            quit.run(replaceCloud: false)
+            await spin { steam.cloudQuit == outcome }
+            for _ in 0..<100 { await Task.yield() }
+            assert(quit.closedAt == nil && !quit.succeeded && !quit.savedLocally)
+        }
+        print("PASS: real quit controller delays success/local-only exit, preserves conflicts, and rejoins next-launch sync")
     }
 }
 '''

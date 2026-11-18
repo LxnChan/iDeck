@@ -39,7 +39,16 @@ session, and the app quits once the upload is confirmed. It only uploads:
 files that changed on this device and not in the cloud. It waits until two
 looks 2 s apart find the same device files, since the game may be writing.
 A file that also changed in the cloud is not sent without the user choosing
-to replace the cloud's copy. On any failure the app stays open and says so.
+to replace the cloud's copy; that conflict keeps the app open for the choice.
+The action is a square tile at the top of the session menu. A confirmed upload
+turns it green; an upload failure (including no network) turns it orange and
+shows **Saved locally**. Both results stay visible for 2.5 s before the app
+quits. Upload failure leaves the device's existing save files in their original
+folders. The next online launch of that game retries through the same fresh
+comparison, upload/download and conflict-choice flow described below. It uses
+the local files and sync baseline already on disk, so it needs no separate
+upload queue or forced overwrite. An offline launch or a skipped/disabled sync
+continues using the local saves until a later sync.
 `env.MADEIRA_STEAM_CLOUD_QUIT = 0` hides the button.
 
 ## Before a game starts
