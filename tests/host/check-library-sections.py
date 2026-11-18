@@ -8,7 +8,7 @@ Source checks that the library page is laid out as the fork's sectioned library:
 Steam (the games being downloaded and the games Steam installed, collapsed by the
 title), its Not installed group (folding on its own), then Other games (the
 games you added, with Add a game); one grid without the Steam section; the
-texts; the collapse switch MADEIRA_LIBRARY_COLLAPSE and the remembered states;
+texts; the collapse switch MADEIRA_LIBRARY_COLLAPSE and the initial section states;
 search and layout apply to every section; pull to refresh; the log line.
 The rules behind the groups and the sort are compiled and run by
 check-steam-games.py.
@@ -83,9 +83,10 @@ require('LibrarySectionHeader(title: "Steam", count: installed.count,' in body a
         'collapsed: collapsible ? $hideInstalled : nil)' in body, 'Steam: installed count and a collapsible title')
 require('if steam.refreshing { ProgressView().accessibilityLabel("Refreshing Steam library") }' in body,
         'Steam: a progress indicator while the library refreshes')
-require('@AppStorage("madeiraLibraryHideInstalled") private var hideInstalled = false' in section and
-        '@AppStorage("madeiraSteamShowUninstalled") private var showUninstalled = false' in section,
-        'Steam: remembered states (installed shown, Not installed closed by default)')
+require('@AppStorage("madeiraLibraryHideInstalled") private var hideInstalled = false' in section,
+        'Steam: remembered installed state (shown by default)')
+require('@State private var showUninstalled = false' in section and 'madeiraSteamShowUninstalled' not in section,
+        'Not installed: starts closed each launch without restoring the old saved state')
 require('static var collapsible: Bool { MadeiraConfig.flag("MADEIRA_LIBRARY_COLLAPSE") }' in section,
         'MADEIRA_LIBRARY_COLLAPSE (on by default) makes the titles collapsible')
 order = [body.index('LibrarySectionHeader(title: "Steam"'), body.index('SteamSignInCard { showSignIn = true }'),
@@ -97,9 +98,11 @@ require(order == sorted(order), 'Steam order: title, sign-in, downloading + inst
 require('"No Windows games were found in this Steam library."' in body, 'Steam: empty-library text')
 require('} else if signedIn && !steam.refreshing && groups.notInstalled.isEmpty && search.isEmpty {' in body,
         'Steam: the empty text only when signed in, loaded, nothing owned to install and no search')
-require('if part != .installed && signedIn && !groups.notInstalled.isEmpty {' in body and 'if showUninstalled {' in body
+require('if part != .installed && signedIn && !groups.notInstalled.isEmpty {' in body
+        and re.search(r'if showUninstalled \{\s+LibraryCells\(items: groups\.notInstalled, layout: layout, width: width\)'
+                      r' \{ item, list, dense in\s+cell\(item, list: list, dense: dense\)\s+\}\s+\}', body)
         and '.accessibilityValue(showUninstalled ? "Shown" : "Hidden")' in body,
-        'Not installed: signed in, folds on its own, not with the Steam title')
+        'Not installed: signed in, folds on its own, creates cards and artwork only while expanded')
 require('let items = SteamGamesRules.items(installed: model.games, owned: owned, search: search)' in body and
         'SteamGamesRules.groups(items, downloading: Set(steam.downloads.keys))' in body and
         'SteamGamesRules.sorted(groups.installed, by: sort, recorded: recorded)' in body,

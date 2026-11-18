@@ -58,8 +58,9 @@ Removing an entry never removes the game's files or saves.
   its **Not installed** group (the account's other games, with their count),
   then **Other games** (the games you added; **+** in the navigation bar adds one). Tapping
   **Steam** or **Other games** collapses it; **Not installed** folds on its
-  own, open by default; each state is remembered. Search, the layout and, for
-  installed games, Sort by apply to every section. Pull down to read the
+  own and starts closed each launch; its cards and artwork load only while
+  expanded. The Steam and Other games states are remembered. Search, the layout
+  and, for installed games, Sort by apply to every section. Pull down to read the
   Steam install records and the account's library again. Without Madeira
   Dock the games you added are one grid.
 - Grid cards: a game that is not installed shows its artwork darkened, with a

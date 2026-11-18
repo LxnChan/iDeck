@@ -427,9 +427,9 @@ struct SteamGamesSection: View {
     @ObservedObject private var steam = SteamOwnedLibrary.shared
     @ObservedObject private var library = LibraryModel.shared
     @Environment(\.scenePhase) private var scenePhase
-    // Collapsed state of the installed games (the Steam title) and of Not installed.
+    // Keep the Steam title's collapsed state; Not installed starts closed each launch.
     @AppStorage("madeiraLibraryHideInstalled") private var hideInstalled = false
-    @AppStorage("madeiraSteamShowUninstalled") private var showUninstalled = false
+    @State private var showUninstalled = false
     @State private var selected: SteamGameSelection?
     @State private var showSignIn = false
 
@@ -536,6 +536,7 @@ struct SteamGamesSection: View {
                             }.contentShape(Rectangle()).frame(minHeight: 44)
                         }.buttonStyle(.plain)
                             .accessibilityValue(showUninstalled ? "Shown" : "Hidden")
+                        // Only create cards and their artwork loaders while expanded.
                         if showUninstalled {
                             LibraryCells(items: groups.notInstalled, layout: layout, width: width) { item, list, dense in
                                 cell(item, list: list, dense: dense)
@@ -550,10 +551,6 @@ struct SteamGamesSection: View {
         }
         // The library reappears after every session, so this also rereads after a game.
         .onAppear {
-            if !UserDefaults.standard.bool(forKey: "madeiraSteamShowUninstalledInitialized_v1") {
-                UserDefaults.standard.set(true, forKey: "madeiraSteamShowUninstalledInitialized_v1")
-                showUninstalled = false
-            }
             model.refresh()
             if libraryEnabled { steam.start(); steam.reconcileSession() }
         }
