@@ -1118,13 +1118,14 @@ struct SteamCloudQuitRow: View {
     @State private var confirmReplace = false
 
     private var working: Bool { if case .working = steam.cloudQuit { return true }; if case .done = steam.cloudQuit { return true }; return false }
+    private var succeeded: Bool { if case .done = steam.cloudQuit { return true }; return false }
 
     private func run(replaceCloud: Bool) {
         Task {
             await steam.uploadForQuit(appID, replaceCloud: replaceCloud)
             guard case .done(let count) = steam.cloudQuit else { return }
             LogStore.shared.log("[steam-cloud] app=\(appID) quit-upload done files=\(count): closing Madeira")
-            try? await Task.sleep(nanoseconds: 1_200_000_000)   // long enough to read the result
+            try? await Task.sleep(nanoseconds: 2_500_000_000)   // show the green success button before closing
             exit(0)
         }
     }
@@ -1132,11 +1133,36 @@ struct SteamCloudQuitRow: View {
     var body: some View {
         if SteamOwnedLibrary.cloudQuitEnabled, steam.signedIn {
             VStack(alignment: .leading, spacing: 8) {
-                Button("Upload saves and close Madeira", systemImage: "icloud.and.arrow.up") { run(replaceCloud: false) }
+                HStack(spacing: 12) {
+                    Button { run(replaceCloud: false) } label: {
+                        VStack(spacing: 12) {
+                            Group {
+                                if case .working = steam.cloudQuit {
+                                    ProgressView().tint(.primary)
+                                } else {
+                                    Image(systemName: succeeded ? "checkmark.circle.fill" : "icloud.and.arrow.up")
+                                        .font(.system(size: 28, weight: .medium))
+                                }
+                            }.frame(height: 32)
+                            Text(succeeded ? "Saves uploaded" : "Upload saves and close Madeira")
+                                .font(.subheadline.weight(.semibold))
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(12)
+                        .frame(width: 144, height: 144)
+                        .foregroundStyle(succeeded ? Color.white : Color.primary)
+                        .background(succeeded ? Color.green : Color.primary.opacity(0.08),
+                                    in: RoundedRectangle(cornerRadius: 16))
+                    }
+                    .buttonStyle(.plain)
                     .disabled(working)
+                    .accessibilityLabel("Upload saves and close Madeira")
+                    Spacer(minLength: 0)
+                }
                 switch steam.cloudQuit {
                 case .working(let text):
-                    HStack(spacing: 10) { ProgressView(); Text(text).font(.callout) }
+                    Text(text).font(.callout).foregroundStyle(.secondary)
                 case .done(let count):
                     Label(count == 0 ? "Steam Cloud is already up to date. Closing…" : "Uploaded \(count) save\(count == 1 ? "" : "s"). Closing…",
                           systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green)

@@ -4830,7 +4830,10 @@ struct LibraryHUD: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack { Label("Session", systemImage: "gamecontroller.fill").font(.title2.bold()); Spacer(); Button("Done") { model.menu = false }.buttonStyle(.bordered) }
-                // The controls come first, the easiest to reach; the overlay settings last.
+                if let appID = model.activeEntry?.steamAppID, SteamOwnedLibrary.cloudQuitEnabled {
+                    SteamCloudQuitRow(appID: appID)
+                    Divider()
+                }
                 Toggle("Touch controls", isOn: $controls.visible)
                 // The named layouts (Xbox controller, custom ones) live here in a session: this
                 // menu replaces the overlay's top bar, where the same menu sits outside the library.
@@ -4911,10 +4914,6 @@ struct LibraryHUD: View {
                     }
                     Text("Both apply to Direct3D 12 games only. Capture writes the render passes of the next frame to Documents/capture and its draw list to the log. GPU sync: F1 makes every pass wait for the one before (the default), F6 waits only where the game's barriers ask, F5 makes render passes wait at the fragment stage, F0 has no sync at all (expect flicker; for tests).")
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                if let appID = model.activeEntry?.steamAppID, SteamOwnedLibrary.cloudQuitEnabled {
-                    Divider()
-                    SteamCloudQuitRow(appID: appID)
                 }
                 Divider()
                 // Red label and symbol; the menu's .primary style would otherwise win.
@@ -5194,13 +5193,13 @@ struct IPadStatusBarMenuSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("顶部状态栏 HUD").font(.headline)
+            Text("Status bar HUD").font(.headline)
             if isPad {
-                Toggle("资源监测 HUD", isOn: isEnabled)
-                Text("在 iPad 顶部状态栏居中显示 CPU、GPU、内存、帧率和 Thermal 状态。")
+                Toggle("Resource monitor HUD", isOn: isEnabled)
+                Text("Shows CPU, GPU, memory, frame rate, and thermal status in the center of the iPad status bar.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("仅在 iPad 上可用（iPhone 状态栏空间有限）。")
+                Text("Available on iPad only; the iPhone status bar has limited space.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
