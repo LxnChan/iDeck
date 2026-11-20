@@ -24,6 +24,14 @@ pool = 640
 totalphys = 4096
 swap-canary = 0
 
+# .NET / NativeAOT (including MelonLoader.Bootstrap.dll): iDeck defaults the
+# 64-bit GC's virtual reservation to 8 GiB, avoiding a roughly 256 GiB startup
+# request that cannot fit the shared iOS address map. This reserves addresses;
+# it does not allocate 8 GiB of RAM or set a committed heap hard limit.
+# Explicit DOTNET_/COMPlus_ GC region ranges or heap limits override the default.
+# Values use hexadecimal bytes. 0 restores .NET's own range sizing.
+# env.DOTNET_GCRegionRange = 200000000
+
 # emulator environment (FEX reads FEX_* from the process environment)
 env.FEX_TSOENABLED = 1
 env.FEX_EXTENDEDVOLATILEMETADATA = oo2core_5_win64.dll:bink2w64.dll

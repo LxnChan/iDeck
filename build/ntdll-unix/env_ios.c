@@ -1013,6 +1013,59 @@ static void append_envA( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *nam
 }
 
 #ifdef WINE_IOS
+/* .NET's region GC (also embedded in NativeAOT DLLs such as MelonLoader's
+ * bootstrap) defaults to reserving min(half the virtual limit,
+ * max(256 GiB, twice physical RAM)). Its bootstrap requested 0x3fd4258000 bytes
+ * and failed before Unity initialized: our shared iOS map had no hole over
+ * 32 GiB. Bound the default reservation, not the committed/managed heap.
+ *
+ * Apply before PE initialization in both launch paths, without changing the
+ * shared Unix environment. Explicit range/heap-limit settings take priority.
+ * Track our inherited default so a 32-bit child drops it, and a child with
+ * its own heap limit can let .NET size the range from that limit instead.
+ * Runtime algorithm: dotnet/runtime v8.0.0 src/coreclr/gc/gc.cpp,
+ * gc_heap::initialize_gc; NativeAOT reads DOTNET_ values in RhConfig.cpp. */
+static void ios_apply_dotnet_gc_compat( WCHAR **env, SIZE_T *pos, SIZE_T *size, USHORT machine )
+{
+    static const char *const explicit_names[] = {
+        "DOTNET_GCRegionRange", "COMPlus_GCRegionRange",
+        "DOTNET_GCHeapHardLimit", "COMPlus_GCHeapHardLimit",
+        "DOTNET_GCHeapHardLimitPercent", "COMPlus_GCHeapHardLimitPercent",
+        "DOTNET_GCHeapHardLimitSOH", "COMPlus_GCHeapHardLimitSOH",
+        "DOTNET_GCHeapHardLimitLOH", "COMPlus_GCHeapHardLimitLOH",
+        "DOTNET_GCHeapHardLimitPOH", "COMPlus_GCHeapHardLimitPOH",
+        "DOTNET_GCHeapHardLimitSOHPercent", "COMPlus_GCHeapHardLimitSOHPercent",
+        "DOTNET_GCHeapHardLimitLOHPercent", "COMPlus_GCHeapHardLimitLOHPercent",
+        "DOTNET_GCHeapHardLimitPOHPercent", "COMPlus_GCHeapHardLimitPOHPercent"
+    };
+    static const WCHAR rangeW[] = {'2','0','0','0','0','0','0','0','0',0}; /* hex: 8 GiB */
+    static const WCHAR oneW[] = {'1',0};
+    WCHAR nameW[64], markerW[32];
+    WCHAR *range, *marker;
+    unsigned int i;
+    BOOL automatic;
+
+    ascii_to_unicode( nameW, explicit_names[0], strlen(explicit_names[0]) + 1 );
+    ascii_to_unicode( markerW, "__IDECK_DOTNET_GC_AUTO", sizeof("__IDECK_DOTNET_GC_AUTO") );
+    range = find_env_var( *env, *pos, nameW, wcslen(nameW) );
+    marker = find_env_var( *env, *pos, markerW, wcslen(markerW) );
+    automatic = marker && !wcscmp( marker + wcslen(markerW) + 1, oneW ) &&
+                range && !wcscmp( range + wcslen(nameW) + 1, rangeW );
+    append_envW( env, pos, size, "__IDECK_DOTNET_GC_AUTO", NULL );
+    if (automatic) append_envW( env, pos, size, "DOTNET_GCRegionRange", NULL );
+    if (!is_machine_64bit( machine )) return;
+
+    for (i = 0; i < ARRAY_SIZE(explicit_names); i++)
+    {
+        ascii_to_unicode( nameW, explicit_names[i], strlen(explicit_names[i]) + 1 );
+        if (find_env_var( *env, *pos, nameW, wcslen(nameW) )) return;
+    }
+    append_envW( env, pos, size, "DOTNET_GCRegionRange", rangeW );
+    append_envW( env, pos, size, "__IDECK_DOTNET_GC_AUTO", oneW );
+    dprintf( 2, "[dotnet-gc] DOTNET_GCRegionRange=200000000 (8 GiB virtual reservation; "
+                "automatic 64-bit default, explicit GC limits take precedence)\n" );
+}
+
 /* iDeck compatibility for the bundled WoW64 emulator: hot-page promotion
  * removes write traps, but its syscall handler does not advertise hot pages
  * to the translator. Packed x86 code can then execute stale translations.
@@ -2279,6 +2332,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
     /* The fallback launcher, if any, has now selected the final machine. */
     env_pos--;  /* the helpers expect entries without the final block NUL */
     ios_apply_wow64_smc_compat( &env, &env_pos, &env_size, main_image_info.Machine );
+    ios_apply_dotnet_gc_compat( &env, &env_pos, &env_size, main_image_info.Machine );
     env[env_pos++] = 0;
 #endif
     main_wargv = build_wargv( get_dos_path( nt_name.Buffer ));
@@ -2391,6 +2445,7 @@ void unix_init_startup_info(void)
     is_prefix_bootstrap = !!find_env_var( env, env_pos, bootstrapW, ARRAY_SIZE(bootstrapW) );
 #ifdef WINE_IOS
     ios_apply_wow64_smc_compat( &env, &env_pos, &env_size, machine );
+    ios_apply_dotnet_gc_compat( &env, &env_pos, &env_size, machine );
 #endif
     env[env_pos++] = 0;
 
