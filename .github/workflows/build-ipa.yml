@@ -585,7 +585,7 @@ jobs:
             --framework-path "$GITHUB_WORKSPACE/app/Frameworks/StikJIT.xcframework/ios-arm64"
           echo "::endgroup::"
           echo "::group::Package source and relink companions"
-          bash tools/build/prepare-runtime-sources.sh
+          source tools/build/prepare-runtime-sources.sh
           SHORT_SHA='${{ steps.package.outputs.short_sha }}'
           python3 tools/build/package-runtime-source.py "output/iDeck-fork-${SHORT_SHA}.source.tar.gz" \
             --mesa-sources build/mesa-d3d12/dist/sources

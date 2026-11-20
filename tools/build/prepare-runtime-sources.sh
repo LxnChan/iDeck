@@ -18,6 +18,9 @@ prepare() {
     echo "Source revision does not match the runtime dependency: $source" >&2
     exit 1
   }
+  # Sourced packaging groups need the paths immediately; GITHUB_ENV only
+  # updates the environment of subsequent GitHub Actions steps.
+  export "$name=$source"
   printf '%s=%s\n' "$name" "$source" >> "$GITHUB_ENV"
 }
 prepare "$ROOT/toolchains/llvm-project" llvm-project \

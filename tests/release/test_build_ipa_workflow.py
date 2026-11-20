@@ -37,6 +37,14 @@ def run_block(name):
     return textwrap.dedent(block["script"])
 
 
+def run_group(name, group):
+    commands = re.search(r'^echo "::group::' + re.escape(group) + r'"\n(.*?)'
+                         r'^echo "::endgroup::"$', run_block(name), re.MULTILINE | re.DOTALL)
+    if commands is None:
+        raise AssertionError(group + " command group is missing")
+    return "set -euo pipefail\n" + commands[1]
+
+
 def fixture_expressions(script):
     values = {"ipa_path": IPA_PATH, "inventory_path": INVENTORY_PATH,
               "short_sha": SHORT_SHA}
@@ -187,6 +195,65 @@ class BuildIPAPackagingChecks(unittest.TestCase):
 
 
 class BuildIPAArtifactChecks(unittest.TestCase):
+    def test_grouped_source_packaging_uses_fallback_checkouts_in_current_shell(self):
+        bash = bash_executable()
+        if bash is None:
+            self.skipTest("Bash is required to execute grouped source packaging")
+        with tempfile.TemporaryDirectory(prefix="ideck-source-env-") as directory:
+            work = Path(directory)
+            prepare = ROOT / "tools/build/prepare-runtime-sources.sh"
+            source = prepare.read_text(encoding="utf-8")
+            target = work / "tools/build/prepare-runtime-sources.sh"
+            target.parent.mkdir(parents=True)
+            target.write_text(source, encoding="utf-8", newline="\n")
+            fake = work / "fake-bin"
+            fake.mkdir()
+            cases = []
+            for name, variable in (("llvm-project", "RUNTIME_LLVM_SOURCE"),
+                                   ("freetype", "RUNTIME_FREETYPE_SOURCE")):
+                pin = re.search(r'([0-9a-f]{40}) ' + variable, source)[1]
+                (work / "toolchains/runtime-sources" / name / ".git").mkdir(parents=True)
+                cases.append(f'*/{name}) printf "%s\\n" "{pin}" ;;')
+            # Cached headers lack Git metadata, so source preparation must use
+            # its separate fallback checkouts without cloning anything.
+            (work / "toolchains/llvm-project/llvm/include").mkdir(parents=True)
+            (work / "research/freetype/include").mkdir(parents=True)
+            (fake / "git").write_text(
+                '#!/bin/bash\nset -eu\ntest "$1" = -C\n'
+                'test "$3 $4" = "rev-parse HEAD"\ncase "$2" in\n' +
+                '\n'.join(cases) + '\n*) exit 99 ;;\nesac\n',
+                encoding="utf-8", newline="\n")
+            (fake / "python3").write_text(textwrap.dedent('''\
+                #!/bin/bash
+                set -eu
+                test "$1" = tools/build/package-runtime-source.py
+                test -d "$RUNTIME_LLVM_SOURCE/.git"
+                test -d "$RUNTIME_FREETYPE_SOURCE/.git"
+                case "$RUNTIME_LLVM_SOURCE" in */toolchains/runtime-sources/llvm-project) ;; *) exit 98 ;; esac
+                case "$RUNTIME_FREETYPE_SOURCE" in */toolchains/runtime-sources/freetype) ;; *) exit 97 ;; esac
+                test "$3" = --mesa-sources
+                printf source > "$2"
+                '''), encoding="utf-8", newline="\n")
+            for script in fake.iterdir():
+                script.chmod(0o755)
+            (work / "output").mkdir()
+            (work / "build/runtime-relink").mkdir(parents=True)
+            env = os.environ.copy()
+            for variable in ("RUNTIME_LLVM_SOURCE", "RUNTIME_FREETYPE_SOURCE"):
+                env.pop(variable, None)
+            env["GITHUB_ENV"] = "github-env.txt"
+            script = fixture_expressions(run_group("Verify and package runtime artifacts",
+                                                   "Package source and relink companions"))
+            result = subprocess.run([bash, "--noprofile", "--norc", "-c",
+                                     'export PATH="$PWD/fake-bin:$PATH"\n' + script],
+                                    cwd=work, env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue((work / "output" / f"iDeck-fork-{SHORT_SHA}.source.tar.gz").is_file())
+            self.assertTrue((work / "output" / f"iDeck-fork-{SHORT_SHA}.relink.tar.gz").is_file())
+            exported = (work / "github-env.txt").read_text(encoding="utf-8")
+            self.assertIn("RUNTIME_LLVM_SOURCE=", exported)
+            self.assertIn("RUNTIME_FREETYPE_SOURCE=", exported)
+
     def upload(self, name):
         body = workflow_step(name)
         self.assertIn("uses: actions/upload-artifact@v4", body)
@@ -240,11 +307,8 @@ class BuildIPAArtifactChecks(unittest.TestCase):
                         "  printf '%064d  %s\\n' 0 \"$path\"\ndone\n",
                         encoding="utf-8", newline="\n")
         fake.chmod(0o755)
-        combined = run_block("Verify and package runtime artifacts")
-        group = re.search(r'^echo "::group::Generate artifact checksums"\n(.*?)'
-                          r'^echo "::endgroup::"$', combined, re.MULTILINE | re.DOTALL)
-        self.assertIsNotNone(group, "Checksum commands must remain in the artifact checks")
-        script = "set -euo pipefail\n" + fixture_expressions(group[1])
+        script = fixture_expressions(run_group("Verify and package runtime artifacts",
+                                               "Generate artifact checksums"))
         result = subprocess.run([bash, "--noprofile", "--norc", "-c",
                                  'export PATH="$PWD/fake-bin:$PATH"\n' + script],
                                 cwd=work, capture_output=True, text=True, timeout=20)
