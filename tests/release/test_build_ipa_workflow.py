@@ -240,7 +240,11 @@ class BuildIPAArtifactChecks(unittest.TestCase):
                         "  printf '%064d  %s\\n' 0 \"$path\"\ndone\n",
                         encoding="utf-8", newline="\n")
         fake.chmod(0o755)
-        script = fixture_expressions(run_block("Generate artifact checksums"))
+        combined = run_block("Verify and package runtime artifacts")
+        group = re.search(r'^echo "::group::Generate artifact checksums"\n(.*?)'
+                          r'^echo "::endgroup::"$', combined, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(group, "Checksum commands must remain in the artifact checks")
+        script = "set -euo pipefail\n" + fixture_expressions(group[1])
         result = subprocess.run([bash, "--noprofile", "--norc", "-c",
                                  'export PATH="$PWD/fake-bin:$PATH"\n' + script],
                                 cwd=work, capture_output=True, text=True, timeout=20)

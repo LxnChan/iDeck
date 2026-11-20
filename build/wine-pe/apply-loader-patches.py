@@ -19,7 +19,7 @@ def apply(wine=WINE):
         return
     subprocess.run(command + ["--check", str(PATCH)], check=True)
     subprocess.run(command + [str(PATCH)], check=True)
-    print("Applied Wine PE win32u initialization order fix")
+    print("Applied Wine PE CRT and win32u initialization order fix")
 
 
 if __name__ == "__main__":

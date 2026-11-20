@@ -92,8 +92,10 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Run release and launch policy checks
+      - name: Run regression and policy checks
         run: |
+          set -euo pipefail
+          echo "::group::Release and launch policy"
           python3 -B -m unittest discover -s tests/release -p 'test_*.py'
           python3 -B tests/host/check-development-signing.py
           python3 -B tests/host/check-library-sections.py
@@ -105,21 +107,20 @@ jobs:
           python3 -B tests/host/check-steam-cm-transport.py --require-swift
           python3 -B tests/host/check-child-launch-arguments.py --require-swift
           python3 -B tests/host/check-dotnet-gc.py
-
-      - name: Run audio regression checks
-        run: |
+          echo "::endgroup::"
+          echo "::group::Audio regressions"
           python3 -B tests/host/check-audio-period.py
           python3 -B tests/host/check-audio-downmix.py
           python3 -B tests/host/check-audio-wow64.py
-
-      - name: Run mouse and touch input regression checks
-        run: |
+          echo "::endgroup::"
+          echo "::group::Mouse, touch and gamepad regressions"
           python3 -B tests/host/check-hardware-input.py
           python3 -B tests/host/check-mouse-buttons.py
           python3 -B tests/host/check-input-queue.py
           python3 -B tests/host/check-crosshair-input.py
           python3 -B tests/host/check-touch-gamepad.py
           python3 -B tests/host/check-gamepad.py
+          echo "::endgroup::"
 
       - name: Install build tools (LLVM & Bison)
         run: |
@@ -130,16 +131,13 @@ jobs:
           which llvm-objcopy || true
           which bison || true
 
-      - name: Refresh bundled licenses
-        run: |
-          chmod +x build/stage-licenses.sh
-          bash build/stage-licenses.sh
-
       - name: Stage companion runtime assets & native libraries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          chmod +x build/stage-licenses.sh
+          bash build/stage-licenses.sh
           RELEASE_TAG="$RUNTIME_RELEASE_TAG"
           UPSTREAM_REPO="kuscholar/iDeck"
           DOWNLOAD_DIR="download_cache"
@@ -289,15 +287,12 @@ jobs:
           echo "Staging complete. Libraries present in app/Madeira:"
           ls -lh app/Madeira/*.a || true
 
-      - name: Verify pinned Metal Shader Converter before compiling
-        run: |
-          bash tools/build/stage-metal-converter.sh
-          bash build/madeira-d3d12/deps.sh
-
       - name: Prepare source-matched runtime build
         id: runtime-key
         run: |
           set -euo pipefail
+          bash tools/build/stage-metal-converter.sh
+          bash build/madeira-d3d12/deps.sh
           find build tools -name '*.sh' -exec chmod +x {} +
           bash tools/build/runtime-sdk-key.sh
           python3 tools/build/runtime-input-key.py
@@ -482,8 +477,13 @@ jobs:
           build/mesa-d3d12/work/venv/bin/python -m pip install -r build/mesa-d3d12/requirements.txt
           build/mesa-d3d12/work/venv/bin/python -B build/mesa-d3d12/build.py
 
-      - name: Verify and stage experimental Mesa OpenGL driver
-        run: python3 -B build/mesa-d3d12/build.py --stage-only
+      - name: Verify and record synchronized runtime inputs
+        run: |
+          set -euo pipefail
+          python3 -B build/mesa-d3d12/build.py --stage-only
+          bash build/setup-fex-headers.sh
+          python3 tools/check-wine-media-dlls.py app/Madeira/arm64ec-windows
+          python3 tools/check-synced-runtime.py --record app/Madeira
 
       - name: Save experimental Mesa OpenGL driver
         if: steps.mesa-cache.outputs.cache-hit != 'true'
@@ -491,13 +491,6 @@ jobs:
         with:
           key: ${{ steps.mesa-cache.outputs.cache-primary-key }}
           path: build/mesa-d3d12/dist
-
-      - name: Verify and record synchronized runtime inputs
-        run: |
-          set -euo pipefail
-          bash build/setup-fex-headers.sh
-          python3 tools/check-wine-media-dlls.py app/Madeira/arm64ec-windows
-          python3 tools/check-synced-runtime.py --record app/Madeira
 
       - name: Build application with xcodebuild
         run: |
@@ -579,32 +572,26 @@ jobs:
           echo "IPA package generated successfully:"
           ls -lh "$OUTPUT_DIR"
 
-      - name: Verify packaged runtime matches the build
-        run: |
-          python3 tools/check-synced-runtime.py --ipa '${{ steps.package.outputs.ipa_path }}' \
-            --output 'output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json'
-
-      - name: Validate portable relink inputs
+      - name: Verify and package runtime artifacts
         run: |
           set -euo pipefail
+          echo "::group::Verify packaged runtime"
+          python3 tools/check-synced-runtime.py --ipa '${{ steps.package.outputs.ipa_path }}' \
+            --output 'output/iDeck-fork-${{ steps.package.outputs.short_sha }}.runtime.json'
+          echo "::endgroup::"
+          echo "::group::Validate portable relink inputs"
           python3 tools/prepare-relink.py build/xcode-runtime-sync.log build/runtime-relink
           python3 build/runtime-relink/relink.py --verify-inputs \
             --framework-path "$GITHUB_WORKSPACE/app/Frameworks/StikJIT.xcframework/ios-arm64"
-
-      - name: Prepare matching runtime source checkouts
-        run: bash tools/build/prepare-runtime-sources.sh
-
-      - name: Package source and relink companions
-        run: |
-          set -euo pipefail
+          echo "::endgroup::"
+          echo "::group::Package source and relink companions"
+          bash tools/build/prepare-runtime-sources.sh
           SHORT_SHA='${{ steps.package.outputs.short_sha }}'
           python3 tools/build/package-runtime-source.py "output/iDeck-fork-${SHORT_SHA}.source.tar.gz" \
             --mesa-sources build/mesa-d3d12/dist/sources
           tar -czf "output/iDeck-fork-${SHORT_SHA}.relink.tar.gz" -C build/runtime-relink .
-
-      - name: Generate artifact checksums
-        run: |
-          set -euo pipefail
+          echo "::endgroup::"
+          echo "::group::Generate artifact checksums"
           SHORT_SHA='${{ steps.package.outputs.short_sha }}'
           cd output
           # Each download can be verified without fetching the other artifacts.
@@ -613,6 +600,7 @@ jobs:
             "iDeck-fork-${SHORT_SHA}.runtime.json" > "iDeck-fork-${SHORT_SHA}.SHA256SUMS"
           shasum -a 256 "iDeck-fork-${SHORT_SHA}.source.tar.gz" > "iDeck-fork-${SHORT_SHA}.source.SHA256SUMS"
           shasum -a 256 "iDeck-fork-${SHORT_SHA}.relink.tar.gz" > "iDeck-fork-${SHORT_SHA}.relink.SHA256SUMS"
+          echo "::endgroup::"
 
       - name: Retain runtime build diagnostics
         if: failure()
