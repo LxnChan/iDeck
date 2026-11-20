@@ -25538,27 +25538,22 @@ int ios_page_expected_prot( const void *addr )
  * must keep trapping writes into the shared RW view / SMC handler. Granting
  * write here can split the alias by COW or bypass code invalidation.
  *
- * mprotect changes a whole host page (16KB on iOS), so inspect every 4KB
- * guest page it covers, including neighbours of the faulting address. Never
- * undo an alias or executable-page trap, and never grant a permission that
- * another guest page in the same host page does not have. Like the diagnostic
- * peek above, this must not take virtual_mutex from a signal handler. */
+ * mprotect changes a whole host page (16KB on iOS). Include every 4KB guest
+ * page when checking for executable memory, and retain Wine's normal host-page
+ * permission union for data. Guard / write-watch restrictions still come
+ * from get_unix_prot(). Like the diagnostic peek above, this must not take
+ * virtual_mutex from a signal handler. */
 int ios_page_fault_repair_prot( const void *addr )
 {
     const char *base;
-    size_t offset;
-    int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+    BYTE vprot;
 
-    if (!host_page_size) return -1;
+    if (!host_page_size || ios_page_expected_prot( addr ) <= 0) return -1;
     base = ROUND_ADDR( addr, host_page_mask );
     if (ios_jit_anon_alias_overlaps( (void *)base, host_page_size, NULL, NULL )) return -1;
-    for (offset = 0; offset < host_page_size; offset += 1u << page_shift)
-    {
-        int want = ios_page_expected_prot( base + offset );
-        if (want < 0 || (want & PROT_EXEC)) return -1;
-        prot &= want;
-    }
-    return prot;
+    vprot = get_host_page_vprot( base );
+    if (vprot & VPROT_EXEC) return -1;
+    return get_unix_prot( vprot );
 }
 
 /***********************************************************************

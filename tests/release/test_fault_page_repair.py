@@ -29,8 +29,16 @@ typedef unsigned char BYTE;
 #define ROUND_ADDR(addr, mask) ((void *)((uintptr_t)(addr) & ~(uintptr_t)(mask)))
 static size_t host_page_size, host_page_mask;
 static const unsigned page_shift = 12;
+static const size_t page_size = 0x1000;
 static uintptr_t guest_base = 0x718c2a8000ULL;
-static BYTE pages[4];
+#ifndef _WIN64
+#define _WIN64 1
+#endif
+static const size_t pages_vprot_shift = 20, pages_vprot_size = 256;
+static const size_t pages_vprot_mask = (1u << 20) - 1;
+static BYTE bucket[1u << 20];
+static BYTE *pages_vprot[256];
+static BYTE *pages;
 static struct { uintptr_t user_va, user_va_end; } ios_jit_anon_aliases[1];
 static int ios_jit_anon_alias_count;
 
@@ -46,6 +54,8 @@ HARNESS = r'''
 static void reset(BYTE vprot)
 {
     unsigned i;
+    pages_vprot[(guest_base >> page_shift) >> pages_vprot_shift] = bucket;
+    pages = bucket + ((guest_base >> page_shift) & pages_vprot_mask);
     for (i = 0; i < 4; i++) pages[i] = vprot;
     ios_jit_anon_alias_count = 0;
 }
@@ -93,19 +103,20 @@ int main(void)
             assert(repair_at(0) == -1);
             assert(repair_at(count - 1) == -1);
 
-            /* Read recovery cannot grant WRITE to a readonly / write-watch
-             * neighbour, or READ to a guard, uncommitted or no-access page. */
+            /* Keep Wine's host-page data union, including mixed readonly and
+             * writable subpages. Guard and write-watch bits still restrict
+             * the whole host page exactly as in normal mprotect_range(). */
             reset(rw);
             pages[i] = ro;
-            assert(repair_at(0) == PROT_READ);
+            assert(repair_at(0) == (count == 1 ? PROT_READ : (PROT_READ | PROT_WRITE)));
             pages[i] = rw | VPROT_WRITEWATCH;
             assert(repair_at(0) == PROT_READ);
             pages[i] = rw | VPROT_GUARD;
-            assert(repair_at(0) == PROT_NONE);
+            assert(repair_at(0) == (i == 0 ? -1 : PROT_NONE));
             pages[i] = VPROT_COMMITTED;
-            assert(repair_at(0) == PROT_NONE);
+            assert(repair_at(0) == (i == 0 ? -1 : (PROT_READ | PROT_WRITE)));
             pages[i] = 0;
-            assert(repair_at(0) == -1);
+            assert(repair_at(0) == (i == 0 ? -1 : (PROT_READ | PROT_WRITE)));
         }
 
         /* An adjacent alias must not disable recovery of this data page. */
@@ -146,6 +157,7 @@ class FaultPageRepair(unittest.TestCase):
                        source.index("/* per-mapping protection flags */")]
         production = "".join(function(source, name) for name in (
             "int ios_jit_anon_alias_overlaps(",
+            "static BYTE get_host_page_vprot(",
             "static int get_unix_prot(",
             "int ios_page_expected_prot(",
             "int ios_page_fault_repair_prot(",
@@ -170,6 +182,7 @@ class FaultPageRepair(unittest.TestCase):
         end = source.index("/* unreadable target = an access violation", start)
         repair = source[start:end]
         self.assertEqual(repair.count("ios_page_fault_repair_prot( siginfo->si_addr )"), 2)
+        self.assertIn("is_write && (want & PROT_WRITE)", repair)
         self.assertIn("repair >= 0 && (repair & PROT_WRITE)", repair)
         self.assertIn("mprotect( hp, WR_HPAGE, repair )", repair)
         self.assertIn("if (want > 0 && (want & PROT_READ))", repair)

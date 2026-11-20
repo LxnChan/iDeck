@@ -13275,7 +13275,8 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 
                 {
                     static unsigned long wr_seen, wr_healed;
-                    int stripped = (is_write && repair >= 0 && (repair & PROT_WRITE) &&
+                    int stripped = (is_write && (want & PROT_WRITE) &&
+                                    repair >= 0 && (repair & PROT_WRITE) &&
                                     host_prot >= 0 && !(host_prot & VM_PROT_WRITE));
                     ++wr_seen;
                     if (wr_seen <= 12 || (wr_seen % 4096) == 0)
