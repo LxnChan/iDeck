@@ -13243,8 +13243,9 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              * crashed and every run without it did not -- protection stripping
              * and the crash travel together.
              *
-             * So: readable page + WRITE fault + wine expects PROT_WRITE + host
-             * protection lacks it  =>  restore and resume, same as the read side.
+             * Only repair ordinary data pages. Logical WRITE on executable
+             * memory or a JIT alias is not permission to remove its physical
+             * write trap; those faults must reach the SMC / alias machinery.
              * Always logs the wine-vs-host comparison for the first few, so if
              * this case never actually occurs we find out instead of assuming.
              */
@@ -13258,7 +13259,9 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                 DWORD64 esr = get_fault_esr( bus_ctx );
                 int is_write = (int)((esr >> 6) & 1);          /* ISS.WnR */
                 extern int ios_page_expected_prot( const void *addr );
+                extern int ios_page_fault_repair_prot( const void *addr );
                 int want = ios_page_expected_prot( siginfo->si_addr );
+                int repair = ios_page_fault_repair_prot( siginfo->si_addr );
                 mach_vm_address_t ra = (mach_vm_address_t)(uintptr_t)siginfo->si_addr;
                 mach_vm_size_t rs = 0;
                 vm_region_basic_info_data_64_t rbi;
@@ -13272,37 +13275,36 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 
                 {
                     static unsigned long wr_seen, wr_healed;
-                    int stripped = (is_write && (want & PROT_WRITE) &&
+                    int stripped = (is_write && repair >= 0 && (repair & PROT_WRITE) &&
                                     host_prot >= 0 && !(host_prot & VM_PROT_WRITE));
                     ++wr_seen;
                     if (wr_seen <= 12 || (wr_seen % 4096) == 0)
                         ERR("[wr-strip] #%lu addr=%p pc=%p esr=0x%llx write=%d "
-                            "wine_want=%d host_prot=%d %s (seen=%lu healed=%lu) rev=ml552\n",
+                            "wine_want=%d repair_prot=%d host_prot=%d %s (seen=%lu healed=%lu) rev=ml552\n",
                             wr_seen, siginfo->si_addr, pc, (unsigned long long)esr,
-                            is_write, want, host_prot,
-                            stripped ? "<== HOST STRIPPED WRITE" : "(not a strip)",
+                            is_write, want, repair, host_prot,
+                            stripped ? "<== DATA WRITE MISSING" : "(not a repairable data-page strip)",
                             wr_seen, wr_healed);
 
                     if (stripped)
                     {
                         enum { WR_HPAGE = 0x4000 };
                         char *hp = (char *)((uintptr_t)siginfo->si_addr & ~(uintptr_t)(WR_HPAGE - 1));
-                        if (!mprotect( hp, WR_HPAGE, want ))
+                        if (!mprotect( hp, WR_HPAGE, repair ))
                         {
                             ++wr_healed;
                             ERR("[wr-strip] restored prot=%d on %p — resuming "
-                                "(healed=%lu) rev=ml552\n", want, hp, wr_healed);
+                                "(healed=%lu) rev=ml552\n", repair, hp, wr_healed);
                             ios_fixup_x18_for_return( bus_ctx );
                             return;
                         }
                         ERR("[wr-strip] mprotect(%p, %d) FAILED errno=%d — falling to AV rev=ml552\n",
-                            (void *)hp, want, errno);
+                            (void *)hp, repair, errno);
                     }
                     else if (is_write)
                     {
-                        /* ml998: not a strip -- Wine itself reports the page
-                         * non-writable. Say WHY, with the raw vprot byte, before
-                         * anyone is tempted to demote W^X on a guess. */
+                        /* Wine may report no WRITE, or the host page may contain
+                         * an intentional alias / executable-page write trap. */
                         extern void ios_page_vprot_explain( const void *addr, const char *why );
                         ios_page_vprot_explain( siginfo->si_addr, "wr-strip-declined" );
                     }
@@ -13318,8 +13320,8 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                  * back and resume; the [bus-rgn] dump above names the culprit
                  * region state for the real fix. Capped: a storm means the
                  * stripper is active and re-stripping — then die honestly. */
-                extern int ios_page_expected_prot( const void *addr );
-                int want = ios_page_expected_prot( siginfo->si_addr );
+                extern int ios_page_fault_repair_prot( const void *addr );
+                int want = ios_page_fault_repair_prot( siginfo->si_addr );
                 if (want > 0 && (want & PROT_READ))
                 {
                     static int rehealed;
