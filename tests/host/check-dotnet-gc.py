@@ -75,7 +75,14 @@ static void apply(USHORT machine)
     assert(pos < capacity);
 }
 static void put(const char *name, const WCHAR *value)
-{ append_envW(&env, &pos, &capacity, name, value); }
+{
+    // Wine's append_envW has a 32-element name scratch buffer. Some explicit
+    // GC heap-limit names exceed that; pass counted names as the registry does.
+    WCHAR key[64];
+    assert(strlen(name) < ARRAY_SIZE(key));
+    ascii_to_unicode(key, name, strlen(name) + 1);
+    set_env_var(&env, &pos, &capacity, key, wcslen(key), value);
+}
 static const WCHAR *get(const WCHAR *name)
 {
     WCHAR *p = find_env_var(env, pos, name, wcslen(name));
@@ -145,6 +152,13 @@ with tempfile.TemporaryDirectory(prefix='ideck-dotnet-gc-') as directory:
     c_file = path / 'checks.c'
     executable = path / ('checks.exe' if os.name == 'nt' else 'checks')
     c_file.write_text(harness, encoding='utf-8')
-    subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(c_file),
-                    '-o', str(executable)], check=True)
-    subprocess.run([str(executable)], check=True)
+    flags = ['-std=c11', '-Wall', '-Wextra', '-Werror', '-g']
+    if os.name != 'nt':
+        flags += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
+    subprocess.run([compiler, *flags, str(c_file), '-o', str(executable)], check=True)
+    result = subprocess.run([str(executable)], capture_output=True, text=True)
+    if result.returncode:
+        print(result.stdout, end='')
+        print(result.stderr, end='')
+        result.check_returncode()
+    print(result.stdout, end='')
