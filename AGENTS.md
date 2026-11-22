@@ -6,7 +6,8 @@ Follow CONTRIBUTING.md and component-specific licenses/instructions.
 
 - Before every substantial change, or any change that may affect core functionality, create an annotated checkpoint tag at the current committed revision before editing. Preserve existing uncommitted work separately from that checkpoint.
 - Use a descriptive, unique tag name, record the checkpoint in the change report, and push it to the repository so it can be used for recovery. Do not publish a GitHub Release for checkpoint tags.
-- Every commit subject must use `fix(<scope>): <summary>` with a lowercase scope and a concise English summary, unless the user explicitly exempts that particular commit. This also applies to documentation, features, build changes, and follow-up fixes.
+- Every commit subject must use `<action>(<scope>): <summary>` with a lowercase action and scope and a concise English summary, unless the user explicitly exempts that particular commit. This also applies to documentation, features, build changes, and follow-up fixes.
+- Choose the action to match the actual operation, for example `add` for additions, `fix` for bug fixes, `update` for modifications, `remove` for removals, or `refactor` for restructuring. Do not use `fix` for every change.
 
 ## Generalize Fault Fixes Across Applications
 
@@ -41,7 +42,7 @@ When making code, resource, or build configuration changes to this repository, y
 
 ### 2. Workflow Run Naming (Required)
 
-- Every newly triggered CI run, whether started by `push` or `workflow_dispatch`, must use a change-specific title in the form `fix(<scope>): <summary>` (for example, `fix(packaging): preserve bare dyld roots in portable relink inputs`). Use a lowercase scope, followed by a concise English summary of the actual change; the example is a format reference, not a fixed title to reuse.
+- Every newly triggered CI run, whether started by `push` or `workflow_dispatch`, must use a change-specific title in the form `<action>(<scope>): <summary>` (for example, `fix(packaging): preserve bare dyld roots in portable relink inputs`). Choose a lowercase action that matches the actual operation, following the commit subject rule, and a lowercase scope, followed by a concise English summary of the actual change; the example is a format reference, not a fixed title to reuse.
 - This requirement applies to the run's display title (`run-name` / `displayTitle`). The workflow's stable `name` may remain `Build iDeck IPA`.
 - Before triggering CI, ensure the commit subject and the workflow's `run-name` configuration produce the required title. Manual dispatches must also supply or derive a compliant title. Do not start new runs with generic titles such as `Build iDeck IPA`, `CI`, or `Manual build`.
 - After triggering, verify the actual title with `gh run view <run-id> --json displayTitle,url`. When reporting the run to the user, use its actual title as a bold Markdown link to that run, for example: [**fix(packaging): preserve bare dyld roots in portable relink inputs**](https://github.com/LxnChan/iDeck/actions/runs/43566842106).
