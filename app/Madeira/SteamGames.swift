@@ -835,6 +835,7 @@ struct SteamDownloadStatus: View {
         VStack(alignment: .leading, spacing: 6) {
             ProgressView(value: download.progress.fraction)
             Text(caption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            if let recovery = download.recovery { Text(recovery).font(.caption).foregroundStyle(.secondary) }
         }
     }
     private var caption: String {
@@ -971,7 +972,7 @@ struct SteamGameSheet: View {
                             SteamDownloadStatus(download: download)
                             Button("Cancel download", role: .destructive) { confirmCancel = true }
                             if case .failed = download.state {
-                                Text("Downloaded parts are kept. Try again to continue where it stopped.")
+                                Text("Downloaded parts are kept. Resume verifies their checksums and downloads missing or damaged blocks again.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }

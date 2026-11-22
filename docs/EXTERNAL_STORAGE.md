@@ -52,12 +52,41 @@ is outside this change; no existing game directory is moved during setup.
   running game and lose unflushed writes. This feature cannot safely resume such
   a game or guarantee recovery from power loss. It never restarts it automatically.
 
+## Interrupted downloads
+
+Directory revoke/delete/rename events immediately request cancellation of active
+downloads on that mapping and remove its queued and automatic-resume work. The
+foreground 1.5-second poll and checks at each chunk boundary cover missing events;
+OS event delivery and cancellation are cooperative, not hard real-time guarantees.
+A foreground Steam alert explains the stop; background failure notifications use
+the existing notification setting and system permission.
+
+Before changing game files, external installs save a recovery description in
+internal app support storage: library identity, relative paths, sizes and public
+chunk hashes. It contains no account credentials or depot keys. Pending external
+installs survive app restarts. Reconnecting the original writable folder starts
+an offline checksum audit, one install at a time, while downloads remain stopped.
+The download status reports intact and missing/damaged blocks. The audit preserves
+game files; Resume downloads and replaces only blocks that fail verification.
+Missing/corrupt recovery metadata falls back to verification against Steam on
+Resume. Cancelling a new install removes its partial files through the existing
+managed-library containment checks; cancelling an update preserves the install.
+
+The shared downloader also verifies chunks claimed complete by a resume journal.
+A journal entry alone no longer proves its corresponding data survived a disk
+removal. The same rule protects internal downloads after crashes or interrupted
+writes. Filesystem write errors stop the install instead of retrying content
+servers. Checks and cancellation repeat after network waits and before writes.
+
 ## Validation
 
 `python3 -B tests/host/check-external-storage.py --require-swift` executes the
 production path resolver, identity/read-write probe and Steam configuration
 registration against synthetic temporary folders, real symlinks and permissions.
 It also checks shared install/removal containment and download journal recovery.
+`check-download-recovery.py --require-swift` exercises the production disconnect
+policy, persisted recovery audit, journal revalidation and chunk request/write
+code with corrupted/truncated files and a real local in-flight HTTP cancellation.
 The build workflow also runs the existing Steam game discovery, Dock contract,
 legacy runtime, launch and Cloud checks, then builds and packages the app.
 

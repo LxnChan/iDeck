@@ -198,6 +198,7 @@ final class SteamOwnedLibrary: ObservableObject {
         enum State: Equatable { case queued, active, paused, failed(String) }
         var state: State
         var progress = SteamDownloadProgress()
+        var recovery: String?
     }
     @Published private(set) var downloads: [Int: Download] = [:]
     private var queue: [Int] = []
@@ -207,6 +208,9 @@ final class SteamOwnedLibrary: ObservableObject {
     private var resumeAfterSession = Set<Int>()
     /// Downloads paused because iOS ended Madeira's background time.
     private var resumeAfterBackgroundIDs = Set<Int>()
+    private var storageInterruptions: [Int: String] = [:]
+    private var recoveryTasks: [Int: Task<Void, Never>] = [:]
+    private var recoveryChecked = Set<Int>()
 
     private let session = SteamSession()
     /// The app's connection is closed while a game session (or Madeira Dock) holds the account.
@@ -225,7 +229,7 @@ final class SteamOwnedLibrary: ObservableObject {
 
     var hasActiveDownload: Bool { downloads.values.contains { $0.state == .active || $0.state == .queued } }
     private var storageOperations = 0
-    var storageBusy: Bool { storageOperations > 0 || hasActiveDownload || !cloudBusy.isEmpty || cloudBatchRunning || cloud.values.contains { value in
+    var storageBusy: Bool { active != nil || !recoveryTasks.isEmpty || storageOperations > 0 || hasActiveDownload || !cloudBusy.isEmpty || cloudBatchRunning || cloud.values.contains { value in
         switch value.phase { case .checking, .downloading, .uploading: return true; default: return false }
     } }
     func game(_ appID: Int) -> SteamOwnedGame? { owned.first { $0.id == appID } }
@@ -249,7 +253,64 @@ final class SteamOwnedLibrary: ObservableObject {
         return values?.volumeAvailableCapacityForImportantUsage ?? values?.volumeAvailableCapacity.map(Int64.init)
     }
     func externalStorageChanged() {
-        for id in Array(downloads.keys) where DrivePaths.shared.problem(installLibrary(id)) != nil { pause(id) }
+        let pending = ExternalStorage.shared.pendingInstalls
+        var stopped = 0
+        for (id, library) in pending {
+            if let problem = DrivePaths.shared.problem(library) {
+                recoveryChecked.remove(id)
+                recoveryTasks.removeValue(forKey: id)?.cancel()
+                let transferring = active?.id == id || queue.contains(id)
+                let message = "External drive disconnected or unavailable. Download stopped. Reconnect the original folder; downloaded data will be checked before continuing. " + problem
+                if transferring, storageInterruptions[id] == nil {
+                    storageInterruptions[id] = message
+                    if active?.id == id { active?.task.cancel() }
+                    queue.removeAll { $0 == id }
+                    stopped += 1
+                }
+                resumeAfterSession.remove(id)
+                resumeAfterBackgroundIDs.remove(id)
+                var item = downloads[id] ?? Download(state: .failed(message))
+                item.state = .failed(message); item.recovery = nil
+                downloads[id] = item
+            } else if active?.id != id, !queue.contains(id), !recoveryChecked.contains(id), recoveryTasks.isEmpty,
+                      storageOperations == 0, !inSession, !sessionRunning {
+                checkRecoveredDownload(id, library: library)
+            }
+        }
+        if stopped > 0 { error = "External drive unavailable: \(stopped) download(s) stopped. Reconnect the original folder to check and repair downloaded data." }
+    }
+    private static func recoveryURL(_ appID: Int) -> URL {
+        supportFolder.appendingPathComponent("Download Recovery/\(appID).plist")
+    }
+    private func checkRecoveredDownload(_ appID: Int, library: String) {
+        guard recoveryTasks[appID] == nil else { return }
+        recoveryChecked.insert(appID)
+        var item = downloads[appID] ?? Download(state: .paused)
+        item.state = .paused; item.recovery = "Checking reconnected download…"
+        downloads[appID] = item
+        let drive = Self.drive, snapshot = Self.recoveryURL(appID)
+        recoveryTasks[appID] = Task { @MainActor in
+            do {
+                try await ExternalStorage.shared.requireAvailable(library)
+                let apps = try DrivePaths.shared.resolve(library, drive: drive, mustExist: false)
+                let worker = Task.detached(priority: .utility) {
+                    try SteamInstallRecovery.audit(at: snapshot, library: library, steamApps: apps,
+                        checkStorage: { _ = try DrivePaths.shared.resolve(library, drive: drive, mustExist: false) },
+                        hash: { Data(Insecure.SHA1.hash(data: $0)) })
+                }
+                let audit = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                try await ExternalStorage.shared.requireAvailable(library, write: false)
+                downloads[appID]?.recovery = "Checked \(audit.verified) intact blocks; \(audit.damagedOrMissing) missing or damaged. Resume to download only the needed blocks and finish the install."
+            } catch {
+                guard !Task.isCancelled else { return }
+                downloads[appID]?.recovery = "Recovery check could not finish. Existing files were kept. Resume to verify against Steam and repair the download. " + error.localizedDescription
+            }
+            guard !Task.isCancelled else { return }
+            recoveryTasks[appID] = nil
+            ExternalStorage.shared.refresh()
+            externalStorageChanged()
+        }
     }
     private func requireCloudStorage(_ appID: Int, write: Bool = true) async throws {
         guard let game = SteamGamesModel.shared.games.first(where: { $0.id == appID }) else { return }
@@ -1118,15 +1179,19 @@ final class SteamOwnedLibrary: ObservableObject {
         guard signedIn else { error = "Sign in to Steam to download games."; return }
         guard storageOperations == 0 else { error = "Wait for the current file operation to finish."; return }
         guard !ExternalStorage.shared.busy else { error = "Wait for external storage setup to finish."; return }
+        guard recoveryTasks[appID] == nil else { error = "Wait for the reconnected download check to finish."; return }
         let library = installLibrary(appID)
         guard SteamInstallPaths.isManaged(library: library) else { error = "This install location is unavailable. Choose it in Settings › External storage."; return }
         ExternalStorage.shared.pinLibrary(library, appID: appID)
         if active?.id == appID || queue.contains(appID) { return }
+        storageInterruptions[appID] = nil
+        recoveryChecked.insert(appID)
         if inSession {
             resumeAfterSession.insert(appID); downloads[appID] = Download(state: .paused); return
         }
         var item = downloads[appID] ?? Download(state: .queued)
         item.state = .queued
+        item.recovery = nil
         downloads[appID] = item
         queue.append(appID)
         startTimer()
@@ -1147,6 +1212,8 @@ final class SteamOwnedLibrary: ObservableObject {
     /// an update of an installed game is only paused, never deleted.
     func cancelInstall(_ appID: Int, installed: Bool) {
         let running = active?.id == appID ? active?.task : nil
+        let recovering = recoveryTasks.removeValue(forKey: appID)
+        recovering?.cancel()
         pause(appID)
         downloads[appID] = nil
         guard !installed, let game = game(appID) else { return }
@@ -1155,6 +1222,7 @@ final class SteamOwnedLibrary: ObservableObject {
         Task { @MainActor in
             defer { storageOperations -= 1 }
             await running?.value
+            await recovering?.value
             do { try await ExternalStorage.shared.requireAvailable(library) }
             catch { self.error = error.localizedDescription; return }
             do { try SteamInstallFiles.delete(appID: appID, folderName: game.folderName, steamApps: apps) }
@@ -1163,6 +1231,7 @@ final class SteamOwnedLibrary: ObservableObject {
             catch { self.error = error.localizedDescription; return }
             if !FileManager.default.fileExists(atPath: apps.appendingPathComponent("common/" + game.folderName).path) {
                 ExternalStorage.shared.forgetLibrary(appID)
+                try? FileManager.default.removeItem(at: Self.recoveryURL(appID))
             }
             SteamLog.event("[steam-depot] cancelled app=\(appID) partial-files-removed=1")
         }
@@ -1181,6 +1250,8 @@ final class SteamOwnedLibrary: ObservableObject {
     func uninstall(_ game: DockGame) {
         guard SteamInstallPaths.isManaged(library: game.library), !inSession else { return }
         let running = active?.id == game.id ? active?.task : nil
+        let recovering = recoveryTasks.removeValue(forKey: game.id)
+        recovering?.cancel()
         pause(game.id); downloads[game.id] = nil
         let apps = Self.drive.appendingPathComponent(game.library, isDirectory: true)
         storageOperations += 1
@@ -1188,6 +1259,7 @@ final class SteamOwnedLibrary: ObservableObject {
             defer { storageOperations -= 1 }
             do {
                 await running?.value
+                await recovering?.value
                 try await ExternalStorage.shared.requireAvailable(game.library)
                 guard !inSession, !ExternalStorage.shared.busy else { return }
                 try await Task.detached(priority: .utility) { try SteamInstallFiles.delete(appID: game.id, folderName: game.installDir, steamApps: apps) }.value
@@ -1198,6 +1270,7 @@ final class SteamOwnedLibrary: ObservableObject {
                 }
                 LibraryModel.shared.removeSteam(appID: game.id)
                 ExternalStorage.shared.forgetLibrary(game.id)
+                try? FileManager.default.removeItem(at: Self.recoveryURL(game.id))
                 DockInstallers.setRunsNext(game.id, true, prefix: MadeiraDock.prefix)
                 SteamGamesModel.shared.refresh()
             } catch { self.error = error.localizedDescription }
@@ -1220,7 +1293,7 @@ final class SteamOwnedLibrary: ObservableObject {
     private func run(_ appID: Int) async {
         var outcome = SteamDownloadBackground.Outcome.paused
         var stage = "metadata"
-        let library = installLibrary(appID), apps = installSteamApps(appID)
+        let library = installLibrary(appID), apps = installSteamApps(appID), drive = Self.drive
         do {
             try await ExternalStorage.shared.requireAvailable(library)
             SteamLog.event("[steam-depot] preparing app=\(appID) stage=\(stage)")
@@ -1231,12 +1304,21 @@ final class SteamOwnedLibrary: ObservableObject {
             try await ExternalStorage.shared.requireAvailable(library)
             try FileManager.default.createDirectory(at: apps.appendingPathComponent("common", isDirectory: true), withIntermediateDirectories: true)
             let folder = try await downloader.install(info, steamApps: apps,
-                                                      validateStorage: { try await ExternalStorage.shared.requireAvailable(library, write: false) },
+                                                      validateStorage: {
+                                                          try Task.checkCancellation()
+                                                          _ = try DrivePaths.shared.resolve(library, drive: drive, mustExist: false)
+                                                      },
+                                                      recoveryURL: DrivePaths.mountID(library) == nil ? nil : Self.recoveryURL(appID),
+                                                      recoveryLibrary: library,
                                                       ownedDepots: { [weak self] in try? await self?.fetcher.ownedDepotIDs() }) { [weak self] progress in
                 self?.downloads[appID]?.progress = progress
                 SteamDownloadBackground.shared.progress(progress)
             }
+            try Task.checkCancellation()
+            try await ExternalStorage.shared.requireAvailable(library, write: false)
             downloads[appID] = nil
+            ExternalStorage.shared.forgetLibrary(appID)
+            try? FileManager.default.removeItem(at: Self.recoveryURL(appID))
             // The install record is written last: the game is now "installed" for Dock, and it
             // gets its library entry (its Game details page and settings; an existing one is kept).
             LibraryModel.shared.upsertSteam(DockGame(id: appID, name: info.name, installDir: folder.lastPathComponent,
@@ -1246,7 +1328,16 @@ final class SteamOwnedLibrary: ObservableObject {
             SteamGamesModel.shared.refresh()
             outcome = .completed
         } catch {
-            if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+            var storageProblem = storageInterruptions[appID] ?? DrivePaths.shared.problem(library)
+            if storageProblem == nil, DrivePaths.mountID(library) != nil {
+                do { try await ExternalStorage.shared.requireAvailable(library, write: false) }
+                catch { storageProblem = "External drive unavailable. Download stopped; reconnect it to check and repair downloaded data. " + error.localizedDescription }
+            }
+            if let message = storageProblem {
+                downloads[appID]?.state = .failed(message)
+                self.error = message
+                outcome = .failed(message)
+            } else if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
                 if downloads[appID] != nil { downloads[appID]?.state = .paused }
                 SteamLog.event("[steam-depot] paused app=\(appID)")
             } else if case SteamError.logonDenied = error {
@@ -1263,6 +1354,7 @@ final class SteamOwnedLibrary: ObservableObject {
         SteamDownloadBackground.shared.downloadEnded(appID: appID, name: game(appID)?.name ?? "Steam game",
                                                      outcome: outcome, queueEmpty: queue.isEmpty)
         pump()
+        if DrivePaths.mountID(library) != nil { ExternalStorage.shared.refresh(); externalStorageChanged() }
     }
 
     // MARK: Messages

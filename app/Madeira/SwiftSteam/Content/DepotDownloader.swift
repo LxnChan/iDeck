@@ -78,7 +78,8 @@ final class DepotDownloader {
     /// appmanifest. Returns the install folder. Throws CancellationError when
     /// the calling task is cancelled; completed chunks stay journaled.
     func install(_ app: SteamAppInfo, steamApps requestedSteamApps: URL,
-                 validateStorage: @escaping () async throws -> Void = {},
+                 validateStorage: @escaping @Sendable () async throws -> Void = {},
+                 recoveryURL: URL? = nil, recoveryLibrary: String = "",
                  ownedDepots: @escaping () async -> Set<UInt32>? = { nil },
                  progress report: @escaping (SteamDownloadProgress) -> Void) async throws -> URL {
         let depots = app.installDepots()
@@ -136,7 +137,7 @@ final class DepotDownloader {
             if session.steamID != 0 { accountID = session.steamID }
             let contentAppID = !app.freeToDownload ? (depot.fromApp ?? app.appID) : app.appID
             let manifest = try await fetchManifest(depotID: depot.depotID, appID: contentAppID,
-                                                   manifestGID: gid, key: key, hosts: hosts)
+                                                   manifestGID: gid, key: key, hosts: hosts, validateStorage: validateStorage)
             var auth: [String: String] = [:]
             for host in pool {
                 auth[host] = await cdnAuthFragment(depotID: depot.depotID, appID: contentAppID, host: host)
@@ -155,9 +156,24 @@ final class DepotDownloader {
 
         // 2. Prepare files and load journals off the main actor.
         try await validateStorage()
-        let prepared = try await Task.detached(priority: .userInitiated) {
-            try Self.prepare(plans: plans, steamApps: steamApps, installURL: installURL, journalDir: journalDir)
-        }.value
+        let preparation = Task.detached(priority: .userInitiated) {
+            if let recoveryURL {
+                var files: [SteamInstallRecovery.File] = [], folded: [String: String] = [:]
+                for plan in plans {
+                    for file in plan.manifest.files where !file.isDirectory && file.flags & 0x200 == 0 {
+                        try Task.checkCancellation()
+                        guard let relative = SteamInstallFiles.safeRelativePath(file.filename, folded: &folded) else { continue }
+                        files.append(.init(relative: relative, size: file.size, chunks: file.chunks.map {
+                            .init(offset: $0.offset, length: $0.uncompressedSize, sha: $0.sha)
+                        }))
+                    }
+                }
+                try SteamInstallRecovery.save(.init(library: recoveryLibrary, folder: folderName, files: files), at: recoveryURL)
+            }
+            return try Self.prepare(plans: plans, steamApps: steamApps, installURL: installURL, journalDir: journalDir)
+        }
+        let prepared = try await withTaskCancellationHandler { try await preparation.value } onCancel: { preparation.cancel() }
+        try Task.checkCancellation()
         state.totalBytes = prepared.totalBytes
         state.doneBytes = prepared.doneBytes
         state.phase = .downloading
@@ -194,8 +210,11 @@ final class DepotDownloader {
                     let path = paths[item.file]
                     let verify = existing[item.file]
                     group.addTask {
+                        try Task.checkCancellation()
+                        try await validateStorage()
                         if verify, Self.chunkAlreadyPresent(chunk, path: path) { return (item.key, UInt64(chunk.compressedSize)) }
-                        try await Self.fetchChunk(chunk, plan: plan, path: path, root: steamApps, attempts: attempts, seed: item.file &+ item.chunk)
+                        try await Self.fetchChunk(chunk, plan: plan, path: path, root: steamApps, attempts: attempts,
+                                                  seed: item.file &+ item.chunk, validateStorage: validateStorage)
                         return (item.key, UInt64(chunk.compressedSize))
                     }
                 }
@@ -335,6 +354,7 @@ final class DepotDownloader {
             var pending: [WorkItem] = []
             paths.reserveCapacity(plan.manifest.files.count)
             for (fileIndex, file) in plan.manifest.files.enumerated() {
+                try Task.checkCancellation()
                 // Symlinks (flag 0x200) have no Windows meaning here; skip them.
                 guard file.flags & 0x200 == 0,
                       let relative = SteamInstallFiles.safeRelativePath(file.filename, folded: &folded) else {
@@ -359,7 +379,8 @@ final class DepotDownloader {
                 for (chunkIndex, chunk) in file.chunks.enumerated() {
                     let item = WorkItem(file: fileIndex, chunk: chunkIndex)
                     result.totalBytes += UInt64(chunk.compressedSize)
-                    if done.contains(item.key) {
+                    try Task.checkCancellation()
+                    if done.contains(item.key), chunkAlreadyPresent(chunk, path: url.path) {
                         result.doneBytes += UInt64(chunk.compressedSize)
                     } else {
                         pending.append(item)
@@ -402,7 +423,7 @@ final class DepotDownloader {
         let length = Int(chunk.uncompressedSize)
         guard chunk.sha.count == Int(CC_SHA1_DIGEST_LENGTH), length > 0,
               length <= ContentDecryptor.maximumChunkBytes else { return false }
-        let fd = open(path, O_RDONLY)
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { return false }
         defer { close(fd) }
         var buffer = [UInt8](repeating: 0, count: length)
@@ -414,23 +435,24 @@ final class DepotDownloader {
     }
 
     private nonisolated static func fetchChunk(_ chunk: DepotManifest.ChunkEntry, plan: DepotPlan,
-                                               path: String, root: URL, attempts: Int, seed: Int) async throws {
+                                               path: String, root: URL, attempts: Int, seed: Int,
+                                               validateStorage: @Sendable () async throws -> Void) async throws {
         var lastError: Error = SteamError.chunkDownloadFailed("No content server responded.")
         for attempt in 0..<max(1, attempts) {
             try Task.checkCancellation()
+            try await validateStorage()
             // Healthy servers first, starting from a per-chunk offset.
             let order = plan.health.order(plan.hosts, seed: seed)
             let host = order[attempt % order.count]
             let url = "\(host)/depot/\(plan.depotID)/chunk/\(chunk.shaHex)\(plan.auth[host] ?? "")"
+            let data: Data
             do {
                 let encrypted = try await download(url)
-                let data = try ContentDecryptor.processChunk(encryptedData: encrypted, depotKey: plan.key,
+                try Task.checkCancellation()
+                data = try ContentDecryptor.processChunk(encryptedData: encrypted, depotKey: plan.key,
                                                              expectedCRC: chunk.crc,
                                                              expectedSize: Int(chunk.uncompressedSize))
                 guard data.count == Int(chunk.uncompressedSize) else { throw SteamError.checksumMismatch }
-                try write(data, to: path, root: root, offset: chunk.offset)
-                plan.health.recordSuccess(host)
-                return
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -438,8 +460,17 @@ final class DepotDownloader {
                 lastError = error
                 plan.health.recordFailure(host, reason: failureReason(error))
                 SteamLog.trace("chunk attempt \(attempt + 1) failed: \(failureReason(error))")
+                // Storage failures stop the install; only content/network
+                // failures are eligible for another CDN attempt.
+                try await validateStorage()
                 if attempt + 1 < attempts { try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 400_000_000) }
+                continue
             }
+            try Task.checkCancellation()
+            try await validateStorage()
+            try write(data, to: path, root: root, offset: chunk.offset)
+            plan.health.recordSuccess(host)
+            return
         }
         throw lastError
     }
@@ -452,6 +483,7 @@ final class DepotDownloader {
     }
 
     private nonisolated static func write(_ data: Data, to path: String, root: URL, offset: UInt64) throws {
+        try Task.checkCancellation()
         _ = try SteamInstallFiles.confined(URL(fileURLWithPath: path), to: root)
         let fd = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw SteamError.chunkDownloadFailed("Cannot open a game file (errno \(errno)).") }
@@ -459,6 +491,7 @@ final class DepotDownloader {
         try data.withUnsafeBytes { raw in
             var written = 0
             while written < raw.count {
+                try Task.checkCancellation()
                 let n = pwrite(fd, raw.baseAddress! + written, raw.count - written, off_t(offset) + off_t(written))
                 guard n > 0 else { throw SteamError.chunkDownloadFailed("Cannot write a game file (errno \(errno)).") }
                 written += n
@@ -478,35 +511,43 @@ final class DepotDownloader {
     // MARK: - Manifest
 
     private func fetchManifest(depotID: UInt32, appID: UInt32, manifestGID: UInt64,
-                               key: Data, hosts: [String]) async throws -> DepotManifest {
+                               key: Data, hosts: [String], validateStorage: @Sendable () async throws -> Void) async throws -> DepotManifest {
         let requestCode = try await manifestRequestCode(depotID: depotID, appID: appID, manifestGID: manifestGID)
         var lastError: Error = SteamError.manifestFetchFailed("No content server returned the manifest.")
         for host in hosts.prefix(6) {
             try Task.checkCancellation()
             let auth = await cdnAuthFragment(depotID: depotID, appID: appID, host: host)
             let code = requestCode == 0 ? "" : "/\(requestCode)"
+            let parsed: (DepotManifest, Data)
             do {
                 let raw = try await Self.download("\(host)/depot/\(depotID)/manifest/\(manifestGID)/5\(code)\(auth)")
-                let cache = depotCache
-                return try await Task.detached(priority: .userInitiated) {
-                    let (manifest, payload) = try Self.parseManifestKeepingPayload(raw, depotID: depotID, manifestGID: manifestGID, key: key)
-                    // Valve's client reads a depot's manifest from steamapps/depotcache
-                    // when it prepares a per-user custom executable. Keep it for such depots.
-                    if let cache, manifest.files.contains(where: { $0.flags & DepotManifest.customExecutableFlag != 0 }) {
-                        let file = cache.appendingPathComponent("\(depotID)_\(manifestGID).manifest")
-                        _ = try SteamInstallFiles.confined(file, to: cache.deletingLastPathComponent())
-                        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-                        let existing = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-                        if existing != payload.count { try payload.write(to: file, options: .atomic) }
-                    }
-                    return manifest
-                }.value
+                try Task.checkCancellation()
+                let parsing = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    return try Self.parseManifestKeepingPayload(raw, depotID: depotID, manifestGID: manifestGID, key: key)
+                }
+                parsed = try await withTaskCancellationHandler { try await parsing.value } onCancel: { parsing.cancel() }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 lastError = error
                 SteamLog.trace("manifest from a content server failed: \(error.localizedDescription)")
+                try Task.checkCancellation()
+                try await validateStorage()
+                continue
             }
+            try Task.checkCancellation()
+            try await validateStorage()
+            let (manifest, payload) = parsed
+            // Cache writes are storage operations, so failures are not CDN retries.
+            if let cache = depotCache, manifest.files.contains(where: { $0.flags & DepotManifest.customExecutableFlag != 0 }) {
+                let file = cache.appendingPathComponent("\(depotID)_\(manifestGID).manifest")
+                _ = try SteamInstallFiles.confined(file, to: cache.deletingLastPathComponent())
+                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+                let existing = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+                if existing != payload.count { try payload.write(to: file, options: .atomic) }
+            }
+            return manifest
         }
         throw lastError
     }

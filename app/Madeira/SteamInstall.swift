@@ -29,6 +29,72 @@ enum SteamInstallPaths {
     }
 }
 
+/// Stored internally before game files change; contains public chunk hashes,
+/// install paths and sizes, never depot keys or account credentials.
+enum SteamInstallRecovery {
+    struct Chunk: Codable, Sendable { var offset: UInt64; var length: UInt32; var sha: Data }
+    struct File: Codable, Sendable { var relative: String; var size: UInt64; var chunks: [Chunk] }
+    struct Snapshot: Codable, Sendable {
+        var version = 1
+        var library: String
+        var folder: String
+        var files: [File]
+    }
+    struct Audit: Equatable, Sendable { var verified = 0; var damagedOrMissing = 0 }
+    nonisolated static func save(_ snapshot: Snapshot, at url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try encoder.encode(snapshot).write(to: url, options: .atomic)
+    }
+    nonisolated static func audit(at url: URL, library: String, steamApps: URL,
+                                  checkStorage: () throws -> Void, hash: (Data) -> Data) throws -> Audit {
+        guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 512 << 20 else {
+            throw SteamFileError.invalid("Recovery information is too large. Resume to verify the download with Steam.")
+        }
+        let snapshot = try PropertyListDecoder().decode(Snapshot.self, from: Data(contentsOf: url))
+        guard snapshot.version == 1, snapshot.library == library,
+              SteamInstallFiles.safeFolderName(snapshot.folder) == snapshot.folder else {
+            throw SteamFileError.invalid("Recovery information is invalid. Resume to verify the download with Steam.")
+        }
+        var result = Audit(), folded: [String: String] = [:]
+        let root = steamApps.resolvingSymlinksInPath().standardizedFileURL
+        let install = root.appendingPathComponent("common/" + snapshot.folder)
+        for file in snapshot.files {
+            try Task.checkCancellation()
+            try checkStorage()
+            guard let relative = SteamInstallFiles.safeRelativePath(file.relative, folded: &folded) else {
+                throw SteamFileError.invalid("An unsafe recovery path was rejected.")
+            }
+            let target = try SteamInstallFiles.confined(install.appendingPathComponent(relative), to: root)
+            for chunk in file.chunks {
+                try Task.checkCancellation()
+                guard chunk.sha.count == 20, chunk.length > 0, chunk.length <= 32 << 20,
+                      chunk.offset <= file.size, UInt64(chunk.length) <= file.size - chunk.offset else {
+                    throw SteamFileError.invalid("Recovery chunk information is invalid.")
+                }
+                if matches(chunk, at: target, hash: hash) { result.verified += 1 }
+                else { result.damagedOrMissing += 1 }
+            }
+        }
+        try checkStorage()
+        return result
+    }
+    nonisolated static func matches(_ chunk: Chunk, at url: URL, hash: (Data) -> Data) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: chunk.offset)
+            var bytes = Data()
+            while bytes.count < Int(chunk.length) {
+                guard let next = try handle.read(upToCount: Int(chunk.length) - bytes.count), !next.isEmpty else { return false }
+                bytes.append(next)
+            }
+            return hash(bytes) == chunk.sha
+        } catch { return false }
+    }
+}
+
 enum SteamInstallFiles {
     /// A manifest path may be safe while an existing directory or file at that
     /// path is a link. Refuse those links before modifying an installation.

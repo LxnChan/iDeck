@@ -51,8 +51,25 @@ import Darwin
         set { UserDefaults.standard.set(newValue, forKey: "ideck.download-library"); objectWillChange.send() }
     }
     func pendingLibrary(_ appID: Int) -> String? { UserDefaults.standard.string(forKey: "ideck.install-library.\(appID)") }
-    func pinLibrary(_ library: String, appID: Int) { UserDefaults.standard.set(library, forKey: "ideck.install-library.\(appID)") }
-    func forgetLibrary(_ appID: Int) { UserDefaults.standard.removeObject(forKey: "ideck.install-library.\(appID)") }
+    var pendingInstalls: [Int: String] {
+        let stored = UserDefaults.standard.dictionary(forKey: "ideck.pending-external-installs") as? [String: String] ?? [:]
+        return Dictionary(stored.compactMap { key, library in
+            guard let id = Int(key), id > 0, DrivePaths.mountID(library) != nil else { return nil }
+            return (id, library)
+        }, uniquingKeysWith: { first, _ in first })
+    }
+    func pinLibrary(_ library: String, appID: Int) {
+        UserDefaults.standard.set(library, forKey: "ideck.install-library.\(appID)")
+        if DrivePaths.mountID(library) != nil {
+            var pending = pendingInstalls; pending[appID] = library
+            UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: pending.map { (String($0.key), $0.value) }), forKey: "ideck.pending-external-installs")
+        }
+    }
+    func forgetLibrary(_ appID: Int) {
+        UserDefaults.standard.removeObject(forKey: "ideck.install-library.\(appID)")
+        var pending = pendingInstalls; pending.removeValue(forKey: appID)
+        UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: pending.map { (String($0.key), $0.value) }), forKey: "ideck.pending-external-installs")
+    }
     private init() {
         if FileManager.default.fileExists(atPath: file.path) {
             do {
@@ -135,6 +152,17 @@ import Darwin
     private var canMutateRuntime: Bool {
         LibraryModel.shared.current == nil && !LibraryModel.shared.launching && LibraryModel.shared.startingJIT == nil &&
         wine_process_is_running() == 0 && wineserver_is_running() == 0 && !SteamOwnedLibrary.shared.storageBusy
+    }
+    /// A revoke/delete/rename event stops downloads before a potentially slow
+    /// filesystem probe. Polling remains the fallback when no event arrives.
+    private func directoryLost(_ id: UUID) {
+        guard records.contains(where: { $0.id == id }) else { return }
+        generation += 1; appliedGeneration = generation
+        statuses[id] = Status(message: "External folder disconnected or moved. Reconnect it before continuing.")
+        publishPaths()
+        SteamOwnedLibrary.shared.externalStorageChanged()
+        SteamGamesModel.shared.refresh()
+        refresh()
     }
     /// A final uncached write check before handing storage to Wine, Cloud, or a
     /// downloader. The caller rechecks after any intervening JIT/network wait.
@@ -325,8 +353,8 @@ import Darwin
             guard watchers[id] == nil else { return }
             let fd = open(root.path, O_EVTONLY | O_CLOEXEC)
             guard fd >= 0 else { return }
-            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.delete, .rename, .revoke, .attrib], queue: events)
-            source.setEventHandler { DispatchQueue.main.async { ExternalStorage.shared.refresh() } }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.delete, .rename, .revoke], queue: events)
+            source.setEventHandler { DispatchQueue.main.async { ExternalStorage.shared.directoryLost(id) } }
             source.setCancelHandler { close(fd) }
             watchers[id] = source
             source.resume()
