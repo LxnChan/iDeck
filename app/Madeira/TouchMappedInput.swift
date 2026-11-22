@@ -21,6 +21,8 @@ struct TouchMappedState {
     private(set) var direction = -1
     private var keys = Set<Int32>()
 
+    init(action: TouchMappedAction) { self.action = action }
+
     mutating func update(x: Double = 0, y: Double = 0, down next: Bool) -> [TouchMappedEvent] {
         let wasDown = down
         down = next

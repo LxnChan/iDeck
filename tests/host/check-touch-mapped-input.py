@@ -171,6 +171,7 @@ print("PASS: immediate touch edges, 100 taps without rendering, stick sectors, i
 with tempfile.TemporaryDirectory(prefix='madeira-touch-input-') as tmp:
     src = Path(tmp) / 'main.swift'
     exe = Path(tmp) / ('check.exe' if os.name == 'nt' else 'check')
-    src.write_text('import Foundation\n' + pure + stubs + view + tests, encoding='utf-8')
+    imports = 'import Foundation\n#if canImport(CoreGraphics)\nimport CoreGraphics\n#endif\n'
+    src.write_text(imports + pure + stubs + view + tests, encoding='utf-8')
     subprocess.run([os.environ.get('SWIFTC', 'swiftc'), str(src), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
