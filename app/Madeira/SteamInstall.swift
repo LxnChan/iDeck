@@ -49,10 +49,11 @@ enum SteamInstallRecovery {
     }
     nonisolated static func audit(at url: URL, library: String, steamApps: URL,
                                   checkStorage: () throws -> Void, hash: (Data) -> Data) throws -> Audit {
-        guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 64 << 20 else {
+        let source = URL(fileURLWithPath: url.path)
+        guard (try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 64 << 20 else {
             throw SteamFileError.invalid("Recovery information is too large. Resume to verify the download with Steam.")
         }
-        let snapshot = try PropertyListDecoder().decode(Snapshot.self, from: Data(contentsOf: url))
+        let snapshot = try PropertyListDecoder().decode(Snapshot.self, from: Data(contentsOf: source))
         guard snapshot.version == 1, snapshot.library == library,
               SteamInstallFiles.safeFolderName(snapshot.folder) == snapshot.folder else {
             throw SteamFileError.invalid("Recovery information is invalid. Resume to verify the download with Steam.")

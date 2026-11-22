@@ -453,8 +453,9 @@ func digest(_ bytes: Data) -> Data { Data(Insecure.SHA1.hash(data: bytes)) }
         subprocess.run([swift, '-parse-as-library', '-swift-version', '5', str(memory_source), str(production),
                         str(APP / 'DrivePaths.swift'), str(APP / 'SteamKeyValues.swift'),
                         '-o', str(memory_binary)], check=True)
-        result = subprocess.run([str(memory_binary), str(work / f'audit-{kind}')], check=True,
+        result = subprocess.run([str(memory_binary), str(work / f'audit-{kind}')],
                                 capture_output=True, text=True, timeout=40)
+        assert result.returncode == 0, result.stdout + result.stderr
         peaks[kind] = int(re.search(r'MAX_RSS=(\d+)', result.stdout)[1])
     assert peaks['bounded'] < 160 << 20, peaks
     print(f"PASS: startup recovery checks 384 MiB with bounded peak RSS; baseline={peaks['baseline'] // (1 << 20)} MiB, bounded={peaks['bounded'] // (1 << 20)} MiB; oversized metadata rejected")
