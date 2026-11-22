@@ -218,6 +218,8 @@ if __name__ == '__main__':
     parser.add_argument('output', type=Path)
     parser.add_argument('--mesa-sources', type=Path,
                         help='Include exact Mesa and DirectX-Headers source archives from this directory')
+    parser.add_argument('--d3d8to9-sources', type=Path,
+                        help='Include the verified D3D8 frontend source archive from this directory')
     args = parser.parse_args()
     extra = []
     if args.mesa_sources:
@@ -226,4 +228,9 @@ if __name__ == '__main__':
         spec.loader.exec_module(mesa)
         extra = [(args.mesa_sources / name, expected, url)
                  for name, (url, expected, _) in mesa.SOURCES.items()]
+    if args.d3d8to9_sources:
+        spec = importlib.util.spec_from_file_location('d3d8_source_pins', ROOT / 'build/d3d8to9/build.py')
+        d3d8 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(d3d8)
+        extra.append((args.d3d8to9_sources / d3d8.SOURCE, d3d8.SHA256, d3d8.URL))
     package(args.output, additional_sources=extra)

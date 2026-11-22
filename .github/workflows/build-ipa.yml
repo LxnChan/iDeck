@@ -470,6 +470,10 @@ jobs:
           key: mesa-d3d12-x64-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build/mesa-d3d12/build.py', 'build/mesa-d3d12/patches/**', 'build/mesa-d3d12/probe.c', 'build/mesa-d3d12/requirements.txt', 'tools/build/setup-llvm-mingw.sh') }}
           path: build/mesa-d3d12/dist
 
+      # Always replace Wine's OpenGL-based D3D8, even after a farm cache hit.
+      - name: Build shared D3D8 to D3D9 frontend
+        run: python3 -B build/d3d8to9/build.py
+
       - name: Build experimental Mesa OpenGL driver
         if: steps.mesa-cache.outputs.cache-hit != 'true'
         run: |
@@ -588,7 +592,8 @@ jobs:
           source tools/build/prepare-runtime-sources.sh
           SHORT_SHA='${{ steps.package.outputs.short_sha }}'
           python3 tools/build/package-runtime-source.py "output/iDeck-fork-${SHORT_SHA}.source.tar.gz" \
-            --mesa-sources build/mesa-d3d12/dist/sources
+            --mesa-sources build/mesa-d3d12/dist/sources \
+            --d3d8to9-sources build/d3d8to9/work/sources
           tar -czf "output/iDeck-fork-${SHORT_SHA}.relink.tar.gz" -C build/runtime-relink .
           echo "::endgroup::"
           echo "::group::Generate artifact checksums"

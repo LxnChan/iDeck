@@ -80,6 +80,7 @@ app/Madeira/aarch64-windows/winedevice.exe
 
 # Toolchains (pulled by build scripts)
 toolchains/
+build/d3d8to9/work/
 
 # Xcode
 *.xcuserdata

@@ -232,6 +232,8 @@ class BuildIPAArtifactChecks(unittest.TestCase):
                 case "$RUNTIME_LLVM_SOURCE" in */toolchains/runtime-sources/llvm-project) ;; *) exit 98 ;; esac
                 case "$RUNTIME_FREETYPE_SOURCE" in */toolchains/runtime-sources/freetype) ;; *) exit 97 ;; esac
                 test "$3" = --mesa-sources
+                test "$5" = --d3d8to9-sources
+                test "$6" = build/d3d8to9/work/sources
                 printf source > "$2"
                 '''), encoding="utf-8", newline="\n")
             for script in fake.iterdir():
