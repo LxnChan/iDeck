@@ -166,8 +166,7 @@ enum DeviceDiagnostics {
         }
         let screen = UIScreen.main
         let offset = TimeZone.current.secondsFromGMT()
-        let free = (try? URL(fileURLWithPath: NSHomeDirectory())
-            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage
+        let free = StorageCapacity.read(at: URL(fileURLWithPath: NSHomeDirectory())).available
         log.log("[device] settings: \(power())"
             + " screen=\(Int(screen.nativeBounds.width))x\(Int(screen.nativeBounds.height))@\(screen.nativeScale)x"
             + " max-fps=\(screen.maximumFramesPerSecond)"

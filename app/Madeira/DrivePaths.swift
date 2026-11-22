@@ -3,6 +3,43 @@
 
 import Foundation
 
+/// Query the selected filesystem afresh. Important-usage capacity is a
+/// purgeable-space estimate for internal storage and can be zero on an
+/// external volume even when that filesystem has free blocks.
+enum StorageCapacity {
+    struct Reading: Sendable {
+        var filesystem: Int64?
+        var volume: Int64?
+        var important: Int64?
+        var internalVolume = false
+        var available: Int64? {
+            let physical = Self.valid(filesystem) ?? Self.valid(volume)
+            guard internalVolume, let estimate = Self.valid(important) else { return physical }
+            return max(physical ?? 0, estimate)
+        }
+        private static func valid(_ value: Int64?) -> Int64? {
+            value.flatMap { $0 >= 0 ? $0 : nil }
+        }
+        var diagnostic: String {
+            "filesystem=\(filesystem ?? -1) volume=\(volume ?? -1) important=\(important ?? -1) available=\(available ?? -1)"
+        }
+    }
+    static func read(at url: URL) -> Reading {
+        let fresh = URL(fileURLWithPath: url.path).resolvingSymlinksInPath()
+        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: fresh.path)
+        let filesystem = (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
+        #if canImport(Darwin)
+        let values = try? fresh.resourceValues(forKeys: [.volumeAvailableCapacityKey, .volumeIsInternalKey])
+        let internalVolume = values?.volumeIsInternal == true
+        let important = internalVolume ? (try? fresh.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage : nil
+        return Reading(filesystem: filesystem,
+                       volume: values?.volumeAvailableCapacity.map(Int64.init), important: important, internalVolume: internalVolume)
+        #else
+        return Reading(filesystem: filesystem, volume: nil, important: nil)
+        #endif
+    }
+}
+
 /// The app's logical C: paths stay stable when iOS remounts a selected folder.
 /// Only registered links may leave drive_c; ordinary symlink escapes still fail.
 /// This registry is also read by the background metadata and Steam scanners.

@@ -43,6 +43,8 @@ assert 'steam.install(appID, library: library)' in sheet
 assert 'storage.downloadLibrary =' not in sheet
 assert 'steam.fixedInstallLibrary(appID) == nil' in sheet
 assert '.disabled(storage.statuses[record.id]?.ready != true)' in sheet
+assert 'Storage settings and global default' not in sheet
+assert 'Manage external folders and the global download default in Settings' in sheet
 print('PASS: install page passes a local selection without writing the global default and locks unfinished installs')
 if not swift:
     if args.require_swift:
@@ -55,6 +57,7 @@ if not swift:
 # enclosing app's authentication/session and CDN-health models are stand-ins.
 pieces = [block(downloader, marker).replace('private nonisolated static func', 'nonisolated static func') for marker in [
     'struct WorkItem:', 'struct Prepared:', 'private nonisolated static func prepare(',
+    'private nonisolated static func checkSpace(',
     'private nonisolated static func sizeFile(', 'private nonisolated static func chunkAlreadyPresent(',
     'private nonisolated static func fetchChunk(', 'private nonisolated static func failureReason(',
     'private nonisolated static func write(', 'private nonisolated static func download(']]
@@ -169,11 +172,68 @@ actor Storage {
     check(Owner().installLibrary(100, selecting: internalLibrary) == internalLibrary, "a cleared install can choose a different destination")
     print("PASS: per-download locations preserve the global default, persist independent pins, protect updates/resumes and reject offline targets")
 }
+func checkDurations() {
+    check(SteamDownloadProgress.duration(93780) == "1 day 2 hours 3 mins", "days, hours and minutes")
+    check(SteamDownloadProgress.duration(172800) == "2 days", "whole days")
+    check(SteamDownloadProgress.duration(3600) == "1 hour", "whole hour")
+    check(SteamDownloadProgress.duration(60) == "1 min", "exact minute")
+    check(SteamDownloadProgress.duration(61) == "2 mins", "round remaining minutes up")
+    check(SteamDownloadProgress.duration(20) == "less than 1 min", "sub-minute estimate")
+    for seconds in [0, -1, Double.nan, Double.infinity, 1e12] {
+        check(SteamDownloadProgress.duration(seconds) == nil, "invalid duration is hidden")
+    }
+    var progress = SteamDownloadProgress(totalBytes: 937800, bytesPerSecond: 10)
+    check(progress.remainingTime == "1 day 2 hours 3 mins", "ETA uses remaining bytes and speed")
+    progress.doneBytes = progress.totalBytes
+    check(progress.remainingTime == nil, "completed download has no ETA")
+    progress.doneBytes = 0
+    for speed in [0, -1, Double.nan, Double.infinity] {
+        progress.bytesPerSecond = speed
+        check(progress.remainingTime == nil, "invalid speed has no ETA")
+    }
+    print("PASS: production ETA uses readable days/hours/minutes, rounds minutes, and handles completed or invalid estimates")
+}
+func checkSpacePreparation(apps: URL) throws {
+    let fm = FileManager.default
+    let install = apps.appendingPathComponent("common/Sparse")
+    let journals = apps.appendingPathComponent("downloading/99")
+    try fm.createDirectory(at: install, withIntermediateDirectories: true)
+    try fm.createDirectory(at: journals, withIntermediateDirectories: true)
+    let size: UInt64 = 4 << 20
+    let bytes = Data(repeating: 0x61, count: Int(size))
+    let chunk = DepotManifest.ChunkEntry(sha: digest(bytes), offset: 0, compressedSize: 100, uncompressedSize: UInt32(size))
+    let plan = Downloader.DepotPlan(manifest: .init(files: [.init(filename: "sparse.bin", size: size, chunks: [chunk])]), hosts: [])
+    typealias Capacity = StorageCapacity.Reading
+    for attempt in 1...2 {
+        let prepared = try Downloader.prepare(plans: [plan], steamApps: apps, installURL: install, journalDir: journals)
+        let needed = prepared.remainingUncompressed
+        check(needed > size / 2 && prepared.pending[0].count == 1, "first try and retry both count sparse, unwritten blocks")
+        try Downloader.checkSpace(needed, capacity: Capacity(filesystem: Int64(size), volume: nil, important: 0))
+        for free in [Int64(0), Int64(needed - 1)] {
+            do {
+                try Downloader.checkSpace(needed, capacity: Capacity(filesystem: free, volume: nil, important: 0))
+                preconditionFailure("attempt \(attempt) must reject insufficient space")
+            } catch SteamError.insufficientDiskSpace(let required, let available) {
+                check(required == needed && available == UInt64(free), "accurate insufficient-space details")
+            }
+        }
+        do {
+            try Downloader.checkSpace(needed, capacity: Capacity(filesystem: nil, volume: nil, important: nil))
+            preconditionFailure("unknown capacity cannot silently allow download")
+        } catch SteamError.chunkDownloadFailed {}
+    }
+    try bytes.write(to: install.appendingPathComponent("sparse.bin"))
+    let allocated = try Downloader.prepare(plans: [plan], steamApps: apps, installURL: install, journalDir: journals)
+    check(allocated.remainingUncompressed == 0, "already allocated content requires no additional growth")
+    try Downloader.checkSpace(allocated.remainingUncompressed, capacity: Capacity(filesystem: 0, volume: nil, important: nil))
+    print("PASS: first install and sparse-file retry enforce the same real capacity check; allocated content can be reused on a full volume")
+}
 @main struct Checks {
     @MainActor static func main() async throws {
         let fm = FileManager.default
         let root = URL(fileURLWithPath: CommandLine.arguments[1])
         let host = CommandLine.arguments[2]
+        checkDurations()
         let mount = DrivePaths.Mount(id: UUID(), url: root, available: false, problem: "Disconnected")
         let library = mount.relativeRoot + "/steamapps"
         checkLocations(mount, library: library)
@@ -202,6 +262,7 @@ actor Storage {
         let journals = apps.appendingPathComponent("downloading/42")
         try fm.createDirectory(at: install, withIntermediateDirectories: true)
         try fm.createDirectory(at: journals, withIntermediateDirectories: true)
+        try checkSpacePreparation(apps: apps)
         let file = install.appendingPathComponent("data.bin")
         let data = Data("abcdefghi".utf8)
         let chunks = stride(from: 0, to: 9, by: 3).map { offset in

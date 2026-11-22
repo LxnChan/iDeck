@@ -18,6 +18,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--require-swift', action='store_true')
 args = parser.parse_args()
 
+
+def block(source, marker):
+    start = source.index(marker)
+    end = source.index('{', start) + 1
+    depth = 1
+    while depth:
+        depth += (source[end] == '{') - (source[end] == '}')
+        end += 1
+    return source[start:end]
+
+
 DRIVER = r'''
 import Foundation
 #if canImport(Darwin)
@@ -36,6 +47,18 @@ import Glibc
         let external = temporary.appendingPathComponent("External games 100% 游戏").resolvingSymlinksInPath()
         let other = temporary.appendingPathComponent("other").resolvingSymlinksInPath()
         for root in [drive, external, other] { try fm.createDirectory(at: root, withIntermediateDirectories: true) }
+        typealias Capacity = StorageCapacity.Reading
+        precondition(Capacity(filesystem: 4096, volume: 1024, important: 0).available == 4096)
+        precondition(Capacity(filesystem: 4096, volume: 1024, important: 0, internalVolume: true).available == 4096)
+        precondition(Capacity(filesystem: nil, volume: 4096, important: 0).available == 4096)
+        precondition(Capacity(filesystem: -1, volume: 4096, important: 0).available == 4096)
+        precondition(Capacity(filesystem: 0, volume: 4096, important: 8192).available == 0)
+        precondition(Capacity(filesystem: 0, volume: 0, important: 0, internalVolume: true).available == 0)
+        precondition(Capacity(filesystem: nil, volume: nil, important: nil).available == nil)
+        precondition(Capacity(filesystem: -1, volume: -1, important: -1, internalVolume: true).available == nil)
+        precondition(Capacity(filesystem: 4096, volume: 4096, important: 8192).available == 4096)
+        precondition(Capacity(filesystem: 4096, volume: 4096, important: 8192, internalVolume: true).available == 8192)
+        print("PASS: shared capacity ignores zero external estimates, preserves actual full/unknown volumes, and includes internal purgeable space")
         try Data("unchanged".utf8).write(to: external.appendingPathComponent("user-file"))
         try ExternalStorageProbe.check(external, write: true)
         let id = try ExternalStorageProbe.identify(external)
@@ -50,6 +73,11 @@ import Glibc
         let link = drive.appendingPathComponent(mount.relativeRoot)
         try fm.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createSymbolicLink(atPath: link.path, withDestinationPath: external.path)
+        let linkedCapacity = StorageCapacity.read(at: link)
+        precondition(linkedCapacity.filesystem != nil && linkedCapacity.filesystem! > 0)
+        precondition(linkedCapacity.available != nil && linkedCapacity.available! > 0)
+        precondition(StorageCapacity.read(at: other.appendingPathComponent("missing")).available == nil)
+        print("PASS: capacity reads the real filesystem through a mapped folder; a missing location stays unknown")
         DrivePaths.shared.replace([mount])
         let freshLibrary = mount.relativeRoot + "/steamapps"
         let freshLogical = drive.appendingPathComponent(freshLibrary)
@@ -182,6 +210,150 @@ import Glibc
 }
 '''
 
+# Compile the production refresh methods with a controllable disk worker. This
+# exercises actual queue/generation handling while iOS bookmarks stay on-device.
+external_source = (APP / 'ExternalStorage.swift').read_text(encoding='utf-8')
+refresh_methods = '\n'.join(block(external_source, marker).replace('private func', 'func') for marker in [
+    'func checkConnectedFolders()', 'func refresh(', 'private func drainPendingCheck()',
+    'private func invalidateCheckSuccess()'])
+refresh_types = '\n'.join(block(external_source, marker) for marker in ['struct Status:', 'enum CheckFeedback:'])
+REFRESH = r'''
+import Foundation
+@MainActor final class LibraryModel {
+    static let drive = URL(fileURLWithPath: "/tmp")
+}
+@MainActor final class SteamOwnedLibrary {
+    static let shared = SteamOwnedLibrary()
+    func externalStorageChanged() {}
+}
+@MainActor final class SteamGamesModel {
+    static let shared = SteamGamesModel()
+    func refresh() {}
+}
+@MainActor final class Store {
+    struct Record: Sendable {
+        var id = UUID(), lastPath = "original", bookmark = Data(), enabled = true
+    }
+    TYPES
+    var records = [Record()]
+    var statuses: [UUID: Status] = [:]
+    var checking = false, busy = false, pendingWriteCheck = false, pendingReportedCheck = false
+    var generation: UInt64 = 0, appliedGeneration: UInt64 = 0
+    var checkFeedback: CheckFeedback = .idle
+    var canMutateRuntime = true, failSave = false
+    let queue = DispatchQueue(label: "storage-refresh-test")
+    let engine = Engine()
+    func save(_ next: [Record]) -> Bool {
+        if failSave { return false }
+        records = next; return true
+    }
+    func publishPaths() {}
+    METHODS
+    final class Engine: @unchecked Sendable {
+        struct ResultRow { var record: Record; var status: Status }
+        let lock = NSLock(), gate = DispatchSemaphore(value: 0)
+        var writes: [Bool] = []
+        var pause = false, ready = true, moved = false
+        func configure(pause: Bool = false, ready: Bool = true, moved: Bool = false) {
+            lock.lock(); defer { lock.unlock() }
+            self.pause = pause; self.ready = ready; self.moved = moved
+        }
+        var calls: [Bool] {
+            lock.lock(); defer { lock.unlock() }; return writes
+        }
+        func check(_ records: [Record], drive: URL, write: Bool, allowRelink: Bool) -> [ResultRow] {
+            lock.lock()
+            writes.append(write)
+            let paused = pause, available = ready, changed = moved
+            pause = false
+            lock.unlock()
+            if paused { precondition(gate.wait(timeout: .now() + 5) == .success, "test released disk worker") }
+            return records.map {
+                var record = $0
+                if changed { record.lastPath = "reconnected" }
+                return ResultRow(record: record, status: Status(ready: record.enabled && available,
+                                 message: available ? "Connected" : "Disconnected", freeBytes: available ? 4096 : nil))
+            }
+        }
+    }
+}
+@MainActor func eventually(_ message: String, _ predicate: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(5)
+    while !predicate(), Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    precondition(predicate(), message)
+}
+@MainActor func succeeded(_ store: Store) -> Bool {
+    if case .success = store.checkFeedback { return true }; return false
+}
+@MainActor func failed(_ store: Store) -> Bool {
+    if case .failure = store.checkFeedback { return true }; return false
+}
+@main struct RefreshChecks {
+    @MainActor static func main() async throws {
+        let polling = Store()
+        polling.engine.configure(pause: true)
+        polling.refresh()
+        try await eventually("poll started") { polling.engine.calls.count == 1 }
+        polling.checkConnectedFolders()
+        polling.refresh(write: true) // Startup/foreground request during the poll.
+        precondition(polling.checkFeedback == .checking)
+        polling.engine.gate.signal()
+        try await eventually("manual check completed") { !polling.checking && succeeded(polling) }
+        precondition(polling.engine.calls == [false, true], "mandatory checks coalesce without losing the write probe")
+        print("PASS: foreground and manual checks queued during polling run a full write check and finish with success feedback")
+
+        let busy = Store()
+        busy.busy = true
+        busy.refresh(write: true)
+        busy.checkConnectedFolders()
+        precondition(busy.engine.calls.isEmpty && busy.checkFeedback == .checking)
+        busy.busy = false
+        busy.drainPendingCheck()
+        try await eventually("busy check completed") { succeeded(busy) }
+        precondition(busy.engine.calls == [true])
+        print("PASS: startup/manual requests survive an in-flight storage change")
+
+        let superseded = Store()
+        superseded.engine.configure(pause: true)
+        superseded.checkConnectedFolders()
+        try await eventually("manual check started") { superseded.engine.calls.count == 1 }
+        // A storage-loss event or requireAvailable result supersedes the probe.
+        superseded.generation += 1; superseded.appliedGeneration = superseded.generation
+        superseded.engine.gate.signal()
+        try await eventually("superseded check retried") { succeeded(superseded) }
+        precondition(superseded.engine.calls == [true, true])
+        superseded.engine.configure(ready: false)
+        superseded.refresh()
+        try await eventually("disconnect poll completed") { !superseded.checking }
+        precondition(superseded.checkFeedback == .idle, "disconnect clears stale success")
+        superseded.checkConnectedFolders()
+        try await eventually("failed check completed") { failed(superseded) }
+        print("PASS: superseded results retry without leaving a spinner or false success; unavailable folders show failure")
+
+        let moved = Store()
+        moved.failSave = true
+        moved.engine.configure(moved: true)
+        moved.checkConnectedFolders()
+        try await eventually("save failure completed") { failed(moved) }
+        precondition(moved.statuses.values.allSatisfy { !$0.ready })
+        let empty = Store(); empty.records = []; empty.checkConnectedFolders()
+        precondition(failed(empty))
+        let disabled = Store(); disabled.records[0].enabled = false; disabled.checkConnectedFolders()
+        try await eventually("disabled check completed") { failed(disabled) }
+        print("PASS: save failures, missing records, and safely disconnected folders cannot report a successful check")
+    }
+}
+'''.replace('TYPES', refresh_types).replace('METHODS', refresh_methods)
+
+ui_source = (APP / 'ExternalStorageUI.swift').read_text(encoding='utf-8')
+assert 'storage.checkConnectedFolders()' in ui_source
+assert 'case .checking: ProgressView(' in ui_source
+assert 'Label("Check successful", systemImage: "checkmark.circle.fill").foregroundStyle(.green)' in ui_source
+assert 'case .failure(let message)' in ui_source
+assert 'refresh(write: true)' in block(external_source, 'func start()')
+assert 'ExternalStorage.shared.start()' in (APP / 'MadeiraApp.swift').read_text(encoding='utf-8')
+print('PASS: startup/foreground request write checks; manual checks display progress, green success, or failure')
+
 swift = shutil.which('swiftc')
 if not swift:
     if args.require_swift:
@@ -207,3 +379,9 @@ else:
                         str(APP / 'SteamInstall.swift'), str(APP / 'SteamExternalLibraries.swift'),
                         str(APP / 'SwiftSteam/Core/SteamError.swift'), str(journal), str(source), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True, timeout=30)
+        refresh = path / 'Refresh.swift'
+        refresh.write_text(REFRESH, encoding='utf-8')
+        refresh_binary = path / 'refresh-checks'
+        subprocess.run([swift, '-parse-as-library', '-swift-version', '5', str(refresh),
+                        '-o', str(refresh_binary)], check=True)
+        subprocess.run([str(refresh_binary)], check=True, timeout=30)

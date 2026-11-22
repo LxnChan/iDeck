@@ -69,7 +69,18 @@ struct ExternalStorageSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                Button("Check connected folders") { storage.refresh(write: true) }.disabled(storage.busy)
+                Button("Check connected folders") { storage.checkConnectedFolders() }
+                    .disabled(storage.busy || storage.checkFeedback == .checking)
+                switch storage.checkFeedback {
+                case .idle: EmptyView()
+                case .checking: ProgressView("Checking connected folders…")
+                case .success(let date):
+                    Label("Check successful", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text("Last checked \(date.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .failure(let message):
+                    Label(message, systemImage: "exclamationmark.circle.fill").foregroundStyle(.orange)
+                }
             } footer: {
                 Text("Disconnect safely before unplugging. Removing a mapping keeps its files on the external drive. Saves stored beside a game also need that drive; Windows user folders remain in internal storage.")
             }

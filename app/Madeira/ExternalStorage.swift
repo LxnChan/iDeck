@@ -24,14 +24,22 @@ import Darwin
         var message = "Checking external folder…"
         var freeBytes: Int64?
     }
+    enum CheckFeedback: Equatable {
+        case idle, checking
+        case success(Date)
+        case failure(String)
+    }
     private struct Document: Codable { var version = 1; var records: [Record] }
     @Published private(set) var records: [Record] = []
     @Published private(set) var statuses: [UUID: Status] = [:]
     @Published private(set) var busy = false
+    @Published private(set) var checkFeedback: CheckFeedback = .idle
     @Published var error: String?
     private var readOnly = false
     private var timer: Timer?
     private var checking = false
+    private var pendingWriteCheck = false
+    private var pendingReportedCheck = false
     private var accesses = 0
     private var generation: UInt64 = 0
     private var appliedGeneration: UInt64 = 0
@@ -116,8 +124,22 @@ import Darwin
             return true
         } catch { self.error = "Could not save external storage settings: " + error.localizedDescription; return false }
     }
-    func refresh(write: Bool = false) {
-        guard !checking, !busy, !records.isEmpty else { return }
+    func checkConnectedFolders() {
+        checkFeedback = .checking
+        refresh(write: true, report: true)
+    }
+    func refresh(write: Bool = false, report: Bool = false) {
+        // Keep startup, foreground, and explicit write checks when a poll or
+        // storage change is already in flight. Routine polls can be coalesced.
+        pendingWriteCheck = pendingWriteCheck || write
+        pendingReportedCheck = pendingReportedCheck || report
+        guard !checking, !busy else { return }
+        let write = pendingWriteCheck, report = pendingReportedCheck
+        pendingWriteCheck = false; pendingReportedCheck = false
+        guard !records.isEmpty else {
+            if report { checkFeedback = .failure("Add an external folder before checking.") }
+            return
+        }
         checking = true
         generation += 1
         let request = generation
@@ -126,7 +148,12 @@ import Darwin
             let results = engine.check(snapshot, drive: drive, write: write, allowRelink: allowRelink)
             DispatchQueue.main.async { [self] in
                 checking = false
-                guard request >= appliedGeneration else { return }
+                defer { drainPendingCheck() }
+                guard request >= appliedGeneration else {
+                    pendingWriteCheck = pendingWriteCheck || write
+                    pendingReportedCheck = pendingReportedCheck || report
+                    return
+                }
                 appliedGeneration = request
                 let previous = statuses
                 var next = records
@@ -144,12 +171,30 @@ import Darwin
                     }
                 }
                 publishPaths()
+                if report {
+                    let enabled = records.filter(\.enabled)
+                    if enabled.isEmpty {
+                        checkFeedback = .failure("Reconnect an external folder before checking.")
+                    } else if enabled.allSatisfy({ statuses[$0.id]?.ready == true }) {
+                        checkFeedback = .success(Date())
+                    } else {
+                        checkFeedback = .failure("Some folders are unavailable or not writable. See their status above.")
+                    }
+                } else if records.contains(where: { $0.enabled && statuses[$0.id]?.ready != true }) {
+                    invalidateCheckSuccess()
+                }
                 if previous != statuses {
                     SteamOwnedLibrary.shared.externalStorageChanged()
                     SteamGamesModel.shared.refresh()
                 }
             }
         }
+    }
+    private func drainPendingCheck() {
+        if pendingWriteCheck || pendingReportedCheck { refresh() }
+    }
+    private func invalidateCheckSuccess() {
+        if case .success = checkFeedback { checkFeedback = .idle }
     }
     private var canMutateRuntime: Bool {
         LibraryModel.shared.current == nil && !LibraryModel.shared.launching && LibraryModel.shared.startingJIT == nil &&
@@ -160,6 +205,7 @@ import Darwin
     private func directoryLost(_ id: UUID) {
         guard records.contains(where: { $0.id == id }) else { return }
         generation += 1; appliedGeneration = generation
+        invalidateCheckSuccess()
         statuses[id] = Status(message: "External folder disconnected or moved. Reconnect it before continuing.")
         publishPaths()
         SteamOwnedLibrary.shared.externalStorageChanged()
@@ -186,6 +232,7 @@ import Darwin
         if request >= appliedGeneration {
             appliedGeneration = request
             statuses[id] = result.status
+            if !result.status.ready { invalidateCheckSuccess() }
             publishPaths()
         }
         guard result.status.ready else { throw DrivePaths.Failure(message: result.status.message) }
@@ -194,11 +241,13 @@ import Darwin
     func add(_ url: URL) {
         guard canChange, !readOnly else { error = "Stop games, downloads, and save sync before changing external storage."; return }
         busy = true
+        invalidateCheckSuccess()
         let snapshot = records, drive = LibraryModel.drive
         queue.async { [engine] in
             let result = Result { try engine.add(url, records: snapshot, drive: drive) }
             DispatchQueue.main.async { [self] in
                 busy = false
+                defer { drainPendingCheck() }
                 switch result {
                 case .success(let record):
                     var next = records.filter { $0.id != record.id }; next.append(record)
@@ -216,6 +265,7 @@ import Darwin
     func reconnect(_ id: UUID) {
         guard canChange, let index = records.firstIndex(where: { $0.id == id }) else { return }
         var next = records; next[index].enabled = true
+        invalidateCheckSuccess()
         if save(next) { statuses[id] = Status(); publishPaths(); refresh(write: true) }
     }
     func disconnect(_ id: UUID, remove: Bool = false) {
@@ -225,13 +275,18 @@ import Darwin
         var next = records
         if remove { next.removeAll { $0.id == id } } else if let index = next.firstIndex(where: { $0.id == id }) { next[index].enabled = false }
         guard save(next) else { return }
+        invalidateCheckSuccess()
         statuses[id] = Status(message: "Safely disconnected")
         publishPaths()
         busy = true
         let drive = LibraryModel.drive
         queue.async { [engine] in
             engine.disconnect(record, drive: drive)
-            DispatchQueue.main.async { [self] in busy = false; SteamGamesModel.shared.refresh() }
+            DispatchQueue.main.async { [self] in
+                busy = false
+                drainPendingCheck()
+                SteamGamesModel.shared.refresh()
+            }
         }
     }
     /// Persist only verified, live scans; an unplugged disk is never uninstalled.
@@ -336,8 +391,7 @@ import Darwin
                     }
                     failures.removeValue(forKey: record.id)
                     watch(record.id, root: root)
-                    let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityKey])
-                    return ResultRow(record: record, status: Status(ready: true, message: "Connected · writable", freeBytes: values?.volumeAvailableCapacity.map(Int64.init)))
+                    return ResultRow(record: record, status: Status(ready: true, message: "Connected · writable", freeBytes: StorageCapacity.read(at: root).available))
                 } catch {
                     ready.remove(record.id)
                     watchers.removeValue(forKey: record.id)?.cancel()

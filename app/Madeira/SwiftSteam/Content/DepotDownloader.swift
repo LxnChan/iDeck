@@ -22,6 +22,21 @@ struct SteamDownloadProgress: Equatable, Sendable {
     var bytesPerSecond: Double = 0
 
     var fraction: Double { totalBytes > 0 ? min(1, Double(doneBytes) / Double(totalBytes)) : 0 }
+    var remainingTime: String? {
+        guard bytesPerSecond.isFinite, bytesPerSecond > 0, totalBytes > doneBytes else { return nil }
+        return Self.duration(Double(totalBytes - doneBytes) / bytesPerSecond)
+    }
+    static func duration(_ seconds: Double) -> String? {
+        guard seconds.isFinite, seconds > 0, seconds < 1e12 else { return nil }
+        if seconds < 60 { return "less than 1 min" }
+        let minutes = Int(ceil(seconds / 60))
+        let days = minutes / 1440, hours = minutes % 1440 / 60, mins = minutes % 60
+        var parts: [String] = []
+        if days > 0 { parts.append("\(days) \(days == 1 ? "day" : "days")") }
+        if hours > 0 { parts.append("\(hours) \(hours == 1 ? "hour" : "hours")") }
+        if mins > 0 { parts.append("\(mins) \(mins == 1 ? "min" : "mins")") }
+        return parts.joined(separator: " ")
+    }
 }
 
 /// Orchestrates downloading an owned application's Windows depots from the
@@ -181,11 +196,10 @@ final class DepotDownloader {
         SteamLog.event("[steam-depot] install begin app=\(app.appID) depots=\(plans.count) files=\(prepared.fileCount) resume=\(prepared.doneBytes > 0 ? 1 : 0)")
 
         let remaining = prepared.remainingUncompressed
-        if remaining > 0 {
-            let values = try? installURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-            let available = UInt64(max(0, values?.volumeAvailableCapacityForImportantUsage ?? values?.volumeAvailableCapacity.map(Int64.init) ?? Int64.max))
-            if available < remaining { throw SteamError.insufficientDiskSpace(needed: remaining, available: available) }
-        }
+        try await validateStorage()
+        let capacity = StorageCapacity.read(at: installURL)
+        SteamLog.event("[steam-depot] space app=\(app.appID) needed=\(remaining) \(capacity.diagnostic)")
+        try Self.checkSpace(remaining, capacity: capacity)
 
         // 3. Chunks.
         let started = Date()
@@ -335,6 +349,15 @@ final class DepotDownloader {
         var fileCount = 0
     }
 
+    private nonisolated static func checkSpace(_ needed: UInt64, capacity: StorageCapacity.Reading) throws {
+        guard needed > 0 else { return }
+        guard let free = capacity.available else {
+            throw SteamError.chunkDownloadFailed("Could not read free space at the install location. Check that the drive is connected and try again.")
+        }
+        let available = UInt64(free)
+        if available < needed { throw SteamError.insufficientDiskSpace(needed: needed, available: available) }
+    }
+
     private nonisolated static func prepare(plans: [DepotPlan], steamApps: URL, installURL: URL, journalDir: URL) throws -> Prepared {
         let fm = FileManager.default
         var result = Prepared()
@@ -371,7 +394,7 @@ final class DepotDownloader {
                 var before = stat()
                 let hadContent = stat(url.path, &before) == 0 && before.st_size > 0
                 existing.append(hadContent)
-                try sizeFile(url.path, to: file.size)
+                let allocated = try sizeFile(url.path, to: file.size)
                 paths.append(url.path)
                 result.fileCount += 1
                 result.totalUncompressed += file.size
@@ -387,11 +410,10 @@ final class DepotDownloader {
                         pendingBytes += UInt64(chunk.uncompressedSize)
                     }
                 }
-                // Space already allocated to an existing file is reused; only
-                // its growth needs new space (sparse new files need all of it).
-                let beforeSize = hadContent ? UInt64(before.st_size) : 0
-                result.remainingUncompressed += hadContent
-                    ? (file.size > beforeSize ? file.size - beforeSize : 0) : pendingBytes
+                // A failed attempt may leave a full-length sparse file. Its
+                // logical size does not mean its blocks have been allocated.
+                // Query after resizing, since non-sparse volumes allocate here.
+                result.remainingUncompressed += min(pendingBytes, file.size - min(file.size, allocated))
             }
             result.paths.append(paths)
             result.existing.append(existing)
@@ -403,15 +425,18 @@ final class DepotDownloader {
 
     /// Create or resize a file to its manifest length. Existing bytes below
     /// that length are kept so resumed and updated installs reuse them.
-    private nonisolated static func sizeFile(_ path: String, to size: UInt64) throws {
+    private nonisolated static func sizeFile(_ path: String, to size: UInt64) throws -> UInt64 {
         let fd = open(path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw SteamError.chunkDownloadFailed("Cannot create a game file (errno \(errno)).") }
         defer { close(fd) }
         var info = stat()
-        if fstat(fd, &info) == 0, UInt64(info.st_size) == size { return }
-        guard ftruncate(fd, off_t(size)) == 0 else {
+        guard fstat(fd, &info) == 0 else { throw SteamError.chunkDownloadFailed("Cannot inspect a game file (errno \(errno)).") }
+        if UInt64(info.st_size) != size, ftruncate(fd, off_t(size)) != 0 {
             throw SteamError.chunkDownloadFailed("Cannot size a game file (errno \(errno)).")
         }
+        guard fstat(fd, &info) == 0 else { throw SteamError.chunkDownloadFailed("Cannot inspect game file allocation (errno \(errno)).") }
+        let blocks = UInt64(max(0, info.st_blocks)).multipliedReportingOverflow(by: 512)
+        return blocks.overflow ? UInt64.max : blocks.partialValue
     }
 
     // MARK: - Chunks

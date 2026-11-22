@@ -850,10 +850,9 @@ struct SteamDownloadStatus: View {
             case .finishing: return "Finishing…"
             case .downloading:
                 var parts = ["\(Int(p.fraction * 100))%", "\(formatBytes(Int64(p.doneBytes))) of \(formatBytes(Int64(p.totalBytes)))"]
-                if p.bytesPerSecond > 0 {
+                if p.bytesPerSecond.isFinite, p.bytesPerSecond > 0, p.bytesPerSecond < Double(Int64.max) {
                     parts.append("\(formatBytes(Int64(p.bytesPerSecond)))/s")
-                    let left = Double(p.totalBytes - min(p.doneBytes, p.totalBytes)) / p.bytesPerSecond
-                    if left.isFinite, left > 60 { parts.append("about \(Int(left / 60) + 1) min left") }
+                    if let remaining = p.remainingTime { parts.append("\(remaining) left") }
                 }
                 return parts.joined(separator: " · ")
             }
@@ -1040,7 +1039,8 @@ struct SteamGameSheet: View {
                 Text(problem).font(.caption).foregroundStyle(.orange)
             }
             if let freeSpace { LabeledContent("Free at install location", value: formatBytes(freeSpace)) }
-            NavigationLink("Storage settings and global default") { ExternalStorageSettings() }
+            Text("Manage external folders and the global download default in Settings › Storage › External storage.")
+                .font(.caption).foregroundStyle(.secondary)
             Text(SteamGameSheet.downloadNote).font(.footnote).foregroundStyle(.secondary)
         }
     }

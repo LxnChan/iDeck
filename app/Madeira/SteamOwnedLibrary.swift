@@ -255,8 +255,7 @@ final class SteamOwnedLibrary: ObservableObject {
         if let id = DrivePaths.mountID(library) {
             return ExternalStorage.shared.statuses[id]?.ready == true ? ExternalStorage.shared.statuses[id]?.freeBytes : nil
         }
-        let values = try? LibraryModel.documents.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-        return values?.volumeAvailableCapacityForImportantUsage ?? values?.volumeAvailableCapacity.map(Int64.init)
+        return StorageCapacity.read(at: LibraryModel.documents).available
     }
     func externalStorageChanged() {
         let pending = ExternalStorage.shared.pendingInstalls

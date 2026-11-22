@@ -324,7 +324,9 @@ private struct TarReader {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             var values = URLResourceValues(); values.isExcludedFromBackup = true
             var url = root; try url.setResourceValues(values)
-            let free = try root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
+            guard let free = StorageCapacity.read(at: root).available else {
+                throw WineMonoInstallError.message("Could not determine free space in the Wine Mono folder.")
+            }
             guard free > 450_000_000 else {
                 error = "Wine Mono needs about 450 MB of free space while it installs (about 130 MB once installed)."
                 return
