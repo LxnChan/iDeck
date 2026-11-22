@@ -50,6 +50,19 @@ import Glibc
         let link = drive.appendingPathComponent(mount.relativeRoot)
         try fm.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createSymbolicLink(atPath: link.path, withDestinationPath: external.path)
+        DrivePaths.shared.replace([mount])
+        let freshLibrary = mount.relativeRoot + "/steamapps"
+        let freshLogical = drive.appendingPathComponent(freshLibrary)
+        let fullResolution = freshLogical.resolvingSymlinksInPath().standardizedFileURL
+        print("INFO: Foundation full-path resolution follows mapping with missing leaf=\(DrivePaths.within(fullResolution, external))")
+        precondition(!fm.fileExists(atPath: external.appendingPathComponent("steamapps").path))
+        precondition(try DrivePaths.shared.resolve(freshLibrary, drive: drive, mustExist: false).path == freshLogical.path)
+        let freshFile = freshLibrary + "/common/New game/data/first.bin"
+        precondition(try DrivePaths.shared.resolve(freshFile, drive: drive, mustExist: false).path == drive.appendingPathComponent(freshFile).path)
+        precondition((try? DrivePaths.shared.resolve(freshLibrary, drive: drive)) == nil)
+        precondition(!fm.fileExists(atPath: external.appendingPathComponent("steamapps").path))
+        precondition(try DrivePaths.shared.resolve("new/internal/file", drive: drive, mustExist: false).path == drive.appendingPathComponent("new/internal/file").path)
+        print("PASS: first external download resolves missing steamapps and nested files without creating them; existing-only checks still reject them")
         for root in [drive, external, other] { try Data([0x4d, 0x5a]).write(to: root.appendingPathComponent("Game.exe")) }
         DrivePaths.shared.replace([mount])
         precondition(try DrivePaths.shared.resolve(relative, drive: drive).path == link.appendingPathComponent("Game.exe").path)
@@ -62,6 +75,13 @@ import Glibc
         try fm.createSymbolicLink(atPath: external.appendingPathComponent("escape").path, withDestinationPath: other.path)
         precondition((try? DrivePaths.shared.resolve("escape/Game.exe", drive: drive)) == nil)
         precondition((try? DrivePaths.shared.resolve(mount.relativeRoot + "/escape/Game.exe", drive: drive)) == nil)
+        precondition((try? DrivePaths.shared.resolve("escape/not-created/file", drive: drive, mustExist: false)) == nil)
+        precondition((try? DrivePaths.shared.resolve(mount.relativeRoot + "/escape/not-created/file", drive: drive, mustExist: false)) == nil)
+        try fm.createSymbolicLink(atPath: external.appendingPathComponent("broken").path, withDestinationPath: other.appendingPathComponent("missing").path)
+        try fm.createSymbolicLink(atPath: external.appendingPathComponent("loop").path, withDestinationPath: external.appendingPathComponent("loop").path)
+        for path in ["broken", "broken/child/file", "loop/child/file", "Game.exe/child"] {
+            precondition((try? DrivePaths.shared.resolve(mount.relativeRoot + "/" + path, drive: drive, mustExist: false)) == nil)
+        }
         var offline = mount; offline.available = false
         DrivePaths.shared.replace([offline])
         precondition((try? DrivePaths.shared.resolve(relative, drive: drive)) == nil)
@@ -71,10 +91,18 @@ import Glibc
         try fm.removeItem(at: link)
         try fm.createSymbolicLink(atPath: link.path, withDestinationPath: other.path)
         precondition((try? DrivePaths.shared.resolve(relative, drive: drive)) == nil)
+        precondition((try? DrivePaths.shared.resolve(freshLibrary, drive: drive, mustExist: false)) == nil)
         try fm.removeItem(at: link)
         try fm.createSymbolicLink(atPath: link.path, withDestinationPath: external.path)
         precondition((try? DrivePaths.shared.resolve(relative, drive: drive)) != nil)
-        print("PASS: internal paths and registered mappings work; traversal, unregistered/replaced/nested links and offline mappings fail closed")
+        print("PASS: internal paths and registered mappings work; traversal, replaced/escaping/broken/looping links, non-directory parents and offline mappings fail closed even for missing targets")
+
+        let privateError = NSError(domain: NSCocoaErrorDomain, code: 257, userInfo: [
+            NSFilePathErrorKey: external.path, NSLocalizedDescriptionKey: "Private folder " + external.path,
+            NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 1)])
+        precondition(DrivePaths.diagnostic(privateError) == "NSCocoaErrorDomain-257:NSPOSIXErrorDomain-1")
+        precondition(DrivePaths.diagnostic(DrivePaths.Failure(message: external.path, code: "mapping-changed")) == "mapping-changed")
+        print("PASS: storage diagnostics retain system error codes without logging user paths or localized descriptions")
 
         let identityFile = external.appendingPathComponent(ExternalStorageProbe.marker)
         try Data(UUID().uuidString.utf8).write(to: identityFile)

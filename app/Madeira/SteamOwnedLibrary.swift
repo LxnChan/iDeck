@@ -1304,10 +1304,12 @@ final class SteamOwnedLibrary: ObservableObject {
 
     private func run(_ appID: Int) async {
         var outcome = SteamDownloadBackground.Outcome.paused
-        var stage = "metadata"
+        var stage = "storage"
         let library = installLibrary(appID), apps = installSteamApps(appID), drive = Self.drive
         do {
+            SteamLog.event("[steam-depot] preparing app=\(appID) stage=\(stage) storage=\(DrivePaths.mountID(library) == nil ? "internal" : "external")")
             try await ExternalStorage.shared.requireAvailable(library)
+            stage = "metadata"
             SteamLog.event("[steam-depot] preparing app=\(appID) stage=\(stage)")
             guard let info = try await fetcher.fetchInstallInfo(appID: UInt32(appID)) else {
                 throw SteamError.appInfoNotFound(UInt32(appID))
@@ -1348,6 +1350,7 @@ final class SteamOwnedLibrary: ObservableObject {
             if let message = storageProblem {
                 downloads[appID]?.state = .failed(message)
                 self.error = message
+                SteamLog.event("[steam-depot] failed app=\(appID) stage=\(stage) storage=external reason=\(DrivePaths.diagnostic(error))")
                 outcome = .failed(message)
             } else if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
                 if downloads[appID] != nil { downloads[appID]?.state = .paused }

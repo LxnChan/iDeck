@@ -256,6 +256,7 @@ import Darwin
         struct ResultRow { var record: Record; var status: Status }
         private var scopes: [UUID: URL] = [:]
         private var ready = Set<UUID>()
+        private var failures: [UUID: String] = [:]
         private var watchers: [UUID: DispatchSourceFileSystemObject] = [:]
         private let events = DispatchQueue(label: "com.ideck.external-storage.events", qos: .utility)
         func add(_ source: URL, records: [Record], drive: URL) throws -> Record {
@@ -301,6 +302,7 @@ import Darwin
             records.map { original in
                 var record = original
                 guard record.enabled else { return ResultRow(record: record, status: Status(message: "Safely disconnected")) }
+                var stage = "bookmark"
                 do {
                     if scopes[record.id] == nil {
                         var stale = false
@@ -311,6 +313,7 @@ import Darwin
                     }
                     guard let source = scopes[record.id] else { throw DrivePaths.Failure(message: "External folder access is unavailable.") }
                     let root = URL(fileURLWithPath: source.path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
+                    stage = "probe"
                     do { try ExternalStorageProbe.check(root, expected: record.id, write: write || !ready.contains(record.id)) }
                     catch {
                         // iOS may give the same bookmark a different path on reinsert.
@@ -318,6 +321,7 @@ import Darwin
                         if allowRelink { scopes.removeValue(forKey: record.id)?.stopAccessingSecurityScopedResource() }
                         throw error
                     }
+                    stage = "mapping"
                     if root.path != record.lastPath, !allowRelink { throw DrivePaths.Failure(message: "External drive reconnected at a new location. Stop the current operation before reconnecting it.") }
                     if allowRelink { try link(record, root: root, drive: drive) }
                     else {
@@ -327,13 +331,21 @@ import Darwin
                         }
                     }
                     record.lastPath = root.path
-                    ready.insert(record.id)
+                    if ready.insert(record.id).inserted {
+                        SteamLog.event("[external-storage] connected mapping=\(record.id.uuidString)")
+                    }
+                    failures.removeValue(forKey: record.id)
                     watch(record.id, root: root)
                     let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityKey])
                     return ResultRow(record: record, status: Status(ready: true, message: "Connected · writable", freeBytes: values?.volumeAvailableCapacity.map(Int64.init)))
                 } catch {
                     ready.remove(record.id)
                     watchers.removeValue(forKey: record.id)?.cancel()
+                    let reason = "stage=\(stage) reason=\(DrivePaths.diagnostic(error))"
+                    if failures[record.id] != reason {
+                        failures[record.id] = reason
+                        SteamLog.event("[external-storage] unavailable mapping=\(record.id.uuidString) \(reason)")
+                    }
                     return ResultRow(record: record, status: Status(message: "External folder unavailable: " + error.localizedDescription))
                 }
             }
@@ -369,6 +381,7 @@ import Darwin
             watchers.removeValue(forKey: record.id)?.cancel()
             scopes.removeValue(forKey: record.id)?.stopAccessingSecurityScopedResource()
             ready.remove(record.id)
+            failures.removeValue(forKey: record.id)
         }
     }
 }

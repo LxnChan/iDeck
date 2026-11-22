@@ -18,7 +18,21 @@ final class DrivePaths: @unchecked Sendable {
     }
     struct Failure: LocalizedError {
         var message: String
+        var code = "validation"
         var errorDescription: String? { message }
+    }
+    /// Log stable failure codes, never the localized error's folder paths.
+    static func diagnostic(_ error: Error) -> String {
+        if let failure = error as? Failure { return failure.code }
+        let value = error as NSError
+        let domains = [NSCocoaErrorDomain, NSPOSIXErrorDomain, NSURLErrorDomain, "NSFileProviderErrorDomain"]
+        let domain = domains.contains(value.domain) ? value.domain : "other"
+        var result = "\(domain)-\(value.code)"
+        if let underlying = value.userInfo[NSUnderlyingErrorKey] as? NSError {
+            let domain = domains.contains(underlying.domain) ? underlying.domain : "other"
+            result += ":\(domain)-\(underlying.code)"
+        }
+        return result
     }
     private let lock = NSLock()
     private var registered: [UUID: Mount] = [:]
@@ -46,24 +60,56 @@ final class DrivePaths: @unchecked Sendable {
         let path = url.standardizedFileURL.path, base = root.standardizedFileURL.path
         return path == base || path.hasPrefix(base + "/")
     }
+    /// Foundation may leave the entire URL unresolved if its final component
+    /// does not exist. Resolve the nearest existing ancestor first so a fresh
+    /// steamapps folder still follows its registered drive_c mapping. Do not
+    /// treat dangling links, permission errors, or a non-directory as missing.
+    private static func resolvedTarget(_ url: URL) throws -> URL {
+        let fm = FileManager.default
+        var ancestor = url, missing: [String] = []
+        while true {
+            do {
+                let attributes = try fm.attributesOfItem(atPath: ancestor.path)
+                if attributes[.type] as? FileAttributeType == .typeSymbolicLink,
+                   !fm.fileExists(atPath: ancestor.path) {
+                    throw Failure(message: "The path contains a broken symbolic link.", code: "broken-link")
+                }
+                if !missing.isEmpty {
+                    var directory: ObjCBool = false
+                    guard fm.fileExists(atPath: ancestor.path, isDirectory: &directory), directory.boolValue else {
+                        throw Failure(message: "A parent folder in the path is not a directory.", code: "not-directory")
+                    }
+                }
+                let root = ancestor.resolvingSymlinksInPath().standardizedFileURL
+                return missing.reversed().reduce(root) { $0.appendingPathComponent($1) }
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain &&
+                (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+                let parent = ancestor.deletingLastPathComponent()
+                guard parent.path != ancestor.path else { throw error }
+                missing.append(ancestor.lastPathComponent)
+                ancestor = parent
+            }
+        }
+    }
     /// Return the logical URL, not its resolved target: Wine must keep seeing C:.
     func resolve(_ relative: String, drive: URL, mustExist: Bool = true) throws -> URL {
         guard let parts = Self.parts(relative) else { throw Failure(message: "Invalid C: path.") }
         let base = drive.resolvingSymlinksInPath().standardizedFileURL
         let logical = parts.reduce(base) { $0.appendingPathComponent($1) }
-        let target = logical.resolvingSymlinksInPath().standardizedFileURL
         if let id = Self.mountID(relative) {
             guard let mount = mounts.first(where: { $0.id == id }), mount.available else {
                 throw Failure(message: mounts.first(where: { $0.id == id })?.problem ?? "External folder is not connected or its mapping was removed.")
             }
             let root = mount.url.resolvingSymlinksInPath().standardizedFileURL
             try ExternalStorageProbe.check(root, expected: id, write: false)
+            let target = try Self.resolvedTarget(logical)
             let link = base.appendingPathComponent(mount.relativeRoot)
             // A replaced link or a symlinked External parent must never grant access.
             guard base.appendingPathComponent(Self.externalDirectory).resolvingSymlinksInPath().path == base.appendingPathComponent(Self.externalDirectory).path,
                   (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) == mount.url.path,
-                  Self.within(target, root) else { throw Failure(message: "External folder mapping changed. Reconnect it in Settings.") }
+                  Self.within(target, root) else { throw Failure(message: "External folder mapping changed. Reconnect it in Settings.", code: "mapping-changed") }
         } else {
+            let target = try Self.resolvedTarget(logical)
             guard Self.within(target, base) else { throw Failure(message: "The path leaves drive_c.") }
         }
         if mustExist, !FileManager.default.fileExists(atPath: logical.path) {
@@ -112,21 +158,21 @@ enum ExternalStorageProbe {
         let file = root.appendingPathComponent(marker)
         let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? Int.max) < 128 else {
-            throw DrivePaths.Failure(message: "The external folder's identity file is invalid.")
+            throw DrivePaths.Failure(message: "The external folder's identity file is invalid.", code: "identity-invalid")
         }
         let data = try Data(contentsOf: file)
         guard data.count < 128, let text = String(data: data, encoding: .utf8), let id = UUID(uuidString: text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw DrivePaths.Failure(message: "The external folder's identity could not be verified.")
+            throw DrivePaths.Failure(message: "The external folder's identity could not be verified.", code: "identity-invalid")
         }
         return id
     }
     static func check(_ root: URL, expected: UUID? = nil, write: Bool) throws {
         let fresh = URL(fileURLWithPath: root.path, isDirectory: true)
         let values = try fresh.resourceValues(forKeys: [.isDirectoryKey, .isReadableKey, .isWritableKey, .volumeIsReadOnlyKey, .volumeIsLocalKey, .isUbiquitousItemKey])
-        guard values.isDirectory == true, values.isReadable != false else { throw DrivePaths.Failure(message: "External folder is missing or cannot be read.") }
-        guard values.volumeIsLocal != false, values.isUbiquitousItem != true else { throw DrivePaths.Failure(message: "Choose a folder on a locally connected drive.") }
-        guard values.volumeIsReadOnly != true, values.isWritable != false, FileManager.default.isWritableFile(atPath: root.path) else { throw DrivePaths.Failure(message: "External folder is read-only. Choose a writable folder.") }
-        if let expected, try identity(at: root) != expected { throw DrivePaths.Failure(message: "A different folder is at this location. Select the original folder again.") }
+        guard values.isDirectory == true, values.isReadable != false else { throw DrivePaths.Failure(message: "External folder is missing or cannot be read.", code: "unreadable") }
+        guard values.volumeIsLocal != false, values.isUbiquitousItem != true else { throw DrivePaths.Failure(message: "Choose a folder on a locally connected drive.", code: "nonlocal") }
+        guard values.volumeIsReadOnly != true, values.isWritable != false, FileManager.default.isWritableFile(atPath: root.path) else { throw DrivePaths.Failure(message: "External folder is read-only. Choose a writable folder.", code: "read-only") }
+        if let expected, try identity(at: root) != expected { throw DrivePaths.Failure(message: "A different folder is at this location. Select the original folder again.", code: "identity-mismatch") }
         guard write else { return }
         let fm = FileManager.default
         let temporary = root.appendingPathComponent(".ideck-write-check-" + UUID().uuidString, isDirectory: true)
@@ -135,7 +181,7 @@ enum ExternalStorageProbe {
         let file = temporary.appendingPathComponent("probe"), renamed = temporary.appendingPathComponent("renamed")
         let bytes = Data(UUID().uuidString.utf8)
         try bytes.write(to: file, options: .withoutOverwriting)
-        guard try Data(contentsOf: file) == bytes else { throw DrivePaths.Failure(message: "External folder failed its read/write check.") }
+        guard try Data(contentsOf: file) == bytes else { throw DrivePaths.Failure(message: "External folder failed its read/write check.", code: "write-check") }
         try fm.moveItem(at: file, to: renamed)
         try fm.removeItem(at: renamed)
         try fm.removeItem(at: temporary)
