@@ -56,7 +56,7 @@ require(re.search(re.escape('SteamGamesSection(search: search, layout: layout, s
                   + r'(?:\s+focused: controller\.connected \? focused : nil,)?\s+'
                   + re.escape('open: { selected = $0 })'), library) is not None,
         "Library: the Steam section is in the library and opens the library's Game details page")
-require('MadeiraDock.games(drive: drive)' in games and 'let drive = MadeiraDock.drive' in games,
+require('MadeiraDock.games(drive: drive, didScan:' in games and 'let drive = MadeiraDock.drive' in games,
         "the section lists exactly what Dock's own discovery finds")
 # Game details: a Steam game is a library entry (its per-game settings) with a Steam section.
 require('open(LibraryModel.shared.steamEntry(installed, title: item.name))' in games,
@@ -80,7 +80,7 @@ require('SteamEntrySection(entry: $entry)' in detail and 'if entry.steamAppID !=
         'Game details: the Steam section for a Steam game')
 for label in ['"Start with"', '"Madeira Dock"', '"Smaller JIT pool (512 MB) for this launch"', '"One-time installs"',
               '"Run at next start"', '"Skip"', '"Repair installed files"', '"Uninstall"', '"App ID"',
-              '"Free space on this device"', '"Pause update"', '"Resume update"', '"The game"', '"Program"', '"Choose…"']:
+              '"Free at install location"', '"Pause update"', '"Resume update"', '"The game"', '"Program"', '"Choose…"']:
     require(label in steam_section, f'Steam section: {label}')
 for label in ['"Library details"', '"Choose cover image"', '"Use Steam artwork"', '"Display"', '"Resolution"',
               '"Aspect & scaling"', '"Compatibility & performance"', '"Reduced-precision x87"', '"CPU cores reported"',
@@ -124,7 +124,7 @@ require('stored?.steamProgramSource == "choice" ? stored?.steamProgram : nil' in
         'LibraryMetadataScanner.shared.scan(program.url, drive: drive, countBytes: false)' in steam_meta,
         'the program is the one "The game" starts; bits from its PE header, the API as for any library game')
 require(steam_meta.count('Task.detached(priority: .utility)') == 3 and 'updated.folderBytes = record.size ?? updated.folderBytes' in steam_meta
-        and 'guard !Task.isCancelled else { return }' in steam_meta and 'save(updated)' in steam_meta,
+        and 'guard !Task.isCancelled, DrivePaths.shared.problem(game.library) == nil else { return }' in steam_meta and 'save(updated)' in steam_meta,
         "file reads off the main thread; the size is the install record's; the result is kept on the game's entry")
 require('LogStore.shared.log("[steam-games] metadata app=\\(game.id) bits=\\(updated.bits) api=\\(api ?? "unknown")")' in steam_meta
         and steam_meta.count('LogStore') == 1, '[steam-games] metadata logs the App ID, bits and API only')
@@ -134,7 +134,7 @@ require('next.firstIndex(where: { entry.steamAppID != nil && $0.steamAppID == en
         "a Steam game keeps one entry, and a details page saved later keeps the card's newer format")
 launch = content_view[content_view.index('private func launchLibraryEntry('):content_view.index('private func runWineFullSequence(')]
 require('if let appID = entry.steamAppID, !entry.startsSteamGameDirectly {' in launch and
-        'startDock(game, compactPool: MadeiraDockModel.shared.compactPool, profile: entry)' in launch,
+        'startDock(game, compactPool: MadeiraDockModel.shared.compactPool, profile: entry,' in launch,
         "Play on a Steam game's Game details page starts it through Madeira Dock with its own profile")
 # "Start with: The game" (SteamDirectStart): the program from Steam's launch configuration or the
 # Program picker starts like any library game, without Dock, a sign-in transfer or a client.
@@ -473,7 +473,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-steam-games-') as tmp:
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-o', str(exe),
                             str(tmp / 'stubs.swift'), str(tmp / 'dock.swift'), str(tmp / 'rules.swift'),
                             str(tmp / 'checks.swift'), str(tmp / 'owned.swift'), str(app / 'SteamKeyValues.swift'),
-                            str(app / 'SteamInstall.swift'), str(app / 'SwiftSteam/Library/SteamAppInfo.swift')],
+                            str(app / 'DrivePaths.swift'), str(app / 'SteamInstall.swift'), str(app / 'SwiftSteam/Library/SteamAppInfo.swift')],
                            capture_output=True, text=True)
     require(build.returncode == 0, 'production Steam games rules and Dock discovery compile on the host')
     if build.returncode:

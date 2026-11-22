@@ -284,6 +284,7 @@ with tempfile.TemporaryDirectory(prefix='ideck-child-args-') as directory:
     subprocess.run([swiftc, '-parse-as-library', '-swift-version', '5', *files,
                     str(app / 'LibraryPrefs.swift'), str(app / 'LibraryBCD.swift'),
                     str(app / 'LegacyRuntimeCore.swift'),
+                    str(app / 'DrivePaths.swift'),
                     '-o', str(executable)], check=True)
     subprocess.run([str(executable), str(folder)], check=True)
     for mode in ('write-valid', 'read-valid', 'enable-opengl', 'read-opengl', 'write-draft', 'read-draft',

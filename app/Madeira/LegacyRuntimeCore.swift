@@ -135,7 +135,7 @@ enum LegacyRuntimeDependency {
     /// Scan only this installation (including dynamically loaded plugin DLLs).
     /// Budgets keep an unrelated large library from blocking launch forever.
     static func scan(executable: URL, drive: URL, prefix: URL) throws -> Need? {
-        guard inside(executable, drive), !Task.isCancelled else { return nil }
+        guard DrivePaths.shared.contains(executable, drive: drive), !Task.isCancelled else { return nil }
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: executable.path, isDirectory: &isDirectory) else { return nil }
@@ -145,7 +145,7 @@ enum LegacyRuntimeDependency {
         for _ in 0..<4 {
             guard binaryFolders.contains(root.lastPathComponent.lowercased()) else { break }
             let parent = root.deletingLastPathComponent()
-            guard parent != drive, inside(parent, drive), !["games", "common", "steamapps", "program files", "program files (x86)"].contains(parent.lastPathComponent.lowercased()) else { break }
+            guard parent != drive, DrivePaths.shared.contains(parent, drive: drive), !["games", "common", "steamapps", "program files", "program files (x86)"].contains(parent.lastPathComponent.lowercased()) else { break }
             root = parent
         }
         var candidates = isDirectory.boolValue ? [] : [executable]

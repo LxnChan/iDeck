@@ -932,11 +932,12 @@ final class LibraryModel: ObservableObject {
         let revision = 12
         guard !metadataInFlight.contains(id), let entry = entries.first(where: { $0.id == id }), entry.desktop != true,
               entry.metadataRevision != revision || Date().timeIntervalSince(entry.metadataChecked ?? .distantPast) > 86400,
+              DrivePaths.shared.problem(entry.relativePath) == nil,
               let url = try? Self.executable(entry.relativePath) else { return }
         metadataInFlight.insert(id)
         defer { metadataInFlight.remove(id) }
         let result = await LibraryMetadataScanner.shared.scan(url, drive: Self.drive)
-        guard !Task.isCancelled, var updated = entries.first(where: { $0.id == id }) else { return }
+        guard !Task.isCancelled, DrivePaths.shared.problem(entry.relativePath) == nil, var updated = entries.first(where: { $0.id == id }) else { return }
         updated.folderBytes = result.bytes
         if let api = result.api { updated.graphicsAPI = api }
         updated.metadataChecked = Date(); updated.metadataRevision = revision; save(updated)
@@ -952,7 +953,7 @@ final class LibraryModel: ObservableObject {
     @MainActor
     func refreshSteamMetadata(_ game: DockGame, title: String) async {
         let revision = 1
-        guard !readOnly, game.installed, !steamMetadataInFlight.contains(game.id) else { return }
+        guard !readOnly, game.installed, DrivePaths.shared.problem(game.library) == nil, !steamMetadataInFlight.contains(game.id) else { return }
         steamMetadataInFlight.insert(game.id)
         defer { steamMetadataInFlight.remove(game.id) }
         let drive = Self.drive
@@ -979,7 +980,7 @@ final class LibraryModel: ObservableObject {
         }.value
         var api = program?.api
         if let program, let scanned = await LibraryMetadataScanner.shared.scan(program.url, drive: drive, countBytes: false).api { api = scanned }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, DrivePaths.shared.problem(game.library) == nil else { return }
         var updated = entries.first { $0.steamAppID == game.id } ?? LibraryEntry(title: title, relativePath: folder, bits: 0)
         updated.steamAppID = game.id
         updated.relativePath = folder
@@ -995,22 +996,21 @@ final class LibraryModel: ObservableObject {
     /// What an entry can start: an executable, or (ml1163) a batch file run through cmd.exe.
     static let programExtensions: Set<String> = ["exe", "bat", "cmd"]
     static func executable(_ relative: String) throws -> URL {
-        let url = drive.appendingPathComponent(relative).resolvingSymlinksInPath().standardizedFileURL
-        guard url.path.hasPrefix(drive.path + "/"), programExtensions.contains(url.pathExtension.lowercased()),
+        let url = try DrivePaths.shared.resolve(relative, drive: drive)
+        guard programExtensions.contains(url.pathExtension.lowercased()),
               FileManager.default.fileExists(atPath: url.path) else {
             throw LibraryError.message("Choose an executable (.exe, .bat or .cmd) inside drive_c.")
         }
         return url
     }
     static func inspect(_ url: URL) throws -> LibraryEntry {
-        guard url.resolvingSymlinksInPath().path.hasPrefix(drive.path + "/") else {
+        guard let relative = DrivePaths.shared.relative(url, drive: drive) else {
             throw LibraryError.message("The executable must be inside drive_c.")
         }
         if ["bat", "cmd"].contains(url.pathExtension.lowercased()) {
             // ml1163: a batch file has no PE header. Like every entry it starts
             // directly by default, as upstream starts every game; the details page
             // warns that Wine then stops when cmd.exe, its first process, exits.
-            let relative = String(url.resolvingSymlinksInPath().path.dropFirst(drive.path.count + 1))
             return LibraryEntry(title: url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_", with: " "),
                                 relativePath: relative, bits: 0)
         }
@@ -1024,7 +1024,6 @@ final class LibraryModel: ObservableObject {
         guard pe.count == 6, Array(pe.prefix(4)) == [0x50, 0x45, 0, 0] else { throw LibraryError.message("Missing PE header.") }
         let machine = Int(pe[4]) | Int(pe[5]) << 8
         guard machine == 0x14c || machine == 0x8664 else { throw LibraryError.message("Only x86 and x64 executables are supported.") }
-        let relative = String(url.resolvingSymlinksInPath().path.dropFirst(drive.path.count + 1))
         let name = url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_", with: " ")
         var entry = LibraryEntry(title: name, relativePath: relative, bits: machine == 0x14c ? 32 : 64)
         entry.graphicsAPI = graphicsImports(url)
@@ -1377,7 +1376,7 @@ private actor LibraryMetadataScanner {
     /// `countBytes: false` skips the size walk (a Steam game's size is its install record's).
     func scan(_ executable: URL, drive: URL, countBytes: Bool = true) -> (bytes: Int64?, api: String?) {
         let folder = executable.deletingLastPathComponent()
-        guard folder.path.hasPrefix(drive.path + "/"), !Task.isCancelled else { return (nil, nil) }
+        guard DrivePaths.shared.contains(folder, drive: drive), !Task.isCancelled else { return (nil, nil) }
         let manager = FileManager.default
         // Executables commonly live below the installation root. Only ascend
         // conventional binary directories, never an arbitrary library parent.
@@ -1386,7 +1385,7 @@ private actor LibraryMetadataScanner {
         for _ in 0..<4 {
             guard binaryFolders.contains(installation.lastPathComponent.lowercased()) else { break }
             let parent = installation.deletingLastPathComponent()
-            guard parent.path.hasPrefix(drive.path + "/"),
+            guard DrivePaths.shared.contains(parent, drive: drive),
                   !["program files", "program files (x86)", "games", "common", "steamapps"].contains(parent.lastPathComponent.lowercased()) else { break }
             installation = parent
         }
@@ -1408,7 +1407,7 @@ private actor LibraryMetadataScanner {
         let siblings = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
         var local: [String: URL] = [:]
         for file in siblings where file.pathExtension.lowercased() == "dll" {
-            if file.resolvingSymlinksInPath().path.hasPrefix(drive.path + "/") { local[file.lastPathComponent.lowercased()] = file }
+            if DrivePaths.shared.contains(file, drive: drive) { local[file.lastPathComponent.lowercased()] = file }
         }
         var budget = 32 * 1024 * 1024
         var pending = [executable], visited = Set<String>(), apis = Set<String>()
@@ -1417,7 +1416,7 @@ private actor LibraryMetadataScanner {
         if LibraryModel.graphicsImports(executable) == nil {
             pending.insert(contentsOf: siblings.filter {
                 $0.pathExtension.lowercased() == "exe" && $0 != executable &&
-                $0.resolvingSymlinksInPath().path.hasPrefix(drive.path + "/")
+                DrivePaths.shared.contains($0, drive: drive)
             }.sorted { $0.path < $1.path }.prefix(8), at: 0)
         }
         while let file = pending.popLast(), visited.count < 64, !Task.isCancelled {
@@ -2602,6 +2601,7 @@ struct LibraryGroupedGames<LocalCell: View>: View {
                     else { steamSheet = SteamSelection(id: appID) }
                 } label: { SteamGameCell(item: item, list: list, dense: dense) }
                     .libraryCardButtonStyle(grid: !list)
+                    .modifier(ExternalGameAppearance(relative: item.installed?.library ?? ""))
             }
         }
     }
@@ -2900,6 +2900,7 @@ struct LibraryView: View {
                 SteamSettingsSection(open: { settingsSheet = $0 })
             }
             if settingsShow("Steam Cloud", "Cloud", "sync", "saves", "backup", "restore", "save games") { SavesSection() }
+            if settingsShow("Storage", "External", "drive", "disk", "folder") { ExternalStorageSection() }
             if settingsShow(".NET", "Mono", "Wine Mono", "framework", "download") { WineMonoSettingsSection() }
             if settingsShow("Windows runtimes", "MFC42", "Visual C++", "DLL", "runtime") { LegacyRuntimeSettingsSection() }
             // Search: the matching options of All settings, editable here.
@@ -3230,6 +3231,7 @@ struct LibraryView: View {
                 }
             }.foregroundStyle(.primary)
         }.libraryCardButtonStyle(grid: !list)
+            .modifier(ExternalGameAppearance(relative: entry.relativePath))
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(focused == entry.id && controller.connected ? Color.accentColor : .clear, lineWidth: 2))
             .id(entry.id)
             .task(id: entry.id, priority: .utility) { await model.refreshMetadata(entry.id) }
@@ -3261,7 +3263,7 @@ struct ExecutableBrowser: View {
             do {
                 // ml1163: .bat and .cmd files are listed too (they run through cmd.exe).
                 files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)
-                    .filter { ($0.hasDirectoryPath || LibraryModel.programExtensions.contains($0.pathExtension.lowercased())) && $0.resolvingSymlinksInPath().path.hasPrefix(LibraryModel.drive.path + "/") }
+                    .filter { ($0.hasDirectoryPath || LibraryModel.programExtensions.contains($0.pathExtension.lowercased())) && DrivePaths.shared.contains($0, drive: LibraryModel.drive) }
                     .sorted { if $0.hasDirectoryPath != $1.hasDirectoryPath { return $0.hasDirectoryPath }; return $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
             } catch { self.error = error.localizedDescription }
         }
@@ -3283,6 +3285,7 @@ struct LibraryDetail: View {
     var play: (LibraryEntry) -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var model = LibraryModel.shared
+    @ObservedObject private var storage = ExternalStorage.shared
     @State private var importCover = false
     /// madeira-bcd: this game's own switches as the fork stores them (reloadBCD).
     @State private var bcd = BCDGameValues()
@@ -3343,6 +3346,7 @@ struct LibraryDetail: View {
     }
     private func start() {
         guard !leaving else { return }
+        if let problem = DrivePaths.shared.problem(entry.relativePath) { error = problem; return }
         // A Steam game starts through Madeira Dock (ContentView.launchLibraryEntry)
         // once its files are complete and Dock can sign in; "The game" once its
         // program is chosen (no client or sign-in involved).
@@ -3401,7 +3405,7 @@ struct LibraryDetail: View {
                                     }
                                 }.frame(minWidth: 100, minHeight: 30)
                             }
-                            .buttonStyle(LibraryPlayStyle(pending: leaving)).disabled(leaving)
+                            .buttonStyle(LibraryPlayStyle(pending: leaving)).disabled(leaving || DrivePaths.shared.problem(entry.relativePath) != nil || storage.busy)
                         }
                     }.padding(.vertical, 24)
                         .listRowBackground(
@@ -3411,6 +3415,12 @@ struct LibraryDetail: View {
                                     LinearGradient(colors: [.clear, Color(uiColor: .secondarySystemGroupedBackground)], startPoint: .top, endPoint: .bottom).frame(height: 70)
                                 }.clipped()
                         )
+                }
+                if let problem = DrivePaths.shared.problem(entry.relativePath) {
+                    Section("External storage") {
+                        Label(problem, systemImage: "externaldrive.badge.exclamationmark")
+                        NavigationLink("Check external storage") { ExternalStorageSettings() }
+                    }
                 }
                 if entry.desktop != true { Section("Library details") {
                     TextField("Title", text: $entry.title)

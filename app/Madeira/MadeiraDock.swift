@@ -27,7 +27,7 @@ enum DockError: LocalizedError {
 
 /// A game Steam's client has installed in the prefix, read from its
 /// `steamapps/appmanifest_<appid>.acf`.
-struct DockGame: Identifiable, Equatable, Sendable {
+struct DockGame: Identifiable, Equatable, Sendable, Codable {
     let id: Int                 // App ID
     let name: String
     let installDir: String      // one folder name under <library>/common
@@ -107,10 +107,10 @@ enum MadeiraDock {
 
     /// Installed games in the client's own library (`<client>/steamapps`) and the other
     /// libraries on C: that its `libraryfolders.vdf` lists. Read-only.
-    static func games(drive: URL) -> [DockGame] {
+    static func games(drive: URL, didScan: ((String) -> Void)? = nil) -> [DockGame] {
         let fm = FileManager.default
         let clientLibrary = SteamRuntimeFiles.relativeRoot + "/steamapps"
-        var libraries = [clientLibrary]
+        var libraries = [clientLibrary] + DrivePaths.shared.steamLibraries
         if let data = try? Data(contentsOf: drive.appendingPathComponent(clientLibrary + "/libraryfolders.vdf")),
            data.count <= 1 << 20, var parser = try? SteamKeyValues(data), let root = try? parser.read() {
             for (_, entry) in (root["libraryfolders"]?.fields ?? [:]).sorted(by: { $0.key < $1.key }) {
@@ -119,18 +119,22 @@ enum MadeiraDock {
                 if !libraries.contains(where: { $0.caseInsensitiveCompare(relative) == .orderedSame }) { libraries.append(relative) }
             }
         }
+        for library in DrivePaths.shared.steamLibraries where !libraries.contains(where: { $0.caseInsensitiveCompare(library) == .orderedSame }) {
+            libraries.append(library)
+        }
         var result: [DockGame] = []
         // Apps that only lend depots to another install ("Shared Only", e.g. GTA V
         // Enhanced's RGL/SC 1899670) have a record but nothing to start. A game that
         // lends depots but has its own installed too (a base game whose depots its
         // expansions share) stays: the same test as the uninstall (SteamInstall.swift).
         var lent: [Int: Set<String>] = [:], installed: [Int: Set<String>] = [:]
-        for library in libraries.prefix(16) {
+        for library in libraries.prefix(32) {
             let folder = drive.appendingPathComponent(library, isDirectory: true)
-            guard folder.resolvingSymlinksInPath().path.hasPrefix(drive.resolvingSymlinksInPath().path + "/"),
+            guard DrivePaths.shared.contains(folder, drive: drive),
                   let names = try? fm.contentsOfDirectory(atPath: folder.path) else { continue }
+            var complete = true
             for file in names.sorted().prefix(2000) where file.hasPrefix("appmanifest_") && file.hasSuffix(".acf") {
-                guard let data = try? Data(contentsOf: folder.appendingPathComponent(file)) else { continue }
+                guard let data = try? Data(contentsOf: folder.appendingPathComponent(file)) else { complete = false; continue }
                 let held = depots(manifest: data)
                 lent.merge(held.lent) { $0.union($1) }
                 guard let game = game(manifest: data, library: library),
@@ -138,6 +142,7 @@ enum MadeiraDock {
                 installed[game.id] = held.installed
                 result.append(game)
             }
+            if complete { didScan?(library) }
         }
         result.removeAll { game in lent[game.id].map { installed[game.id, default: []].isSubset(of: $0) } ?? false }
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -154,6 +159,8 @@ enum MadeiraDock {
 
     /// Everything a launch needs, checked before any sign-in is handed over.
     static func validate(_ game: DockGame, drive: URL, bundled: Bool = MadeiraDock.bundled) throws {
+        if let problem = DrivePaths.shared.problem(game.library) { throw DockError.message(problem) }
+        _ = try DrivePaths.shared.resolve(game.library + "/common/" + game.installDir, drive: drive)
         guard bundled else { throw DockError.message("Madeira Dock is not built into this app. Run build/madeira-dock/build.sh.") }
         guard validAppID(game.id), validFolderName(game.installDir) else {
             throw DockError.message("This game's Steam install record is invalid.")

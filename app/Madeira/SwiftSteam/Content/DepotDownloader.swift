@@ -78,6 +78,7 @@ final class DepotDownloader {
     /// appmanifest. Returns the install folder. Throws CancellationError when
     /// the calling task is cancelled; completed chunks stay journaled.
     func install(_ app: SteamAppInfo, steamApps: URL,
+                 validateStorage: @escaping () async throws -> Void = {},
                  ownedDepots: @escaping () async -> Set<UInt32>? = { nil },
                  progress report: @escaping (SteamDownloadProgress) -> Void) async throws -> URL {
         let depots = app.installDepots()
@@ -90,6 +91,7 @@ final class DepotDownloader {
             .appendingPathComponent(folderName, isDirectory: true)
         let journalDir = steamApps.appendingPathComponent("downloading", isDirectory: true)
             .appendingPathComponent("\(app.appID)", isDirectory: true)
+        try await validateStorage()
         try FileManager.default.createDirectory(at: installURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: journalDir, withIntermediateDirectories: true)
 
@@ -147,6 +149,7 @@ final class DepotDownloader {
         }
 
         // 2. Prepare files and load journals off the main actor.
+        try await validateStorage()
         let prepared = try await Task.detached(priority: .userInitiated) {
             try Self.prepare(plans: plans, installURL: installURL, journalDir: journalDir)
         }.value
@@ -158,8 +161,8 @@ final class DepotDownloader {
 
         let remaining = prepared.remainingUncompressed
         if remaining > 0 {
-            let values = try? installURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            let available = UInt64(max(0, values?.volumeAvailableCapacityForImportantUsage ?? Int64.max))
+            let values = try? installURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+            let available = UInt64(max(0, values?.volumeAvailableCapacityForImportantUsage ?? values?.volumeAvailableCapacity.map(Int64.init) ?? Int64.max))
             if available < remaining { throw SteamError.insufficientDiskSpace(needed: remaining, available: available) }
         }
 
@@ -167,7 +170,9 @@ final class DepotDownloader {
         let started = Date()
         let resumedBytes = state.doneBytes
         var lastReport = Date.distantPast
+        var lastStorageCheck = Date.distantPast
         for (index, plan) in plans.enumerated() {
+            try await validateStorage()
             let journal = try JournalWriter(url: prepared.journals[index])
             defer { journal.close() }
             let work = prepared.pending[index]
@@ -190,6 +195,11 @@ final class DepotDownloader {
                 }
                 for _ in 0..<min(maximum, work.count) { enqueue() }
                 for try await (key, bytes) in group {
+                    try Task.checkCancellation()
+                    if Date().timeIntervalSince(lastStorageCheck) >= 1 {
+                        try await validateStorage()
+                        lastStorageCheck = Date()
+                    }
                     journal.append(key)
                     state.doneBytes += bytes
                     let now = Date()
@@ -205,6 +215,8 @@ final class DepotDownloader {
         }
 
         // 4. Install record. Sizes come from the manifests; no tree walk.
+        try Task.checkCancellation()
+        try await validateStorage()
         state.phase = .finishing
         report(state)
         let installed = plans.map { plan in

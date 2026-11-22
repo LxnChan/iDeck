@@ -546,7 +546,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-dock-installers-') as tmp:
     else:
         build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-o', str(exe),
                                 str(tmp / 'stubs.swift'), str(tmp / 'checks.swift'), str(app / 'DockInstallers.swift'),
-                                str(app / 'DockReset.swift')])
+                                str(app / 'DrivePaths.swift'), str(app / 'DockReset.swift')])
         require(build.returncode == 0, 'production installer Swift compiles on the host')
     if build is not None and build.returncode == 0:
         run = subprocess.run([str(exe), str(tmp / 'fixture.cmd')], env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))

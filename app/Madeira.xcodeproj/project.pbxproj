@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B1000920 /* DrivePaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000920 /* DrivePaths.swift */; };
+		B1000921 /* ExternalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000921 /* ExternalStorage.swift */; };
+		B1000922 /* ExternalStorageUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000922 /* ExternalStorageUI.swift */; };
+		B1000923 /* SteamExternalLibraries.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000923 /* SteamExternalLibraries.swift */; };
 		B1000910 /* NetworkProxySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000910 /* NetworkProxySettings.swift */; };
 		B1000901 /* SteamUIExperiment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000901 /* SteamUIExperiment.swift */; };
 		A1000520 /* MadeiraDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000520 /* MadeiraDock.swift */; };
@@ -185,6 +189,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B2000920 /* DrivePaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrivePaths.swift; sourceTree = "<group>"; };
+		B2000921 /* ExternalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalStorage.swift; sourceTree = "<group>"; };
+		B2000922 /* ExternalStorageUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalStorageUI.swift; sourceTree = "<group>"; };
+		B2000923 /* SteamExternalLibraries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamExternalLibraries.swift; sourceTree = "<group>"; };
 		B2000910 /* NetworkProxySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkProxySettings.swift; sourceTree = "<group>"; };
 		B2000901 /* SteamUIExperiment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteamUIExperiment.swift; sourceTree = "<group>"; };
 		A2000520 /* MadeiraDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MadeiraDock.swift"; sourceTree = "<group>"; };
@@ -455,6 +463,10 @@
 				B2000901 /* SteamUIExperiment.swift */,
 				A2000524 /* DockInstallers.swift */,
 				A2000913 /* DockReset.swift */,
+				B2000920 /* DrivePaths.swift */,
+				B2000921 /* ExternalStorage.swift */,
+				B2000922 /* ExternalStorageUI.swift */,
+				B2000923 /* SteamExternalLibraries.swift */,
 				A2000510 /* SteamSignIn.swift */,
 				A2000511 /* SteamSignInView.swift */,
 				A2000512 /* SteamAuthAPI.swift */,
@@ -791,6 +803,10 @@
 				B1000901 /* SteamUIExperiment.swift in Sources */,
 				A1000524 /* DockInstallers.swift in Sources */,
 				A1000913 /* DockReset.swift in Sources */,
+				B1000920 /* DrivePaths.swift in Sources */,
+				B1000921 /* ExternalStorage.swift in Sources */,
+				B1000922 /* ExternalStorageUI.swift in Sources */,
+				B1000923 /* SteamExternalLibraries.swift in Sources */,
 				A1000510 /* SwiftSteam/SteamSignIn.swift in Sources */,
 				A1000511 /* SwiftSteam/SteamSignInView.swift in Sources */,
 				A1000512 /* SwiftSteam/Auth/SteamAuthAPI.swift in Sources */,

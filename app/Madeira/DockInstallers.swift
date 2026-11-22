@@ -660,7 +660,7 @@ enum DockInstallers {
     }
 
     nonisolated static func inside(_ url: URL, drive: URL) -> Bool {
-        url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(drive.resolvingSymlinksInPath().standardizedFileURL.path + "/")
+        url.resolvingSymlinksInPath() != drive.resolvingSymlinksInPath() && DrivePaths.shared.contains(url, drive: drive)
     }
 
     /// A C:\ path resolved on disk the way Wine resolves it (case-insensitive), staying

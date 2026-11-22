@@ -234,6 +234,7 @@ struct MadeiraApp: App {
                     MicrophoneManager.requestPermission()
                     JITNetworkShortcut.shared.restoreLeftover()   // also starts its network path monitor
                     SteamCMDirectoryWarmup.shared.start()
+                    ExternalStorage.shared.start()
                 }
                 // madeira://jit-network/... (the Madeira JIT shortcut returning, JITNetwork.swift),
                 // else madeira://play?exe=... (Home Screen shortcuts, SavesAndShortcuts.swift).

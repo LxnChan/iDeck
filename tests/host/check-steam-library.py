@@ -172,7 +172,7 @@ require(-1 not in order and order == sorted(order),
         'Dock start: the app connection closes, then the sign-in is read and handed over, then the session starts')
 require(dock_start.count('SteamSignIn.credentialsForDock()') == 1 and dock_start.count('MadeiraDock.writeHandoff(') == 1,
         'the sign-in is read and written once, after the connection closed')
-require('SteamOwnedLibrary.shared.dockEnded()' in dock_start[:dock_start.index('Task { @MainActor in')],
+require('SteamOwnedLibrary.shared.dockEnded()' in block(dock_start, 'func fail('),
         'a failed Dock start gives the connection back')
 dock_view = (app / 'MadeiraDockView.swift').read_text()
 watch = block(dock_view, 'func watchReport()')
@@ -1052,7 +1052,7 @@ try:
                   steam / 'Core/SteamMessageCodec.swift', steam / 'Core/SteamCMSession.swift',
                   steam / 'Content/ContentDecryptor.swift', steam / 'Content/DepotManifest.swift',
                   steam / 'Library/SteamAppInfo.swift', steam / 'Library/SteamLibraryFetcher.swift',
-                  steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift']
+                  steam / 'Install/AppManifestWriter.swift', app / 'DrivePaths.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift']
     exe = work / 'check'
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-g', '-o', str(exe),
                             '-I', str(shim / 'CommonCrypto'), '-I', str(shim / 'Compression'), '-I', str(shim / 'zlib'),

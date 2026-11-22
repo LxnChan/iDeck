@@ -109,6 +109,9 @@ jobs:
           python3 -B tests/host/check-dotnet-gc.py
           python3 -B tests/host/check-launch-routing.py
           python3 -B tests/host/check-legacy-runtime.py --require-swift
+          python3 -B tests/host/check-external-storage.py --require-swift
+          python3 -B tests/host/check-steam-games.py
+          python3 -B tests/host/check-dock-contract.py
           echo "::endgroup::"
           echo "::group::Audio regressions"
           python3 -B tests/host/check-audio-period.py

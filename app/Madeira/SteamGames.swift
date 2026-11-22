@@ -372,10 +372,12 @@ enum SteamDirectStart {
         scanning = true
         let drive = MadeiraDock.drive
         Task.detached(priority: .utility) {
-            let found = MadeiraDock.games(drive: drive)
+            var scanned = Set<String>()
+            let found = MadeiraDock.games(drive: drive, didScan: { scanned.insert($0.lowercased()) })
+            let scannedLibraries = scanned
             var builds: [Int: Int] = [:]
             for game in found where SteamInstallPaths.isManaged(library: game.library) && game.installed {
-                if let build = SteamInstallFiles.buildID(appID: game.id, steamApps: SteamInstallPaths.steamApps(drive: drive)) {
+                if let build = SteamInstallFiles.buildID(appID: game.id, steamApps: drive.appendingPathComponent(game.library)) {
                     builds[game.id] = build
                 }
             }
@@ -384,7 +386,10 @@ enum SteamDirectStart {
                 self.scanning = false
                 let again = self.rescan
                 self.rescan = false
-                if self.games != found { self.games = found }
+                ExternalStorage.shared.remember(found, scanned: scannedLibraries)
+                let offline = ExternalStorage.shared.offlineGames.filter { old in !found.contains { $0.id == old.id } }
+                let visible = (found + offline).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                if self.games != visible { self.games = visible }
                 if self.builds != recorded { self.builds = recorded }
                 if found.count != self.lastCount {
                     self.lastCount = found.count
@@ -572,6 +577,7 @@ struct SteamGamesSection: View {
     private func cell(_ item: SteamGamesRules.Item, list: Bool, dense: Bool) -> some View {
         Button { select(item) } label: { SteamGameCell(item: item, list: list, dense: dense) }
             .libraryCardButtonStyle(grid: !list)
+            .modifier(ExternalGameAppearance(relative: item.installed?.library ?? ""))
             .id(item.installed.map { library.steamEntry($0, title: item.name).id })
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(
                 item.installed.map { library.steamEntry($0, title: item.name).id == focused } == true
@@ -971,7 +977,8 @@ struct SteamGameSheet: View {
                         }
                     }
                     Section {
-                        if let freeSpace { LabeledContent("Free space on this device", value: formatBytes(freeSpace)) }
+                        NavigationLink("Install location: " + (DrivePaths.mountID(steam.installLibrary(appID)) == nil ? "Internal storage" : "External storage")) { ExternalStorageSettings() }
+                        if let freeSpace { LabeledContent("Free at install location", value: formatBytes(freeSpace)) }
                         Text(SteamGameSheet.downloadNote)
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -990,8 +997,7 @@ struct SteamGameSheet: View {
             .steamCompatibilityAlert($compatibilityPrompt)
             .task(id: steam.downloads[appID]?.state) {
                 partial = steam.hasPartialDownload(appID)
-                let values = try? URL.documentsDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-                freeSpace = values?.volumeAvailableCapacityForImportantUsage
+                freeSpace = steam.installFreeBytes(appID)
             }
             .confirmationDialog("Cancel this download? Downloaded files are deleted.", isPresented: $confirmCancel, titleVisibility: .visible) {
                 Button("Cancel download", role: .destructive) {
@@ -1002,7 +1008,7 @@ struct SteamGameSheet: View {
         }
     }
 
-    static let downloadNote = "Games download directly from Steam with your account into C:\\Program Files (x86)\\Steam\\steamapps\\common. You can leave Madeira while it downloads: on iOS 26 and later iOS shows the download's progress and keeps it going; on earlier versions it pauses after a short while and continues when you return. A download pauses while a game is running and continues afterwards."
+    static let downloadNote = "Games download directly from Steam with your account into the selected install location. Change the location for new downloads in Settings › External storage. Updates and paused downloads keep their original location. You can leave Madeira while it downloads: on iOS 26 and later iOS shows the download's progress and keeps it going; on earlier versions it pauses after a short while and continues when you return. A download pauses while a game is running and continues afterwards."
 
     @ViewBuilder private func primaryAction(_ item: SteamGamesRules.Item) -> some View {
         if let installed = item.installed {
@@ -1425,7 +1431,7 @@ struct SteamEntrySection: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             LabeledContent("App ID", value: String(appID))
-            if let freeSpace { LabeledContent("Free space on this device", value: formatBytes(freeSpace)) }
+            if let freeSpace { LabeledContent("Free at install location", value: formatBytes(freeSpace)) }
             if let status = dock.status {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Last Dock result").font(.caption).foregroundStyle(.secondary)
@@ -1447,8 +1453,7 @@ struct SteamEntrySection: View {
         .steamCompatibilityAlert($compatibilityPrompt)
         .onAppear { dock.refresh(); games.refresh() }
         .task(id: download?.state) {
-            let values = try? URL.documentsDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            freeSpace = values?.volumeAvailableCapacityForImportantUsage
+            freeSpace = steam.installFreeBytes(appID)
         }
         .task(id: "\(entry.steamStart ?? "dock") \(installed?.installed == true) \(download == nil)") { await resolveProgram() }
         .confirmationDialog("Uninstall \(entry.title)? Its downloaded files are deleted from this device. Saves stored elsewhere are kept.",
@@ -1499,7 +1504,7 @@ struct SteamEntrySection: View {
     /// is still there, takes Steam's launch configuration for the app (SteamDirectStart.choose);
     /// failing that, the only program when there is exactly one.
     private func resolveProgram() async {
-        guard entry.startsSteamGameDirectly, let appID = entry.steamAppID else { return }
+        guard DrivePaths.shared.problem(entry.relativePath) == nil, entry.startsSteamGameDirectly, let appID = entry.steamAppID else { return }
         let folder = LibraryModel.drive.appendingPathComponent(entry.relativePath, isDirectory: true)
         let found = await Task.detached(priority: .userInitiated) { SteamDirectStart.programs(in: folder) }.value
         programs = found
@@ -1507,7 +1512,7 @@ struct SteamEntrySection: View {
         resolving = true
         let options = await steam.launchOptions(appID: appID) ?? []
         resolving = false
-        guard entry.startsSteamGameDirectly, entry.steamAppID == appID else { return }
+        guard DrivePaths.shared.problem(entry.relativePath) == nil, entry.startsSteamGameDirectly, entry.steamAppID == appID else { return }
         let choice = await Task.detached(priority: .userInitiated) { SteamDirectStart.choose(options, installFolder: folder) }.value
         if let choice {
             entry.steamProgram = choice.program

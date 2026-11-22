@@ -2827,7 +2827,17 @@ struct ContentView: View {
     /// Play in the library (Library.swift): checks that a session can start,
     /// applies the entry's launch profile and runs the same full sequence as the
     /// developer interface's buttons.
-    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false, runtimesChecked: Bool = false) {
+    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false, runtimesChecked: Bool = false, storageConfirmed: Bool = false) {
+        guard !ExternalStorage.shared.busy else { library.error = "Wait for external storage setup to finish."; return }
+        if DrivePaths.mountID(entry.relativePath) != nil, !storageConfirmed {
+            Task { @MainActor in
+                do {
+                    try await ExternalStorage.shared.requireAvailable(entry.relativePath)
+                    launchLibraryEntry(entry, compatibilityConfirmed: compatibilityConfirmed, cloudConfirmed: cloudConfirmed, runtimesChecked: runtimesChecked, storageConfirmed: true)
+                } catch { library.error = error.localizedDescription }
+            }
+            return
+        }
         // Dock launches use the same notice in startDock, including starts outside the library.
         if entry.startsSteamGameDirectly, !compatibilityConfirmed,
            let prompt = SteamCompatibilityPrompt(appID: entry.steamAppID, action: .launch,
@@ -2889,7 +2899,18 @@ struct ContentView: View {
     }
 
     /// The rest of Play, with JIT on: checks the entry's launch profile and starts it.
-    private func startLibraryEntry(_ entry: LibraryEntry) {
+    private func startLibraryEntry(_ entry: LibraryEntry, storageConfirmed: Bool = false) {
+        guard !ExternalStorage.shared.busy else { library.error = "Wait for external storage setup to finish."; return }
+        if DrivePaths.mountID(entry.relativePath) != nil, !storageConfirmed {
+            Task { @MainActor in
+                do {
+                    try await ExternalStorage.shared.requireAvailable(entry.relativePath)
+                    guard library.current == nil, wine_process_is_running() == 0, wineserver_is_running() == 0 else { return }
+                    startLibraryEntry(entry, storageConfirmed: true)
+                } catch { library.error = error.localizedDescription }
+            }
+            return
+        }
         do { if entry.desktop != true { _ = try LibraryModel.executable(entry.launchRelativePath) }; try entry.validate() }
         catch {
             library.error = error.localizedDescription
@@ -3702,7 +3723,18 @@ struct ContentView: View {
     /// `profile` is a Steam game's library entry (its Game details page): the
     /// session then takes that entry's display, performance and on-screen settings.
     private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil,
-                           compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false, runtimesChecked: Bool = false) {
+                           compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false, runtimesChecked: Bool = false, storageConfirmed: Bool = false) {
+        guard !ExternalStorage.shared.busy else { library.error = "Wait for external storage setup to finish."; return }
+        if DrivePaths.mountID(game.library) != nil, !storageConfirmed {
+            Task { @MainActor in
+                do {
+                    try await ExternalStorage.shared.requireAvailable(game.library)
+                    startDock(game, compactPool: compactPool, profile: profile, compatibilityConfirmed: compatibilityConfirmed,
+                              cloudConfirmed: cloudConfirmed, runtimesChecked: runtimesChecked, storageConfirmed: true)
+                } catch { library.error = error.localizedDescription }
+            }
+            return
+        }
         if !compatibilityConfirmed,
            let prompt = SteamCompatibilityPrompt(appID: game.id, action: .launch,
                 proceed: { startDock(game, compactPool: compactPool, profile: profile,
@@ -3768,6 +3800,8 @@ struct ContentView: View {
             LogStore.shared.log("[madeira-dock] launch option \(launchOption)\(chosen == nil ? " (none chosen: the default)" : "")")
             await SteamOwnedLibrary.shared.prepareDock()
             do {
+                try await ExternalStorage.shared.requireAvailable(game.library)
+                try SteamExternalLibraries.prepare(drive: MadeiraDock.drive, clientRelative: SteamRuntimeFiles.relativeRoot)
                 // The launch state may have changed while the connection closed.
                 guard StikJITHelper.ready, wine_process_is_running() == 0, wineserver_is_running() == 0,
                       !inLibrary || library.current == nil else {
@@ -3931,6 +3965,7 @@ struct ContentView: View {
     }
 
     private func startSteamUIExperiment(x86Client: Bool = false, bigPicture: Bool = false, accountChooser: Bool = false, loginFirst: Bool = false, ratatanThreadTest: Bool = false) {
+        guard !ExternalStorage.shared.busy else { ideck.error = "Wait for external storage setup to finish."; return }
         guard SteamUIExperiment.enabled, !steamUIStarting, jit_check_debugged(), wine_process_is_running() == 0,
               wineserver_is_running() == 0, !StikJITHelper.poolTaken else {
             logStore.log("[steam-ui] launch refused: isolated experimental app, JIT and a fresh session are required", level: .error)
@@ -3962,6 +3997,8 @@ struct ContentView: View {
                 sourceCEFLayout: madeira_cef64_hold_state() == 1,
                 externalCrashpad: ProcessInfo.processInfo.environment["MADEIRA_CEF64_EXTERNAL_CRASHPAD"] == "1",
                 gpuAcceleration: SteamUIExperiment.steam64 && MadeiraConfig.get("steam64.gpu-acceleration") == "1")
+            let storageClient = String(plan.windowsDirectory.dropFirst(3)).replacingOccurrences(of: "\\", with: "/")
+            try SteamExternalLibraries.prepare(drive: prefix.appendingPathComponent("drive_c"), clientRelative: storageClient)
             if IDeckState.enabled {
                 let relative = String(plan.windowsDirectory.dropFirst(3)).replacingOccurrences(of: "\\", with: "/")
                 ideck.beginLoginObservation(client: prefix.appendingPathComponent("drive_c/" + relative), enabled: accountChooser || loginFirst)

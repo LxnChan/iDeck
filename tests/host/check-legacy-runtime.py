@@ -107,7 +107,7 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory); main_file = root / 'main.swift'; main_file.write_text(DRIVER)
         probe = root / 'runtime-probe'
-        subprocess.run([swift, str(ROOT / 'app/Madeira/LegacyRuntimeCore.swift'), str(main_file), '-o', str(probe)], check=True)
+        subprocess.run([swift, str(ROOT / 'app/Madeira/DrivePaths.swift'), str(ROOT / 'app/Madeira/LegacyRuntimeCore.swift'), str(main_file), '-o', str(probe)], check=True)
         def run(*args, expected=None, failure=False):
             result = subprocess.run([str(probe), *map(str, args)], capture_output=True, text=True)
             if failure: assert result.returncode == 2, result
