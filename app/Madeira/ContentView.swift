@@ -902,9 +902,7 @@ final class MetalBackedView: UIView {
     }
 }
 
-/// Arrow-key button with press/hold/release semantics. DragGesture with
-/// zero minimum distance fires onChanged at touch-down (key down once)
-/// and onEnded at lift (key up) — unlike Button, which only taps.
+/// Arrow-key button with immediate UIKit press/hold/release semantics.
 struct HoldKeyView: View {
     let label: String
     let vk: Int32
@@ -918,19 +916,9 @@ struct HoldKeyView: View {
             .frame(minWidth: big ? 56 : 34, minHeight: big ? 56 : 30)
             .background(Color.white.opacity(isDown ? 0.35 : 0.15))
             .cornerRadius(big ? 12 : 6)
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        if !isDown {
-                            isDown = true
-                            winios_post_key(vk, 1)
-                        }
-                    }
-                    .onEnded { _ in
-                        isDown = false
-                        winios_post_key(vk, 0)
-                    }
-            )
+            .overlay {
+                TouchMappedSurface(action: .key(vk)) { down, _ in isDown = down }
+            }
     }
 }
 
@@ -1139,44 +1127,6 @@ struct JoystickKeyView: View {
 
     private let deadzone: CGFloat = 14      // pt of travel before a direction registers
 
-    private let vkUp: Int32 = 0x26, vkRight: Int32 = 0x27
-    private let vkDown: Int32 = 0x28, vkLeft: Int32 = 0x25
-
-    private func keys(for d: Int) -> [Int32] {
-        switch d {
-        case 0: return [vkUp]
-        case 1: return [vkUp, vkRight]
-        case 2: return [vkRight]
-        case 3: return [vkDown, vkRight]
-        case 4: return [vkDown]
-        case 5: return [vkDown, vkLeft]
-        case 6: return [vkLeft]
-        case 7: return [vkUp, vkLeft]
-        default: return []
-        }
-    }
-
-    /// Release what is no longer held, press what newly is — never a blanket
-    /// release/re-press, which would make a held direction stutter as the
-    /// thumb wanders inside one sector.
-    private func apply(_ next: Int) {
-        guard next != dir else { return }
-        let old = Set(keys(for: dir)), new = Set(keys(for: next))
-        for vk in old.subtracting(new) { winios_post_key(vk, 0) }
-        for vk in new.subtracting(old) { winios_post_key(vk, 1) }
-        dir = next
-        JoystickPadState.shared.dir = next
-    }
-
-    private func snap(_ t: CGSize) -> Int {
-        let d = (t.width * t.width + t.height * t.height).squareRoot()
-        if d < deadzone { return -1 }
-        // Screen y grows downward; measure clockwise from "up".
-        var a = atan2(t.width, -t.height) * 180 / .pi
-        if a < 0 { a += 360 }
-        return Int((a + 22.5) / 45.0) % 8
-    }
-
     var body: some View {
         // The idle ring lives in the row (inset inside the 34x30 button so it
         // has breathing room). The EXPANDED pad is drawn by the window-level
@@ -1206,30 +1156,23 @@ struct JoystickKeyView: View {
                 }
             )
             .animation(.spring(response: 0.32, dampingFraction: 0.62), value: held)
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { g in
-                        if !held {
-                            held = true
-                            if let scene = UIApplication.shared.connectedScenes
-                                .compactMap({ $0 as? UIWindowScene }).first {
-                                JoystickPadHost.attach(to: scene)
-                            }
-                            JoystickPadState.shared.center = center
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.62)) {
-                                JoystickPadState.shared.held = true
-                            }
+            .overlay {
+                TouchMappedSurface(action: .stick([0x26, 0x27, 0x28, 0x25], deadzone: Double(deadzone))) { down, next in
+                    if down && !held {
+                        if let scene = UIApplication.shared.connectedScenes
+                            .compactMap({ $0 as? UIWindowScene }).first {
+                            JoystickPadHost.attach(to: scene)
                         }
-                        apply(snap(g.translation))
+                        JoystickPadState.shared.center = center
                     }
-                    .onEnded { _ in
-                        apply(-1)                        // releases every held arrow
-                        held = false
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.62)) {
-                            JoystickPadState.shared.held = false
-                        }
+                    held = down
+                    dir = next
+                    JoystickPadState.shared.dir = next
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.62)) {
+                        JoystickPadState.shared.held = down
                     }
-            )
+                }
+            }
     }
 }
 
@@ -5053,9 +4996,15 @@ struct TouchControlButton: View {
             }
         }
         .overlay {
-            if let action = control.action.padName, !m.editing {
-                TouchPadSurface(control: control.id, action: action) { vector, down in
-                    padVector = vector; isDown = down
+            if !m.editing {
+                if let action = control.action.padName {
+                    TouchPadSurface(control: control.id, action: action) { vector, down in
+                        padVector = vector; isDown = down
+                    }
+                } else {
+                    TouchMappedSurface(action: control.action.touchMapping(diameter: diameter), haptics: true) { down, direction in
+                        isDown = down; stickDir = direction
+                    }
                 }
             }
         }
@@ -5070,88 +5019,19 @@ struct TouchControlButton: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { v in
-                    if m.editing {
-                        m.selected = control.id
-                        guard let i = m.index(of: control.id) else { return }
-                        if dragBase == nil { dragBase = CGPoint(x: control.nx, y: control.ny) }
-                        let b = dragBase ?? .zero
-                        m.controls[i].nx = min(max(b.x + Double(v.translation.width  / screen.width),  0.03), 0.97)
-                        m.controls[i].ny = min(max(b.y + Double(v.translation.height / screen.height), 0.03), 0.97)
-                    } else if let q = control.action.stickKeys {
-                        isDown = true
-                        applyStick(snap(v.translation), q)
-                    } else if !isDown {
-                        isDown = true
-                        press(true)
-                    }
+                    guard m.editing else { return }
+                    m.selected = control.id
+                    guard let i = m.index(of: control.id) else { return }
+                    if dragBase == nil { dragBase = CGPoint(x: control.nx, y: control.ny) }
+                    let b = dragBase ?? .zero
+                    m.controls[i].nx = min(max(b.x + Double(v.translation.width  / screen.width),  0.03), 0.97)
+                    m.controls[i].ny = min(max(b.y + Double(v.translation.height / screen.height), 0.03), 0.97)
                 }
                 .onEnded { _ in
                     dragBase = nil
-                    if let q = control.action.stickKeys {
-                        applyStick(-1, q)          // release every held direction
-                        isDown = false
-                    } else if isDown {
-                        isDown = false
-                        press(false)
-                    }
                 },
-            including: control.action.isPad && !m.editing ? .subviews : .all
+            including: m.editing ? .all : .subviews
         )
-    }
-
-    /// 8-way snap. Screen y grows downward, so measure clockwise from "up".
-    private func snap(_ t: CGSize) -> Int {
-        let d = (t.width * t.width + t.height * t.height).squareRoot()
-        if d < diameter * 0.22 { return -1 }        // deadzone scales with the control
-        var a = atan2(t.width, -t.height) * 180 / .pi
-        if a < 0 { a += 360 }
-        return Int((a + 22.5) / 45.0) % 8
-    }
-
-    private func stickKeys(_ d: Int, _ q: [Int32]) -> [Int32] {
-        switch d {
-        case 0: return [q[0]]
-        case 1: return [q[0], q[1]]
-        case 2: return [q[1]]
-        case 3: return [q[2], q[1]]
-        case 4: return [q[2]]
-        case 5: return [q[2], q[3]]
-        case 6: return [q[3]]
-        case 7: return [q[0], q[3]]
-        default: return []
-        }
-    }
-
-    /// Release what is no longer held, press what newly is. A blanket
-    /// release/re-press would make a held direction stutter as the thumb
-    /// wanders inside one sector.
-    private func applyStick(_ next: Int, _ q: [Int32]) {
-        guard next != stickDir else { return }
-        let old = Set(stickKeys(stickDir, q)), new = Set(stickKeys(next, q))
-        for vk in old.subtracting(new) { winios_post_key(vk, 0) }
-        for vk in new.subtracting(old) { winios_post_key(vk, 1) }
-        if stickDir == -1, next != -1 { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-        stickDir = next
-    }
-
-    /// Haptic on the DOWN edge only — a held movement key would otherwise buzz
-    /// continuously for as long as you walk.
-    private func press(_ down: Bool) {
-        if down { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-        switch control.action {
-        case .key(let vk):
-            winios_post_key(vk, down ? 1 : 0)
-        case .mouseLeft:
-            winios_pointer(0, 0, down ? 0x0002 : 0x0004, 0)   // LEFTDOWN / LEFTUP
-        case .mouseRight:
-            winios_pointer(0, 0, down ? 0x0008 : 0x0010, 0)   // RIGHTDOWN / RIGHTUP
-        case .keyboardToggle:
-            if down { MetalBackedView.toggleKeyboard() }
-        case .none, .joystickWASD, .joystickArrows:
-            break                                              // sticks drive themselves
-        case .pad:
-            break     // TouchPadSurface owns pad presses and cancellation.
-        }
     }
 }
 

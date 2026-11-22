@@ -121,6 +121,7 @@ jobs:
           python3 -B tests/host/check-input-queue.py
           python3 -B tests/host/check-crosshair-input.py
           python3 -B tests/host/check-touch-gamepad.py
+          python3 -B tests/host/check-touch-mapped-input.py
           python3 -B tests/host/check-gamepad.py
           echo "::endgroup::"
 

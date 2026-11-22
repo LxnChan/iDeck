@@ -51,6 +51,17 @@ stick. Otherwise a deflected touch stick takes priority; resting touch preserves
 the physical value. Touch updates are event-driven and require no polling timer.
 Keyboard/mouse mappings and the existing layout format are retained.
 
+Keyboard and mouse touch mappings, the portrait key row and its arrow stick
+also enqueue input directly from UIKit touch callbacks. SwiftUI owns their
+appearance, while a separate input state owns press/release edges and stick
+directions; gameplay does not wait for a SwiftUI drag callback or a render.
+Cancellation, backgrounding, remapping, resizing and removing a control release
+its held input. The layout editor still uses SwiftUI drag gestures.
+`[touch-control] began delivery-ms=...` measures UIKit delivery from the touch's
+uptime timestamp. It records eight initial samples and at most sixteen extra
+samples of 50 ms or more, without recording key codes or guest text. It does
+not measure the game's response or display latency.
+
 While such a layout shows at least one controller mapping, a touch on the game
 view that misses every control is not sent to the program as a mouse. Some
 games (Dark Souls Remastered) switch to keyboard and mouse prompts on any mouse

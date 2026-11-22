@@ -154,10 +154,12 @@ final class TouchPadView: UIView {
         fingers.removeAll()
     }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let receivedAt = ProcessInfo.processInfo.systemUptime
         for touch in touches {
             fingers[ObjectIdentifier(touch)] = Finger(owner: UUID(), start: touch.location(in: self))
         }
         update(touches)
+        if let touch = touches.first { TouchDeliveryTiming.record(touch, receivedAt: receivedAt) }
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { update(touches) }
     private func update(_ touches: Set<UITouch>) {
