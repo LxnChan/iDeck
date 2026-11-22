@@ -1157,7 +1157,8 @@ final class SteamOwnedLibrary: ObservableObject {
             await running?.value
             do { try await ExternalStorage.shared.requireAvailable(library) }
             catch { self.error = error.localizedDescription; return }
-            SteamInstallFiles.delete(appID: appID, folderName: game.folderName, steamApps: apps)
+            do { try SteamInstallFiles.delete(appID: appID, folderName: game.folderName, steamApps: apps) }
+            catch { self.error = error.localizedDescription; return }
             do { try await ExternalStorage.shared.requireAvailable(library) }
             catch { self.error = error.localizedDescription; return }
             if !FileManager.default.fileExists(atPath: apps.appendingPathComponent("common/" + game.folderName).path) {
@@ -1179,15 +1180,17 @@ final class SteamOwnedLibrary: ObservableObject {
     /// Madeira Dock's own), with its library entry (its per-game settings).
     func uninstall(_ game: DockGame) {
         guard SteamInstallPaths.isManaged(library: game.library), !inSession else { return }
+        let running = active?.id == game.id ? active?.task : nil
         pause(game.id); downloads[game.id] = nil
         let apps = Self.drive.appendingPathComponent(game.library, isDirectory: true)
         storageOperations += 1
         Task { @MainActor in
             defer { storageOperations -= 1 }
             do {
+                await running?.value
                 try await ExternalStorage.shared.requireAvailable(game.library)
                 guard !inSession, !ExternalStorage.shared.busy else { return }
-                await Task.detached(priority: .utility) { SteamInstallFiles.delete(appID: game.id, folderName: game.installDir, steamApps: apps) }.value
+                try await Task.detached(priority: .utility) { try SteamInstallFiles.delete(appID: game.id, folderName: game.installDir, steamApps: apps) }.value
                 try await ExternalStorage.shared.requireAvailable(game.library)
                 guard !FileManager.default.fileExists(atPath: apps.appendingPathComponent("appmanifest_\(game.id).acf").path),
                       !FileManager.default.fileExists(atPath: apps.appendingPathComponent("common/" + game.installDir).path) else {
@@ -1199,7 +1202,7 @@ final class SteamOwnedLibrary: ObservableObject {
                 SteamGamesModel.shared.refresh()
             } catch { self.error = error.localizedDescription }
         }
-        SteamLog.event("[steam-depot] uninstalled app=\(id)")
+        SteamLog.event("[steam-depot] uninstall requested app=\(game.id)")
     }
 
     private func pump() {

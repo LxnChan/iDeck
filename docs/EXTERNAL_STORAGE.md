@@ -57,6 +57,7 @@ is outside this change; no existing game directory is moved during setup.
 `python3 -B tests/host/check-external-storage.py --require-swift` executes the
 production path resolver, identity/read-write probe and Steam configuration
 registration against synthetic temporary folders, real symlinks and permissions.
+It also checks shared install/removal containment and download journal recovery.
 The build workflow also runs the existing Steam game discovery, Dock contract,
 legacy runtime, launch and Cloud checks, then builds and packages the app.
 

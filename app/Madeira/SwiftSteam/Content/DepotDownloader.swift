@@ -77,12 +77,14 @@ final class DepotDownloader {
     /// Download an app into `steamApps/common/<installdir>` and write its
     /// appmanifest. Returns the install folder. Throws CancellationError when
     /// the calling task is cancelled; completed chunks stay journaled.
-    func install(_ app: SteamAppInfo, steamApps: URL,
+    func install(_ app: SteamAppInfo, steamApps requestedSteamApps: URL,
                  validateStorage: @escaping () async throws -> Void = {},
                  ownedDepots: @escaping () async -> Set<UInt32>? = { nil },
                  progress report: @escaping (SteamDownloadProgress) -> Void) async throws -> URL {
         let depots = app.installDepots()
         guard !depots.isEmpty else { throw SteamError.depotNotFound(app.appID) }
+        try await validateStorage()
+        let steamApps = requestedSteamApps.resolvingSymlinksInPath().standardizedFileURL
         // Before the key requests, so a refused depot still has its selection logged.
         SteamLog.event("[steam-depot] selection app=\(app.appID) build=\(app.buildID) \(app.depotSelectionSummary())")
 
@@ -92,6 +94,9 @@ final class DepotDownloader {
         let journalDir = steamApps.appendingPathComponent("downloading", isDirectory: true)
             .appendingPathComponent("\(app.appID)", isDirectory: true)
         try await validateStorage()
+        _ = try SteamInstallFiles.confined(installURL, to: steamApps)
+        _ = try SteamInstallFiles.confined(journalDir, to: steamApps)
+        _ = try SteamInstallFiles.confined(steamApps.appendingPathComponent("depotcache"), to: steamApps)
         try FileManager.default.createDirectory(at: installURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: journalDir, withIntermediateDirectories: true)
 
@@ -151,7 +156,7 @@ final class DepotDownloader {
         // 2. Prepare files and load journals off the main actor.
         try await validateStorage()
         let prepared = try await Task.detached(priority: .userInitiated) {
-            try Self.prepare(plans: plans, installURL: installURL, journalDir: journalDir)
+            try Self.prepare(plans: plans, steamApps: steamApps, installURL: installURL, journalDir: journalDir)
         }.value
         state.totalBytes = prepared.totalBytes
         state.doneBytes = prepared.doneBytes
@@ -173,8 +178,9 @@ final class DepotDownloader {
         var lastStorageCheck = Date.distantPast
         for (index, plan) in plans.enumerated() {
             try await validateStorage()
+            _ = try SteamInstallFiles.confined(prepared.journals[index], to: steamApps)
             let journal = try JournalWriter(url: prepared.journals[index])
-            defer { journal.close() }
+            defer { try? journal.close() }
             let work = prepared.pending[index]
             let paths = prepared.paths[index]
             let existing = prepared.existing[index]
@@ -189,7 +195,7 @@ final class DepotDownloader {
                     let verify = existing[item.file]
                     group.addTask {
                         if verify, Self.chunkAlreadyPresent(chunk, path: path) { return (item.key, UInt64(chunk.compressedSize)) }
-                        try await Self.fetchChunk(chunk, plan: plan, path: path, attempts: attempts, seed: item.file &+ item.chunk)
+                        try await Self.fetchChunk(chunk, plan: plan, path: path, root: steamApps, attempts: attempts, seed: item.file &+ item.chunk)
                         return (item.key, UInt64(chunk.compressedSize))
                     }
                 }
@@ -200,7 +206,7 @@ final class DepotDownloader {
                         try await validateStorage()
                         lastStorageCheck = Date()
                     }
-                    journal.append(key)
+                    try journal.append(key)
                     state.doneBytes += bytes
                     let now = Date()
                     if now.timeIntervalSince(lastReport) >= 0.25 {
@@ -212,6 +218,7 @@ final class DepotDownloader {
                     enqueue()
                 }
             }
+            try journal.close()
         }
 
         // 4. Install record. Sizes come from the manifests; no tree walk.
@@ -237,6 +244,7 @@ final class DepotDownloader {
                 .map { $0.filename.replacingOccurrences(of: "/", with: "\\") }
         }
         if !custom.isEmpty { SteamLog.event("[steam-record] custom-executables app=\(app.appID) custom=\(custom.count)") }
+        _ = try SteamInstallFiles.confined(steamApps.appendingPathComponent("appmanifest_\(app.appID).acf"), to: steamApps)
         try AppManifestWriter.writeManifest(
             appID: app.appID, name: app.name, installDir: folderName, buildID: app.buildID,
             steamID: accountID, sizeOnDisk: prepared.totalUncompressed,
@@ -257,6 +265,7 @@ final class DepotDownloader {
                     skipped += 1; continue
                 }
                 let ownerFolder = SteamInstallFiles.safeFolderName(owner.installDir)
+                _ = try SteamInstallFiles.confined(steamApps.appendingPathComponent("appmanifest_\(ownerID).acf"), to: steamApps)
                 try AppManifestWriter.mergeOwnerManifest(ownerAppID: ownerID, ownerName: owner.name, ownerBuildID: owner.buildID,
                                                          installDir: ownerFolder.isEmpty ? folderName : ownerFolder,
                                                          steamID: accountID, steamAppsPath: steamApps.path,
@@ -307,7 +316,7 @@ final class DepotDownloader {
         var fileCount = 0
     }
 
-    private nonisolated static func prepare(plans: [DepotPlan], installURL: URL, journalDir: URL) throws -> Prepared {
+    private nonisolated static func prepare(plans: [DepotPlan], steamApps: URL, installURL: URL, journalDir: URL) throws -> Prepared {
         let fm = FileManager.default
         var result = Prepared()
         var folded: [String: String] = [:]   // lowercased relative dir -> first spelling
@@ -319,6 +328,7 @@ final class DepotDownloader {
         for plan in plans {
             try Task.checkCancellation()
             let journalURL = journalDir.appendingPathComponent("depot_\(plan.depotID)_\(plan.manifestGID).journal")
+            _ = try SteamInstallFiles.confined(journalURL, to: steamApps)
             let done = JournalWriter.load(journalURL)
             var paths: [String] = []
             var existing: [Bool] = []
@@ -332,6 +342,7 @@ final class DepotDownloader {
                     paths.append(""); existing.append(false); continue
                 }
                 let url = installURL.appendingPathComponent(relative)
+                _ = try SteamInstallFiles.confined(url, to: steamApps)
                 if file.isDirectory {
                     try fm.createDirectory(at: url, withIntermediateDirectories: true)
                     paths.append(""); existing.append(false); continue
@@ -372,7 +383,7 @@ final class DepotDownloader {
     /// Create or resize a file to its manifest length. Existing bytes below
     /// that length are kept so resumed and updated installs reuse them.
     private nonisolated static func sizeFile(_ path: String, to size: UInt64) throws {
-        let fd = open(path, O_WRONLY | O_CREAT, 0o644)
+        let fd = open(path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw SteamError.chunkDownloadFailed("Cannot create a game file (errno \(errno)).") }
         defer { close(fd) }
         var info = stat()
@@ -403,7 +414,7 @@ final class DepotDownloader {
     }
 
     private nonisolated static func fetchChunk(_ chunk: DepotManifest.ChunkEntry, plan: DepotPlan,
-                                               path: String, attempts: Int, seed: Int) async throws {
+                                               path: String, root: URL, attempts: Int, seed: Int) async throws {
         var lastError: Error = SteamError.chunkDownloadFailed("No content server responded.")
         for attempt in 0..<max(1, attempts) {
             try Task.checkCancellation()
@@ -417,7 +428,7 @@ final class DepotDownloader {
                                                              expectedCRC: chunk.crc,
                                                              expectedSize: Int(chunk.uncompressedSize))
                 guard data.count == Int(chunk.uncompressedSize) else { throw SteamError.checksumMismatch }
-                try write(data, to: path, offset: chunk.offset)
+                try write(data, to: path, root: root, offset: chunk.offset)
                 plan.health.recordSuccess(host)
                 return
             } catch is CancellationError {
@@ -440,8 +451,9 @@ final class DepotDownloader {
         return "other"
     }
 
-    private nonisolated static func write(_ data: Data, to path: String, offset: UInt64) throws {
-        let fd = open(path, O_WRONLY)
+    private nonisolated static func write(_ data: Data, to path: String, root: URL, offset: UInt64) throws {
+        _ = try SteamInstallFiles.confined(URL(fileURLWithPath: path), to: root)
+        let fd = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw SteamError.chunkDownloadFailed("Cannot open a game file (errno \(errno)).") }
         defer { close(fd) }
         try data.withUnsafeBytes { raw in
@@ -481,10 +493,11 @@ final class DepotDownloader {
                     // Valve's client reads a depot's manifest from steamapps/depotcache
                     // when it prepares a per-user custom executable. Keep it for such depots.
                     if let cache, manifest.files.contains(where: { $0.flags & DepotManifest.customExecutableFlag != 0 }) {
-                        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
                         let file = cache.appendingPathComponent("\(depotID)_\(manifestGID).manifest")
+                        _ = try SteamInstallFiles.confined(file, to: cache.deletingLastPathComponent())
+                        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
                         let existing = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-                        if existing != payload.count { try? payload.write(to: file, options: .atomic) }
+                        if existing != payload.count { try payload.write(to: file, options: .atomic) }
                     }
                     return manifest
                 }.value
@@ -774,37 +787,39 @@ final class JournalWriter {
     private let handle: FileHandle
     private var buffer = ""
     private var pending = 0
+    private var closed = false
 
     init(url: URL) throws {
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        handle = try FileHandle(forUpdating: url)
+        let fd = open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { throw SteamError.chunkDownloadFailed("Cannot open the download journal (errno \(errno)).") }
+        handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         // A previous attempt killed mid-write can leave a partial last line;
         // start on a fresh line so the first new key is not glued onto it.
-        let end = handle.seekToEndOfFile()
+        let end = try handle.seekToEnd()
         if end > 0 {
-            handle.seek(toFileOffset: end - 1)
-            if handle.readData(ofLength: 1) != Data([0x0A]) { buffer = "\n" }
-            handle.seekToEndOfFile()
+            try handle.seek(toOffset: end - 1)
+            if try handle.read(upToCount: 1) != Data([0x0A]) { buffer = "\n" }
+            try handle.seekToEnd()
         }
     }
 
-    func append(_ key: UInt64) {
+    func append(_ key: UInt64) throws {
         buffer += String(key, radix: 16) + "\n"
         pending += 1
-        if pending >= 64 { flush() }
+        if pending >= 64 { try flush() }
     }
 
-    func flush() {
+    func flush() throws {
         guard !buffer.isEmpty else { return }
-        handle.write(Data(buffer.utf8))
+        try handle.write(contentsOf: Data(buffer.utf8))
         buffer = ""; pending = 0
     }
 
-    func close() {
-        flush()
-        try? handle.close()
+    func close() throws {
+        guard !closed else { return }
+        try flush()
+        try handle.close()
+        closed = true
     }
 
     static func load(_ url: URL) -> Set<UInt64> {

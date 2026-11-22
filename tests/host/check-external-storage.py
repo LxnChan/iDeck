@@ -89,6 +89,41 @@ import Glibc
         try ExternalStorageProbe.check(external, expected: id, write: true)
         print("PASS: wrong folder identity is rejected; reconnecting the original restores access")
 
+        let apps = external.appendingPathComponent("steamapps")
+        let common = apps.appendingPathComponent("common")
+        try fm.createDirectory(at: common, withIntermediateDirectories: true)
+        let regular = common.appendingPathComponent("Regular/Game.exe")
+        check(try SteamInstallFiles.confined(regular, to: apps) == regular)
+        precondition((try? SteamInstallFiles.confined(other.appendingPathComponent("Game.exe"), to: apps)) == nil)
+        let linkedGame = common.appendingPathComponent("Linked")
+        try fm.createSymbolicLink(atPath: linkedGame.path, withDestinationPath: other.path)
+        precondition((try? SteamInstallFiles.confined(linkedGame.appendingPathComponent("Game.exe"), to: apps)) == nil)
+        let linkedFile = common.appendingPathComponent("file-link")
+        try fm.createSymbolicLink(atPath: linkedFile.path, withDestinationPath: other.appendingPathComponent("Game.exe").path)
+        precondition((try? SteamInstallFiles.confined(linkedFile, to: apps)) == nil)
+        precondition((try? SteamInstallFiles.delete(appID: 42, folderName: "Linked", steamApps: apps)) == nil)
+        check(try Data(contentsOf: other.appendingPathComponent("Game.exe")) == Data([0x4d, 0x5a]))
+        try fm.createDirectory(at: regular.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([1]).write(to: regular)
+        try Data([2]).write(to: apps.appendingPathComponent("appmanifest_42.acf"))
+        try SteamInstallFiles.delete(appID: 42, folderName: "Regular", steamApps: apps)
+        precondition(!fm.fileExists(atPath: regular.path) && !fm.fileExists(atPath: apps.appendingPathComponent("appmanifest_42.acf").path))
+        check(try Data(contentsOf: other.appendingPathComponent("Game.exe")) == Data([0x4d, 0x5a]))
+        print("PASS: shared install and uninstall paths reject linked files/directories and preserve unrelated files")
+
+        let journalURL = apps.appendingPathComponent("resume.journal")
+        try Data("ab".utf8).write(to: journalURL)
+        let journal = try JournalWriter(url: journalURL)
+        try journal.append(0xcd)
+        try journal.close()
+        try journal.close()
+        precondition(JournalWriter.load(journalURL) == Set<UInt64>([0xab, 0xcd]))
+        let journalLink = apps.appendingPathComponent("linked.journal")
+        try fm.createSymbolicLink(atPath: journalLink.path, withDestinationPath: other.appendingPathComponent("Game.exe").path)
+        precondition((try? JournalWriter(url: journalLink)) == nil)
+        check(try Data(contentsOf: other.appendingPathComponent("Game.exe")) == Data([0x4d, 0x5a]))
+        print("PASS: production download journal resumes a partial line, flushes, closes idempotently and rejects symlinks")
+
         let original = Data(#"""
         "libraryfolders"
         {
@@ -133,8 +168,14 @@ else:
         path = Path(folder)
         source = path / 'Checks.swift'
         source.write_text(driver, encoding='utf-8')
+        # Compile the production journal without its Steam/network dependencies.
+        downloader = (APP / 'SwiftSteam/Content/DepotDownloader.swift').read_text(encoding='utf-8')
+        journal = path / 'JournalWriter.swift'
+        journal.write_text('import Foundation\n#if canImport(Darwin)\nimport Darwin\n#else\nimport Glibc\n#endif\n' +
+                           downloader[downloader.index('final class JournalWriter {'):], encoding='utf-8')
         binary = path / 'checks'
         subprocess.run([swift, '-parse-as-library', '-swift-version', '5',
                         str(APP / 'DrivePaths.swift'), str(APP / 'SteamKeyValues.swift'),
-                        str(APP / 'SteamExternalLibraries.swift'), str(source), '-o', str(binary)], check=True)
+                        str(APP / 'SteamInstall.swift'), str(APP / 'SteamExternalLibraries.swift'),
+                        str(APP / 'SwiftSteam/Core/SteamError.swift'), str(journal), str(source), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True, timeout=30)

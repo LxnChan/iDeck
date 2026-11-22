@@ -163,7 +163,6 @@ import Darwin
     }
     func add(_ url: URL) {
         guard canChange, !readOnly else { error = "Stop games, downloads, and save sync before changing external storage."; return }
-        guard records.count < 16 else { error = "At most 16 external folders can be registered."; return }
         busy = true
         let snapshot = records, drive = LibraryModel.drive
         queue.async { [engine] in
@@ -250,10 +249,13 @@ import Darwin
                     }
                     try ExternalStorageProbe.check(root, write: true)
                     let id = try ExternalStorageProbe.identify(root)
+                    guard records.count < 16 || records.contains(where: { $0.id == id }) else {
+                        throw DrivePaths.Failure(message: "At most 16 external folders can be registered.")
+                    }
                     let bookmark = try source.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
                     let record = Record(id: id, name: source.lastPathComponent, bookmark: bookmark, lastPath: root.path, enabled: true,
                                         games: records.first(where: { $0.id == id })?.games ?? [])
-                    try link(record, root: root, drive: drive)
+                    try self.link(record, root: root, drive: drive)
                     return record
                 }
             }

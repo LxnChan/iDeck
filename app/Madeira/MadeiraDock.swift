@@ -159,8 +159,6 @@ enum MadeiraDock {
 
     /// Everything a launch needs, checked before any sign-in is handed over.
     static func validate(_ game: DockGame, drive: URL, bundled: Bool = MadeiraDock.bundled) throws {
-        if let problem = DrivePaths.shared.problem(game.library) { throw DockError.message(problem) }
-        _ = try DrivePaths.shared.resolve(game.library + "/common/" + game.installDir, drive: drive)
         guard bundled else { throw DockError.message("Madeira Dock is not built into this app. Run build/madeira-dock/build.sh.") }
         guard validAppID(game.id), validFolderName(game.installDir) else {
             throw DockError.message("This game's Steam install record is invalid.")
@@ -168,6 +166,9 @@ enum MadeiraDock {
         guard FileManager.default.fileExists(atPath: drive.appendingPathComponent(SteamRuntimeFiles.relativeRoot + "/steamclient64.dll").path) else {
             throw DockError.message("Steam's client files are missing. Download Valve's client components first.")
         }
+        if let problem = DrivePaths.shared.problem(game.library) { throw DockError.message(problem) }
+        do { _ = try DrivePaths.shared.resolve(game.library + "/common/" + game.installDir, drive: drive, mustExist: false) }
+        catch { throw DockError.message(error.localizedDescription) }
         var isFolder: ObjCBool = false
         guard game.installed,
               FileManager.default.fileExists(atPath: drive.appendingPathComponent(game.library + "/common/" + game.installDir).path, isDirectory: &isFolder),

@@ -30,6 +30,25 @@ enum SteamInstallPaths {
 }
 
 enum SteamInstallFiles {
+    /// A manifest path may be safe while an existing directory or file at that
+    /// path is a link. Refuse those links before modifying an installation.
+    nonisolated static func confined(_ url: URL, to root: URL) throws -> URL {
+        let base = root.standardizedFileURL, target = url.standardizedFileURL
+        guard target.path.hasPrefix(base.path + "/") else { throw SteamFileError.invalid("The install path leaves its library.") }
+        let relative = String(target.path.dropFirst(base.path.count + 1))
+        var current = base
+        for part in relative.split(separator: "/") {
+            current.appendPathComponent(String(part))
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: current.path),
+               attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw SteamFileError.invalid("An install path contains a symbolic link. Move that link aside before downloading or removing the game.")
+            }
+        }
+        guard target.resolvingSymlinksInPath().path.hasPrefix(base.resolvingSymlinksInPath().path + "/") else {
+            throw SteamFileError.invalid("The install path leaves its library.")
+        }
+        return target
+    }
     /// The `buildid` the install record of an app states, or nil when there is
     /// no readable record.
     static func buildID(appID: Int, steamApps: URL) -> Int? {
@@ -48,8 +67,10 @@ enum SteamInstallFiles {
     /// resume journal and the records of the apps that own its shared depots
     /// (those describe the same folder). Only paths strictly inside
     /// `steamApps/common` are removed.
-    nonisolated static func delete(appID: Int, folderName: String, steamApps: URL) {
+    nonisolated static func delete(appID: Int, folderName: String, steamApps: URL) throws {
         let fm = FileManager.default
+        _ = try confined(steamApps.appendingPathComponent("common/" + safeFolderName(folderName)), to: steamApps)
+        _ = try confined(steamApps.appendingPathComponent("downloading/\(appID)"), to: steamApps)
         let common = steamApps.appendingPathComponent("common", isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
         let folder = common.appendingPathComponent(safeFolderName(folderName)).resolvingSymlinksInPath().standardizedFileURL
         if folder.path.hasPrefix(common.path + "/"), folder.deletingLastPathComponent().path == common.path {

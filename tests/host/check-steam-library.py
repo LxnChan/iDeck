@@ -969,7 +969,7 @@ func packageBuffer(apps: [UInt32], depots: [UInt32]) -> Data {
         require(ownedNow.buildID == 1001 && ownedNow.folderName == "Fixture Game", "the owned game carries the build")
     }
     if phase == "uninstall" {
-        SteamInstallFiles.delete(appID: 9000, folderName: "Fixture Game", steamApps: steamApps)
+        try SteamInstallFiles.delete(appID: 9000, folderName: "Fixture Game", steamApps: steamApps)
         require(MadeiraDock.games(drive: drive).isEmpty, "an uninstalled game is no longer found (its shared owner record went with it)")
         require(!FileManager.default.fileExists(atPath: steamApps.appendingPathComponent("common/Fixture Game").path), "its folder is gone")
         require(FileManager.default.fileExists(atPath: steamApps.appendingPathComponent("common").path) , "the common folder stays")
@@ -1006,8 +1006,8 @@ dock_body = (dock[dock.index('enum MadeiraDock {'):dock.index('    @MainActor pr
 # URLSession lives in FoundationNetworking on Linux; the production file imports Foundation only.
 downloader_host = downloader.replace('import Foundation\n', 'import Foundation\n#if canImport(FoundationNetworking)\nimport FoundationNetworking\n#endif\n', 1)
 # The free-space query is Darwin's (volumeAvailableCapacityForImportantUsage); the host has none, so the check is skipped there.
-space = ('let values = try? installURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])\n'
-         '            let available = UInt64(max(0, values?.volumeAvailableCapacityForImportantUsage ?? Int64.max))')
+space = ('let values = try? installURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])\n'
+         '            let available = UInt64(max(0, values?.volumeAvailableCapacityForImportantUsage ?? values?.volumeAvailableCapacity.map(Int64.init) ?? Int64.max))')
 assert space in downloader_host
 downloader_host = downloader_host.replace(space, 'let available = UInt64.max')
 fetcher_source = sources['SwiftSteam/Library/SteamLibraryFetcher.swift']
