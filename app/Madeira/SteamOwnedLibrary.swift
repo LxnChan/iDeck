@@ -295,6 +295,7 @@ final class SteamOwnedLibrary: ObservableObject {
         downloads[appID] = item
         let drive = Self.drive, snapshot = Self.recoveryURL(appID)
         recoveryTasks[appID] = Task { @MainActor in
+            SteamLog.event("[steam-recovery] begin app=\(appID)")
             do {
                 try await ExternalStorage.shared.requireAvailable(library)
                 let apps = try DrivePaths.shared.resolve(library, drive: drive, mustExist: false)
@@ -306,9 +307,11 @@ final class SteamOwnedLibrary: ObservableObject {
                 let audit = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
                 try Task.checkCancellation()
                 try await ExternalStorage.shared.requireAvailable(library, write: false)
+                SteamLog.event("[steam-recovery] complete app=\(appID) verified=\(audit.verified) damaged-or-missing=\(audit.damagedOrMissing)")
                 downloads[appID]?.recovery = "Checked \(audit.verified) intact blocks; \(audit.damagedOrMissing) missing or damaged. Resume to download only the needed blocks and finish the install."
             } catch {
                 guard !Task.isCancelled else { return }
+                SteamLog.event("[steam-recovery] failed app=\(appID) reason=\(Self.reason(error))")
                 downloads[appID]?.recovery = "Recovery check could not finish. Existing files were kept. Resume to verify against Steam and repair the download. " + error.localizedDescription
             }
             guard !Task.isCancelled else { return }

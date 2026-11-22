@@ -29,6 +29,16 @@ import Darwin
         case success(Date)
         case failure(String)
     }
+    enum ConnectionIndicator: Equatable {
+        case connected, partial, unavailable
+        var label: String {
+            switch self {
+            case .connected: return "All external folders are connected"
+            case .partial: return "Some external folders are unavailable"
+            case .unavailable: return "All external folders are unavailable"
+            }
+        }
+    }
     private struct Document: Codable { var version = 1; var records: [Record] }
     @Published private(set) var records: [Record] = []
     @Published private(set) var statuses: [UUID: Status] = [:]
@@ -53,6 +63,13 @@ import Darwin
     }
     var offlineGames: [DockGame] {
         records.filter { statuses[$0.id]?.ready != true }.flatMap(\.games)
+    }
+    var connectionIndicator: ConnectionIndicator? {
+        let enabled = records.filter(\.enabled)
+        guard !enabled.isEmpty else { return nil }
+        let connected = enabled.filter { statuses[$0.id]?.ready == true }.count
+        if connected == 0 { return .unavailable }
+        return connected == enabled.count ? .connected : .partial
     }
     var downloadLibrary: String {
         get { UserDefaults.standard.string(forKey: "ideck.download-library") ?? SteamInstallPaths.libraryRelative }
@@ -183,7 +200,11 @@ import Darwin
                 } else if records.contains(where: { $0.enabled && statuses[$0.id]?.ready != true }) {
                     invalidateCheckSuccess()
                 }
-                if previous != statuses {
+                // Capacity can change on every poll. Only availability or path
+                // changes need another library scan and recovery notification.
+                if changed || results.contains(where: {
+                    previous[$0.record.id]?.ready != $0.status.ready || previous[$0.record.id]?.message != $0.status.message
+                }) {
                     SteamOwnedLibrary.shared.externalStorageChanged()
                     SteamGamesModel.shared.refresh()
                 }

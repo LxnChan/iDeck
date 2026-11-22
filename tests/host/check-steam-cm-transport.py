@@ -7,6 +7,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -48,6 +49,7 @@ import FoundationNetworking
 final class NetworkProxySettings: @unchecked Sendable {
     static let shared = NetworkProxySettings()
     let isAppActive = false
+    func apply(to configuration: URLSessionConfiguration) {}
     func makeSession(configuration: URLSessionConfiguration, delegate: URLSessionDelegate? = nil) -> URLSession {
         fatalError("Host tests must never contact Steam")
     }
@@ -380,3 +382,67 @@ else:
         subprocess.run([compiler, '-parse-as-library', '-swift-version', '5', str(path),
                         '-o', str(executable)], check=True)
         subprocess.run([str(executable)], check=True, timeout=30)
+        if sys.platform == 'darwin':
+            # Use the actual transport callbacks and the session's actor hop.
+            # The old callback types inherit MainActor at registration and trap
+            # when invoked from the transport actor with race checks enabled.
+            session = (core / 'SteamSession.swift').read_text(encoding='utf-8')
+            start = session.index('            await connection.setMessageHandler')
+            end = session.index('            // Capture the license list', start)
+            registration = session[start:end]
+            callback_driver = r'''
+enum EMsg { case fixture }
+struct CMsgProtoBufHeader {}
+enum SteamMessageCodec {
+    static func encode(eMsg: EMsg, header: CMsgProtoBufHeader, body: Data) -> Data { body }
+}
+extension SteamConnection {
+    func deliverFixture(_ kind: String) {
+        if kind == "message" { dispatchMessage(Data([1, 2, 3])) }
+        else { disconnectHandler?(URLError(.networkConnectionLost)) }
+    }
+}
+@MainActor final class CallbackSink {
+    var messages: [Data] = []
+    var disconnected = false
+    func attach(_ connection: SteamConnection) async {
+        REGISTRATION
+    }
+    func handleMessage(_ data: Data) { messages.append(data) }
+    func handleDisconnect(error: Error?) {
+        precondition((error as? URLError)?.code == .networkConnectionLost)
+        disconnected = true
+    }
+}
+@main struct CallbackCheck {
+    @MainActor static func main() async throws {
+        let kind = CommandLine.arguments[1]
+        let transport = SteamConnection(), sink = CallbackSink()
+        await sink.attach(transport)
+        await Task.detached { await transport.deliverFixture(kind) }.value
+        let deadline = Date().addingTimeInterval(5)
+        while sink.messages.isEmpty && !sink.disconnected && Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        if kind == "message" { precondition(sink.messages == [Data([1, 2, 3])]) }
+        else { precondition(sink.disconnected) }
+    }
+}
+'''.replace('REGISTRATION', registration)
+            prelude = source[:source.index('actor DirectoryScript {')]
+            for kind in ['baseline', 'sendable']:
+                callbacks = directory / f'callbacks-{kind}.swift'
+                transport = connection.replace('@Sendable ', '') if kind == 'baseline' else connection
+                callbacks.write_text(prelude + transport + callback_driver, encoding='utf-8')
+                callback_binary = directory / f'callbacks-{kind}'
+                subprocess.run([compiler, '-parse-as-library', '-swift-version', '5',
+                                '-Xfrontend', '-enable-actor-data-race-checks', str(callbacks),
+                                '-o', str(callback_binary)], check=True)
+                for event in ['message', 'disconnect']:
+                    result = subprocess.run([str(callback_binary), event], capture_output=True,
+                                            text=True, timeout=15)
+                    if kind == 'baseline':
+                        assert result.returncode != 0, 'the legacy actor-isolation failure must reproduce'
+                    else:
+                        assert result.returncode == 0, result.stderr
+            print('PASS: legacy message/disconnect callbacks reproduce an actor-isolation crash; Sendable callbacks deliver safely to MainActor')

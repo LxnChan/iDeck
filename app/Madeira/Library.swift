@@ -1474,7 +1474,7 @@ enum LibraryBuildIdentity {
     static var current: String { label(Bundle.main.infoDictionary ?? [:]) }
 }
 
-/// Two compact lines fit the inline toolbar: title + JIT, then build identity.
+/// Two compact lines fit the inline toolbar: title + JIT + storage, then build identity.
 /// The bolt follows the title's cap height and reflects the debugger state.
 struct LibraryTitleText: View {
     @ObservedObject private var alignment = LibraryHeaderAlignment.shared
@@ -1490,6 +1490,9 @@ struct LibraryTitleText: View {
                     .contentTransition(.symbolEffect(.replace))
                     .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
                     .accessibilityLabel(jit ? "JIT enabled" : "JIT not enabled")
+                ExternalStorageIndicator()
+                    .font(.system(size: LibraryHeaderAlignment.titleFont().pointSize * 0.53))
+                    .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
             }.font(.title2.bold())
             Text(LibraryBuildIdentity.current)
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)

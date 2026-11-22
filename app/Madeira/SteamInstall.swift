@@ -49,7 +49,7 @@ enum SteamInstallRecovery {
     }
     nonisolated static func audit(at url: URL, library: String, steamApps: URL,
                                   checkStorage: () throws -> Void, hash: (Data) -> Data) throws -> Audit {
-        guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 512 << 20 else {
+        guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 64 << 20 else {
             throw SteamFileError.invalid("Recovery information is too large. Resume to verify the download with Steam.")
         }
         let snapshot = try PropertyListDecoder().decode(Snapshot.self, from: Data(contentsOf: url))
@@ -73,7 +73,16 @@ enum SteamInstallRecovery {
                       chunk.offset <= file.size, UInt64(chunk.length) <= file.size - chunk.offset else {
                     throw SteamFileError.invalid("Recovery chunk information is invalid.")
                 }
-                if matches(chunk, at: target, hash: hash) { result.verified += 1 }
+                // FileHandle reads bridge through Foundation on Apple platforms.
+                // Drain their temporary objects per chunk, rather than retaining
+                // the whole audit's reads until this background task finishes.
+                let matched: Bool
+                #if canImport(ObjectiveC)
+                matched = autoreleasepool { matches(chunk, at: target, hash: hash) }
+                #else
+                matched = matches(chunk, at: target, hash: hash)
+                #endif
+                if matched { result.verified += 1 }
                 else { result.damagedOrMissing += 1 }
             }
         }

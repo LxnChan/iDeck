@@ -9,6 +9,7 @@ stand-in here; existing Steam library checks cover the real decrypt/CRC pipeline
 import argparse
 import http.server
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -399,3 +400,61 @@ struct DockGame { var id: Int; var library: String }
         print('PASS: no CDN retry after storage loss or cancellation')
     finally:
         server.shutdown()
+
+    # A paused install is audited on startup/reconnect. Exercise enough real
+    # FileHandle reads to expose autoreleased NSData accumulating across chunks.
+    memory_driver = r'''
+import Foundation
+import CryptoKit
+import Darwin
+func digest(_ bytes: Data) -> Data { Data(Insecure.SHA1.hash(data: bytes)) }
+@main struct MemoryCheck {
+    static func main() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: CommandLine.arguments[1])
+        let apps = root.appendingPathComponent("steamapps")
+        let install = apps.appendingPathComponent("common/Fixture")
+        try fm.createDirectory(at: install, withIntermediateDirectories: true)
+        let data = Data(repeating: 0x61, count: 1 << 20)
+        try data.write(to: install.appendingPathComponent("data.bin"))
+        let chunk = SteamInstallRecovery.Chunk(offset: 0, length: UInt32(data.count), sha: digest(data))
+        let snapshot = SteamInstallRecovery.Snapshot(library: "fixture/steamapps", folder: "Fixture", files: [
+            .init(relative: "data.bin", size: UInt64(data.count), chunks: Array(repeating: chunk, count: 384))])
+        let url = root.appendingPathComponent("recovery.plist")
+        try SteamInstallRecovery.save(snapshot, at: url)
+        let result = try SteamInstallRecovery.audit(at: url, library: snapshot.library, steamApps: apps,
+                                                     checkStorage: {}, hash: digest)
+        precondition(result.verified == 384 && result.damagedOrMissing == 0)
+        var usage = rusage()
+        precondition(getrusage(RUSAGE_SELF, &usage) == 0)
+        print("MAX_RSS=\(usage.ru_maxrss)")
+        let fd = open(url.path, O_WRONLY)
+        precondition(fd >= 0 && ftruncate(fd, off_t((64 << 20) + 1)) == 0)
+        close(fd)
+        do {
+            _ = try SteamInstallRecovery.audit(at: url, library: snapshot.library, steamApps: apps,
+                                                 checkStorage: {}, hash: digest)
+            preconditionFailure("oversized recovery must be rejected before decoding")
+        } catch SteamFileError.invalid(let message) { precondition(message.contains("too large")) }
+    }
+}
+'''
+    memory_source = work / 'MemoryCheck.swift'
+    memory_source.write_text(memory_driver, encoding='utf-8')
+    install_source = (APP / 'SteamInstall.swift').read_text(encoding='utf-8')
+    pooled = 'matched = autoreleasepool { matches(chunk, at: target, hash: hash) }'
+    assert pooled in install_source
+    peaks = {}
+    for kind in ['baseline', 'bounded']:
+        production = work / f'Install-{kind}.swift'
+        production.write_text(install_source.replace(pooled, 'matched = matches(chunk, at: target, hash: hash)')
+                              if kind == 'baseline' else install_source, encoding='utf-8')
+        memory_binary = work / f'memory-{kind}'
+        subprocess.run([swift, '-parse-as-library', '-swift-version', '5', str(memory_source), str(production),
+                        str(APP / 'DrivePaths.swift'), str(APP / 'SteamKeyValues.swift'),
+                        '-o', str(memory_binary)], check=True)
+        result = subprocess.run([str(memory_binary), str(work / f'audit-{kind}')], check=True,
+                                capture_output=True, text=True, timeout=40)
+        peaks[kind] = int(re.search(r'MAX_RSS=(\d+)', result.stdout)[1])
+    assert peaks['bounded'] < 160 << 20, peaks
+    print(f"PASS: startup recovery checks 384 MiB with bounded peak RSS; baseline={peaks['baseline'] // (1 << 20)} MiB, bounded={peaks['bounded'] // (1 << 20)} MiB; oversized metadata rejected")

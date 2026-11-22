@@ -216,7 +216,8 @@ external_source = (APP / 'ExternalStorage.swift').read_text(encoding='utf-8')
 refresh_methods = '\n'.join(block(external_source, marker).replace('private func', 'func') for marker in [
     'func checkConnectedFolders()', 'func refresh(', 'private func drainPendingCheck()',
     'private func invalidateCheckSuccess()'])
-refresh_types = '\n'.join(block(external_source, marker) for marker in ['struct Status:', 'enum CheckFeedback:'])
+refresh_types = '\n'.join(block(external_source, marker) for marker in ['struct Status:', 'enum CheckFeedback:', 'enum ConnectionIndicator:'])
+refresh_methods += '\n' + block(external_source, 'var connectionIndicator:')
 REFRESH = r'''
 import Foundation
 @MainActor final class LibraryModel {
@@ -228,7 +229,8 @@ import Foundation
 }
 @MainActor final class SteamGamesModel {
     static let shared = SteamGamesModel()
-    func refresh() {}
+    var scans = 0
+    func refresh() { scans += 1 }
 }
 @MainActor final class Store {
     struct Record: Sendable {
@@ -254,9 +256,11 @@ import Foundation
         let lock = NSLock(), gate = DispatchSemaphore(value: 0)
         var writes: [Bool] = []
         var pause = false, ready = true, moved = false
-        func configure(pause: Bool = false, ready: Bool = true, moved: Bool = false) {
+        var freeBytes: Int64 = 4096
+        func configure(pause: Bool = false, ready: Bool = true, moved: Bool = false, freeBytes: Int64 = 4096) {
             lock.lock(); defer { lock.unlock() }
             self.pause = pause; self.ready = ready; self.moved = moved
+            self.freeBytes = freeBytes
         }
         var calls: [Bool] {
             lock.lock(); defer { lock.unlock() }; return writes
@@ -264,7 +268,7 @@ import Foundation
         func check(_ records: [Record], drive: URL, write: Bool, allowRelink: Bool) -> [ResultRow] {
             lock.lock()
             writes.append(write)
-            let paused = pause, available = ready, changed = moved
+            let paused = pause, available = ready, changed = moved, capacity = freeBytes
             pause = false
             lock.unlock()
             if paused { precondition(gate.wait(timeout: .now() + 5) == .success, "test released disk worker") }
@@ -272,7 +276,7 @@ import Foundation
                 var record = $0
                 if changed { record.lastPath = "reconnected" }
                 return ResultRow(record: record, status: Status(ready: record.enabled && available,
-                                 message: available ? "Connected" : "Disconnected", freeBytes: available ? 4096 : nil))
+                                 message: available ? "Connected" : "Disconnected", freeBytes: available ? capacity : nil))
             }
         }
     }
@@ -290,6 +294,23 @@ import Foundation
 }
 @main struct RefreshChecks {
     @MainActor static func main() async throws {
+        let indicator = Store()
+        indicator.records = []
+        precondition(indicator.connectionIndicator == nil)
+        let first = Store.Record(), second = Store.Record()
+        indicator.records = [first, second]
+        precondition(indicator.connectionIndicator == .unavailable)
+        indicator.statuses[first.id] = .init(ready: true)
+        precondition(indicator.connectionIndicator == .partial)
+        indicator.statuses[second.id] = .init(ready: true)
+        precondition(indicator.connectionIndicator == .connected)
+        indicator.records[1].enabled = false
+        indicator.statuses[second.id] = .init(message: "Safely disconnected")
+        precondition(indicator.connectionIndicator == .connected)
+        indicator.records[0].enabled = false
+        precondition(indicator.connectionIndicator == nil)
+        print("PASS: home disk indicator hides unused mappings and distinguishes all, partial, and no connected folders")
+
         let polling = Store()
         polling.engine.configure(pause: true)
         polling.refresh()
@@ -301,6 +322,17 @@ import Foundation
         try await eventually("manual check completed") { !polling.checking && succeeded(polling) }
         precondition(polling.engine.calls == [false, true], "mandatory checks coalesce without losing the write probe")
         print("PASS: foreground and manual checks queued during polling run a full write check and finish with success feedback")
+        let scans = SteamGamesModel.shared.scans
+        polling.engine.configure(freeBytes: 2048)
+        polling.refresh()
+        try await eventually("capacity poll completed") { !polling.checking }
+        precondition(polling.statuses[polling.records[0].id]?.freeBytes == 2048)
+        precondition(SteamGamesModel.shared.scans == scans, "changing free bytes must not rescan games")
+        polling.engine.configure(ready: false)
+        polling.refresh()
+        try await eventually("availability poll completed") { !polling.checking }
+        precondition(SteamGamesModel.shared.scans == scans + 1, "losing a folder still rescans once")
+        print("PASS: capacity-only polls update storage without triggering repeated library scans; availability changes still notify")
 
         let busy = Store()
         busy.busy = true
@@ -346,6 +378,12 @@ import Foundation
 '''.replace('TYPES', refresh_types).replace('METHODS', refresh_methods)
 
 ui_source = (APP / 'ExternalStorageUI.swift').read_text(encoding='utf-8')
+indicator_ui = block(ui_source, 'struct ExternalStorageIndicator: View')
+for marker in ['case .connected: return .green', 'case .partial: return .yellow', 'case .unavailable: return .red',
+               '.accessibilityLabel(status.label)']:
+    assert marker in indicator_ui
+title = block((APP / 'Library.swift').read_text(encoding='utf-8'), 'struct LibraryTitleText: View')
+assert title.index('Image(systemName: jit') < title.index('ExternalStorageIndicator()')
 assert 'storage.checkConnectedFolders()' in ui_source
 assert 'case .checking: ProgressView(' in ui_source
 assert 'Label("Check successful", systemImage: "checkmark.circle.fill").foregroundStyle(.green)' in ui_source

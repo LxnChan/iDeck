@@ -4,6 +4,25 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ExternalStorageIndicator: View {
+    @ObservedObject private var storage = ExternalStorage.shared
+    var body: some View {
+        if let status = storage.connectionIndicator {
+            Image(systemName: "externaldrive.fill")
+                .foregroundStyle(color(status))
+                .accessibilityLabel(status.label)
+                .help(status.label)
+        }
+    }
+    private func color(_ status: ExternalStorage.ConnectionIndicator) -> Color {
+        switch status {
+        case .connected: return .green
+        case .partial: return .yellow
+        case .unavailable: return .red
+        }
+    }
+}
+
 struct ExternalStorageSection: View {
     @ObservedObject private var storage = ExternalStorage.shared
     var body: some View {

@@ -61,8 +61,10 @@ actor SteamConnection {
     private let serverList = CMServerList()
     private var currentEndpoint: String?
     private var activeConnect: UUID?
-    private var messageHandler: ((Data) -> Void)?
-    private var disconnectHandler: ((Error?) -> Void)?
+    // Called on this transport actor. Sendable prevents a handler created on
+    // the main actor from implicitly carrying that isolation across the boundary.
+    private var messageHandler: (@Sendable (Data) -> Void)?
+    private var disconnectHandler: (@Sendable (Error?) -> Void)?
 
     var isConnected: Bool {
         webSocketTask?.state == .running
@@ -208,11 +210,11 @@ actor SteamConnection {
 
     // MARK: - Handlers
 
-    func setMessageHandler(_ handler: @escaping (Data) -> Void) {
+    func setMessageHandler(_ handler: @escaping @Sendable (Data) -> Void) {
         self.messageHandler = handler
     }
 
-    func setDisconnectHandler(_ handler: @escaping (Error?) -> Void) {
+    func setDisconnectHandler(_ handler: @escaping @Sendable (Error?) -> Void) {
         self.disconnectHandler = handler
     }
 
