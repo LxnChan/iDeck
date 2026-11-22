@@ -2,6 +2,10 @@
 
 Follow CONTRIBUTING.md and component-specific licenses/instructions.
 
+## Project Language
+
+- All project content must use American English, including UI text, documentation, code comments, log and error messages, and other written materials. The only exception is files or content explicitly designated as Chinese, such as `README.zh-CN.md`, which may use Chinese.
+
 ## Mainline Checkpoints and Commit Subjects
 
 - Before every substantial change, or any change that may affect core functionality, create an annotated checkpoint tag at the current committed revision before editing. Preserve existing uncommitted work separately from that checkpoint.
