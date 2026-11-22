@@ -64,11 +64,13 @@ import Darwin
             var pending = pendingInstalls; pending[appID] = library
             UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: pending.map { (String($0.key), $0.value) }), forKey: "ideck.pending-external-installs")
         }
+        objectWillChange.send()
     }
     func forgetLibrary(_ appID: Int) {
         UserDefaults.standard.removeObject(forKey: "ideck.install-library.\(appID)")
         var pending = pendingInstalls; pending.removeValue(forKey: appID)
         UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: pending.map { (String($0.key), $0.value) }), forKey: "ideck.pending-external-installs")
+        objectWillChange.send()
     }
     private init() {
         if FileManager.default.fileExists(atPath: file.path) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md
-"""Run production recovery, resume preparation and chunk cancellation on macOS.
+"""Run production download location, recovery and chunk cancellation on macOS.
 
 Temporary files and a local HTTP server only. Content decoding is a passthrough
 stand-in here; existing Steam library checks cover the real decrypt/CRC pipeline.
@@ -21,14 +21,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--require-swift', action='store_true')
 args = parser.parse_args()
 swift = shutil.which('swiftc')
-if not swift:
-    if args.require_swift:
-        raise SystemExit('swiftc is required for download recovery checks')
-    print('SKIP: download recovery execution requires macOS swiftc (required in CI)')
-    raise SystemExit(0)
 
 downloader = (APP / 'SwiftSteam/Content/DepotDownloader.swift').read_text(encoding='utf-8')
 owned = (APP / 'SteamOwnedLibrary.swift').read_text(encoding='utf-8')
+external = (APP / 'ExternalStorage.swift').read_text(encoding='utf-8')
 
 
 def block(source, marker):
@@ -39,6 +35,20 @@ def block(source, marker):
         depth += (source[end] == '{') - (source[end] == '}')
         end += 1
     return source[start:end]
+
+
+sheet = block((APP / 'SteamGames.swift').read_text(encoding='utf-8'), 'struct SteamGameSheet: View')
+assert '@State private var selectedLibrary: String?' in sheet
+assert 'steam.install(appID, library: library)' in sheet
+assert 'storage.downloadLibrary =' not in sheet
+assert 'steam.fixedInstallLibrary(appID) == nil' in sheet
+assert '.disabled(storage.statuses[record.id]?.ready != true)' in sheet
+print('PASS: install page passes a local selection without writing the global default and locks unfinished installs')
+if not swift:
+    if args.require_swift:
+        raise SystemExit('swiftc is required for download recovery checks')
+    print('SKIP: download recovery execution requires macOS swiftc (required in CI)')
+    raise SystemExit(0)
 
 
 # Keep the real preparation, journal, networking, hashing and write logic. The
@@ -100,6 +110,65 @@ actor Storage {
         if calls > 1 { throw DrivePaths.Failure(message: "Disconnected") }
     }
 }
+@MainActor func checkLocations(_ mount: DrivePaths.Mount, library: String) {
+    let storage = ExternalStorage.shared
+    defer {
+        storage.preferences.removePersistentDomain(forName: storage.suite)
+        SteamGamesModel.shared.games = []
+    }
+    var connected = mount; connected.available = true
+    DrivePaths.shared.replace([connected])
+    let internalLibrary = SteamInstallPaths.libraryRelative
+    storage.downloadLibrary = internalLibrary
+    let first = Owner()
+    check(first.installLibrary(100, selecting: library) == library, "preview uses the per-download choice")
+    check(storage.pendingLibrary(100) == nil && storage.downloadLibrary == internalLibrary, "preview has no persistent side effects")
+    first.install(100, library: library)
+    check(first.queue == [100] && storage.pendingLibrary(100) == library, "enqueue pins the selected external target")
+    check(first.installSteamApps(100).path == Owner.drive.appendingPathComponent(library).path, "download files use the per-game destination")
+    check(storage.pendingInstalls[100] == library && storage.downloadLibrary == internalLibrary, "external recovery registration leaves the global default unchanged")
+    first.install(101, library: internalLibrary)
+    check(first.queue == [100, 101] && storage.pendingLibrary(101) == internalLibrary, "queued games keep independent locations")
+
+    // Reload the real preferences and recreate the download owner as after a restart.
+    storage.preferences = UserDefaults(suiteName: storage.suite)!
+    let restarted = Owner()
+    storage.downloadLibrary = library
+    let usingDefault = Owner(); usingDefault.install(107)
+    check(usingDefault.queue == [107] && storage.pendingLibrary(107) == library, "a new download with no override uses the global default")
+    check(restarted.installLibrary(101) == internalLibrary, "changing the default cannot redirect a pending internal download")
+    storage.downloadLibrary = internalLibrary
+    check(restarted.installLibrary(100) == library, "external target survives owner and preference reloads")
+    restarted.install(100, library: internalLibrary)
+    check(restarted.error != nil && restarted.queue.isEmpty && storage.pendingLibrary(100) == library, "explicit retargeting of unfinished data is rejected")
+    restarted.install(100)
+    check(restarted.queue == [100] && restarted.installLibrary(100) == library, "Resume uses the persisted target")
+
+    SteamGamesModel.shared.games = [.init(id: 102, library: internalLibrary)]
+    let update = Owner()
+    check(update.installLibrary(102, selecting: library) == internalLibrary, "installed location wins over a preview choice")
+    update.install(102, library: library)
+    check(update.error != nil && update.queue.isEmpty && storage.pendingLibrary(102) == nil, "updates cannot be redirected")
+    update.install(102)
+    check(update.queue == [102] && storage.pendingLibrary(102) == internalLibrary, "updates pin the installed location")
+
+    let deferred = Owner(); deferred.inSession = true
+    deferred.install(103, library: library)
+    check(deferred.resumeAfterSession.contains(103) && storage.pendingLibrary(103) == library, "session-deferred installs pin before waiting")
+    DrivePaths.shared.replace([mount])
+    let offline = Owner()
+    offline.install(104, library: library)
+    check(offline.queue.isEmpty && offline.error != nil && storage.pendingLibrary(104) == nil, "offline selections fail without fallback or a new pin")
+    storage.downloadLibrary = library
+    offline.install(105)
+    check(offline.queue.isEmpty && storage.pendingLibrary(105) == nil, "an offline default also never falls back")
+    offline.install(106, library: "../outside")
+    check(offline.queue.isEmpty && storage.pendingLibrary(106) == nil, "unmanaged destinations are refused")
+    storage.forgetLibrary(100)
+    check(storage.pendingLibrary(100) == nil && storage.pendingInstalls[100] == nil, "removing managed partial data unlocks the destination")
+    check(Owner().installLibrary(100, selecting: internalLibrary) == internalLibrary, "a cleared install can choose a different destination")
+    print("PASS: per-download locations preserve the global default, persist independent pins, protect updates/resumes and reject offline targets")
+}
 @main struct Checks {
     @MainActor static func main() async throws {
         let fm = FileManager.default
@@ -107,8 +176,11 @@ actor Storage {
         let host = CommandLine.arguments[2]
         let mount = DrivePaths.Mount(id: UUID(), url: root, available: false, problem: "Disconnected")
         let library = mount.relativeRoot + "/steamapps"
+        checkLocations(mount, library: library)
         DrivePaths.shared.replace([mount])
-        ExternalStorage.shared.pendingInstalls = [42: library, 43: library]
+        ExternalStorage.shared.pinLibrary(library, appID: 42)
+        ExternalStorage.shared.pinLibrary(library, appID: 43)
+        defer { ExternalStorage.shared.preferences.removePersistentDomain(forName: ExternalStorage.shared.suite) }
         let owner = Owner()
         owner.active = (42, Task { do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch {} })
         owner.queue = [43]
@@ -212,11 +284,27 @@ with tempfile.TemporaryDirectory(prefix='ideck-recovery-') as folder:
     thread.start()
     source = work / 'Checks.swift'
     policy = '''
+struct Publisher { func send() {} }
+struct DockGame { var id: Int; var library: String }
+@MainActor final class SteamGamesModel {
+    static let shared = SteamGamesModel()
+    var games: [DockGame] = []
+}
 @MainActor final class ExternalStorage {
     static let shared = ExternalStorage()
-    var pendingInstalls: [Int: String] = [:]
+    let suite = "ideck-download-location-" + UUID().uuidString
+    lazy var preferences = UserDefaults(suiteName: suite)!
+    let objectWillChange = Publisher()
+    var busy = false
+'''
+    policy += '\n'.join(block(external, marker).replace('UserDefaults.standard', 'preferences') for marker in [
+        'var downloadLibrary: String', 'func pendingLibrary(', 'var pendingInstalls:', 'func pinLibrary(', 'func forgetLibrary('])
+    policy += '''
 }
 @MainActor final class Owner {
+    static let enabled = true
+    static let drive = URL(fileURLWithPath: "/tmp/ideck-download-location-drive")
+    var signedIn = true
     var downloads: [Int: Download] = [:]
     var queue: [Int] = []
     var active: (id: Int, task: Task<Void, Never>)?
@@ -227,11 +315,15 @@ with tempfile.TemporaryDirectory(prefix='ideck-recovery-') as folder:
     var storageOperations = 0, checks = 0
     var inSession = false, sessionRunning = false
     var error: String?
+    func startTimer() {}
+    func pump() {}
     func checkRecoveredDownload(_ id: Int, library: String) {
         checks += 1; recoveryChecked.insert(id); recoveryTasks[id] = Task {}
     }
 '''
-    policy += block(owned, 'struct Download: Equatable') + '\n' + block(owned, 'func externalStorageChanged()') + '\n}\n'
+    policy += '\n'.join(block(owned, marker) for marker in [
+        'struct Download: Equatable', 'func externalStorageChanged()', 'func fixedInstallLibrary(',
+        'func installLibrary(', 'func installSteamApps(', 'func install(_ appID:']) + '\n}\n'
     journal = downloader[downloader.index('final class JournalWriter {'):]
     progress = block(downloader, 'struct SteamDownloadProgress:')
     source.write_text(STUBS + '\n'.join(pieces) + '\n}\n' + journal + '\n' + progress + '\n' + policy + DRIVER, encoding='utf-8')

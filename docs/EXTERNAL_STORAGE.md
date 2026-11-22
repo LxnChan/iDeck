@@ -14,9 +14,15 @@ Windows system files and Windows user folders remain in the existing prefix.
 3. Add ordinary games through the existing program browser under
    `drive_c/External/<folder-id>`. A Steam library uses `steamapps` directly below
    the selected directory. Existing Steam manifests are discovered there.
-4. Choose the location for new Steam downloads in External storage settings.
-   Paused installs and updates retain their original location. There is no
-   fallback to internal storage when an external target is unavailable.
+4. Choose the global default for new Steam downloads in External storage
+   settings. Each game's install page also offers a location for that download
+   only, including internal storage and connected writable external folders.
+   Choosing it does not change the global default; Use default follows the
+   current setting until Install is pressed. The selected target is then pinned
+   across queues, pauses and app restarts. Updates, repairs and unfinished
+   downloads retain their original location. Cancel a new install to remove its
+   partial data before choosing a different target. There is no fallback to
+   internal storage when an external target is unavailable.
 5. Stop games, downloads and save synchronization, then use Safely disconnect
    before unplugging. Reconnect uses the saved directory authorization; if iOS
    revokes it, select the original folder again to preserve its game paths.
@@ -84,9 +90,12 @@ servers. Checks and cancellation repeat after network waits and before writes.
 production path resolver, identity/read-write probe and Steam configuration
 registration against synthetic temporary folders, real symlinks and permissions.
 It also checks shared install/removal containment and download journal recovery.
-`check-download-recovery.py --require-swift` exercises the production disconnect
-policy, persisted recovery audit, journal revalidation and chunk request/write
-code with corrupted/truncated files and a real local in-flight HTTP cancellation.
+`check-download-recovery.py --require-swift` exercises per-download location
+selection and persistent pins independently of the global default, the production
+disconnect policy, persisted recovery audit, journal revalidation and chunk
+request/write code with corrupted/truncated files and a real local in-flight HTTP
+cancellation. It checks that updates/resumes keep their target and unavailable
+selections never fall back to another drive.
 The build workflow also runs the existing Steam game discovery, Dock contract,
 legacy runtime, launch and Cloud checks, then builds and packages the app.
 

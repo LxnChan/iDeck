@@ -937,11 +937,16 @@ struct SteamGameSheet: View {
     var open: (LibraryEntry) -> Void
     @ObservedObject private var steam = SteamOwnedLibrary.shared
     @ObservedObject private var games = SteamGamesModel.shared
+    @ObservedObject private var storage = ExternalStorage.shared
     @Environment(\.dismiss) private var dismiss
     @State private var freeSpace: Int64?
     @State private var partial = false
     @State private var confirmCancel = false
     @State private var compatibilityPrompt: SteamCompatibilityPrompt?
+    @State private var selectedLibrary: String?
+
+    private var installLocation: String { steam.installLibrary(appID, selecting: selectedLibrary) }
+    private var locationAvailable: Bool { !storage.busy && DrivePaths.shared.problem(installLocation) == nil }
 
     var body: some View {
         let owned = SteamOwnedLibrary.enabled ? steam.owned : []
@@ -976,13 +981,12 @@ struct SteamGameSheet: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                    } else if item.installed == nil, steam.fixedInstallLibrary(appID) != nil {
+                        Section("Download") {
+                            Button("Cancel unfinished download", role: .destructive) { confirmCancel = true }
+                        }
                     }
-                    Section {
-                        NavigationLink("Install location: " + (DrivePaths.mountID(steam.installLibrary(appID)) == nil ? "Internal storage" : "External storage")) { ExternalStorageSettings() }
-                        if let freeSpace { LabeledContent("Free at install location", value: formatBytes(freeSpace)) }
-                        Text(SteamGameSheet.downloadNote)
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
+                    installLocationSection
                     Section {
                         Link(destination: URL(string: "https://store.steampowered.com/app/\(appID)/")!) {
                             Label("View in the Steam Store", systemImage: "safari")
@@ -996,10 +1000,10 @@ struct SteamGameSheet: View {
             .navigationTitle("Steam").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .steamCompatibilityAlert($compatibilityPrompt)
-            .task(id: steam.downloads[appID]?.state) {
-                partial = steam.hasPartialDownload(appID)
-                freeSpace = steam.installFreeBytes(appID)
-            }
+            .task(id: steam.downloads[appID]?.state) { updateStorageDetails() }
+            .onChange(of: installLocation) { _, _ in updateStorageDetails() }
+            .onChange(of: storage.statuses) { _, _ in updateStorageDetails() }
+            .onAppear { storage.start(); storage.refresh() }
             .confirmationDialog("Cancel this download? Downloaded files are deleted.", isPresented: $confirmCancel, titleVisibility: .visible) {
                 Button("Cancel download", role: .destructive) {
                     steam.cancelInstall(appID, installed: games.games.contains { $0.id == appID })
@@ -1009,7 +1013,49 @@ struct SteamGameSheet: View {
         }
     }
 
-    static let downloadNote = "Games download directly from Steam with your account into the selected install location. Change the location for new downloads in Settings › External storage. Updates and paused downloads keep their original location. You can leave Madeira while it downloads: on iOS 26 and later iOS shows the download's progress and keeps it going; on earlier versions it pauses after a short while and continues when you return. A download pauses while a game is running and continues afterwards."
+    private var installLocationSection: some View {
+        Section("Install location") {
+            if steam.fixedInstallLibrary(appID) == nil {
+                Picker("This download", selection: Binding(get: { selectedLibrary ?? "" }, set: { selectedLibrary = $0.isEmpty ? nil : $0 })) {
+                    Text("Use default (\(locationName(storage.downloadLibrary)))").tag("")
+                    Text("Internal storage").tag(SteamInstallPaths.libraryRelative)
+                    ForEach(storage.records) { record in
+                        Text(record.name + (storage.statuses[record.id]?.ready == true ? "" : " (unavailable)"))
+                            .tag(record.relativeRoot + "/steamapps")
+                            .disabled(storage.statuses[record.id]?.ready != true)
+                    }
+                    if let selectedLibrary, selectedLibrary != SteamInstallPaths.libraryRelative,
+                       !storage.records.contains(where: { $0.relativeRoot + "/steamapps" == selectedLibrary }) {
+                        Text("Unavailable location").tag(selectedLibrary).disabled(true)
+                    }
+                }.pickerStyle(.navigationLink)
+                Text("Applies only to this download. Your global default stays unchanged.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                LabeledContent("This download", value: locationName(installLocation))
+                Text("Updates and unfinished downloads keep their original location.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let problem = DrivePaths.shared.problem(installLocation) {
+                Text(problem).font(.caption).foregroundStyle(.orange)
+            }
+            if let freeSpace { LabeledContent("Free at install location", value: formatBytes(freeSpace)) }
+            NavigationLink("Storage settings and global default") { ExternalStorageSettings() }
+            Text(SteamGameSheet.downloadNote).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func locationName(_ library: String) -> String {
+        guard let id = DrivePaths.mountID(library) else { return "Internal storage" }
+        return storage.records.first(where: { $0.id == id })?.name ?? "Unavailable external folder"
+    }
+
+    private func updateStorageDetails() {
+        partial = steam.hasPartialDownload(appID, selecting: selectedLibrary)
+        freeSpace = steam.installFreeBytes(appID, selecting: selectedLibrary)
+    }
+
+    static let downloadNote = "Games download directly from Steam with your account into the selected install location. You can leave Madeira while it downloads: on iOS 26 and later iOS shows the download's progress and keeps it going; on earlier versions it pauses after a short while and continues when you return. A download pauses while a game is running and continues afterwards."
 
     @ViewBuilder private func primaryAction(_ item: SteamGamesRules.Item) -> some View {
         if let installed = item.installed {
@@ -1027,20 +1073,21 @@ struct SteamGameSheet: View {
                     .buttonStyle(.bordered)
             case .paused:
                 Button { requestDownload() } label: { steamActionLabel("Resume", symbol: "arrow.down.circle.fill") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable)
             case .failed:
                 Button { requestDownload() } label: { steamActionLabel("Try again", symbol: "arrow.clockwise") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable)
             }
         } else if item.owned != nil {
             Button { requestDownload() } label: {
                 steamActionLabel(partial ? "Resume download" : "Install", symbol: "arrow.down.circle.fill")
-            }.buttonStyle(.borderedProminent).disabled(!steam.signedIn)
+            }.buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable)
         }
     }
 
     private func requestDownload() {
-        let proceed = { steam.install(appID) }
+        let library = installLocation
+        let proceed = { steam.install(appID, library: library) }
         if let prompt = SteamCompatibilityPrompt(appID: appID, action: .download, proceed: proceed) {
             compatibilityPrompt = prompt
         } else {

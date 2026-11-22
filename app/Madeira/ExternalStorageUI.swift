@@ -53,7 +53,7 @@ struct ExternalStorageSettings: View {
                     Button("Remove mapping", role: .destructive) { remove = record.id }.disabled(!storage.canChange)
                 }
             }
-            Section("New Steam downloads") {
+            Section("Default for new Steam downloads") {
                 Picker("Install location", selection: Binding(get: { storage.downloadLibrary }, set: { storage.downloadLibrary = $0 })) {
                     Text("Internal storage").tag(SteamInstallPaths.libraryRelative)
                     ForEach(storage.records) { record in
@@ -65,7 +65,7 @@ struct ExternalStorageSettings: View {
                         Text("Removed mapping (choose a location)").tag(storage.downloadLibrary)
                     }
                 }.disabled(!storage.canChange)
-                Text("Updates and repairs use the game's existing library. New downloads use this selection; an unavailable drive never falls back to internal storage.")
+                Text("New downloads start with this default. You can choose another location for one download on its install page. Updates and unfinished downloads keep their original location; an unavailable drive never falls back to internal storage.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

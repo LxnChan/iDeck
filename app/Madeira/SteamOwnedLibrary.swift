@@ -238,14 +238,20 @@ final class SteamOwnedLibrary: ObservableObject {
 
     static var drive: URL { MadeiraDock.drive }
     static var steamApps: URL { SteamInstallPaths.steamApps(drive: drive) }
-    /// Pin pending installs to their selected library across pauses and restarts.
-    func installLibrary(_ appID: Int) -> String {
+    /// Installed and unfinished downloads stay pinned across pauses and restarts.
+    func fixedInstallLibrary(_ appID: Int) -> String? {
         if let installed = SteamGamesModel.shared.games.first(where: { $0.id == appID }) { return installed.library }
-        return ExternalStorage.shared.pendingLibrary(appID) ?? ExternalStorage.shared.downloadLibrary
+        return ExternalStorage.shared.pendingLibrary(appID)
     }
-    func installSteamApps(_ appID: Int) -> URL { Self.drive.appendingPathComponent(installLibrary(appID), isDirectory: true) }
-    func installFreeBytes(_ appID: Int) -> Int64? {
-        let library = installLibrary(appID)
+    /// Preview a per-download choice without changing either the pin or default.
+    func installLibrary(_ appID: Int, selecting library: String? = nil) -> String {
+        fixedInstallLibrary(appID) ?? library ?? ExternalStorage.shared.downloadLibrary
+    }
+    func installSteamApps(_ appID: Int, selecting library: String? = nil) -> URL {
+        Self.drive.appendingPathComponent(installLibrary(appID, selecting: library), isDirectory: true)
+    }
+    func installFreeBytes(_ appID: Int, selecting selection: String? = nil) -> Int64? {
+        let library = installLibrary(appID, selecting: selection)
         if let id = DrivePaths.mountID(library) {
             return ExternalStorage.shared.statuses[id]?.ready == true ? ExternalStorage.shared.statuses[id]?.freeBytes : nil
         }
@@ -1169,21 +1175,27 @@ final class SteamOwnedLibrary: ObservableObject {
         return latest > installedBuild
     }
 
-    func hasPartialDownload(_ appID: Int) -> Bool {
-        DepotDownloader.hasPartialDownload(appID: UInt32(appID), steamApps: installSteamApps(appID))
+    func hasPartialDownload(_ appID: Int, selecting library: String? = nil) -> Bool {
+        DepotDownloader.hasPartialDownload(appID: UInt32(appID), steamApps: installSteamApps(appID, selecting: library))
     }
 
     /// Installs or updates a game: queues it and starts when nothing else downloads.
-    func install(_ appID: Int) {
+    func install(_ appID: Int, library selection: String? = nil) {
         guard Self.enabled else { return }
         guard signedIn else { error = "Sign in to Steam to download games."; return }
         guard storageOperations == 0 else { error = "Wait for the current file operation to finish."; return }
         guard !ExternalStorage.shared.busy else { error = "Wait for external storage setup to finish."; return }
         guard recoveryTasks[appID] == nil else { error = "Wait for the reconnected download check to finish."; return }
-        let library = installLibrary(appID)
+        if let fixed = fixedInstallLibrary(appID), let selection,
+           fixed.caseInsensitiveCompare(selection) != .orderedSame {
+            error = "Updates and unfinished downloads keep their original install location. Cancel a new install before choosing another location."
+            return
+        }
+        let library = installLibrary(appID, selecting: selection)
         guard SteamInstallPaths.isManaged(library: library) else { error = "This install location is unavailable. Choose it in Settings › External storage."; return }
-        ExternalStorage.shared.pinLibrary(library, appID: appID)
+        if let problem = DrivePaths.shared.problem(library) { error = problem; return }
         if active?.id == appID || queue.contains(appID) { return }
+        ExternalStorage.shared.pinLibrary(library, appID: appID)
         storageInterruptions[appID] = nil
         recoveryChecked.insert(appID)
         if inSession {
