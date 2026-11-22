@@ -15,10 +15,11 @@ MANIFEST = 'legal/runtime-sync.json'
 CORE = ('ntdll.dll', 'kernel32.dll', 'kernelbase.dll', 'user32.dll',
         'gdi32.dll', 'win32u.dll')
 GRAPHICS = ('d3d11.dll', 'dxgi.dll', 'winemetal.dll')
+RUNTIME_INSTALLER = ('madeira-runtime-install.exe', 'cabinet.dll', 'bcrypt.dll')
 REQUIRED = {
-    'arm64ec-windows': CORE + GRAPHICS + ('xtajit64.dll', 'd3d9.dll', 'd3d10core.dll'),
+    'arm64ec-windows': CORE + GRAPHICS + RUNTIME_INSTALLER + ('xtajit64.dll', 'd3d9.dll', 'd3d10core.dll'),
     'aarch64-windows': CORE + GRAPHICS + ('xtajit.dll', 'wow64.dll', 'wow64win.dll'),
-    'i386-windows': CORE + GRAPHICS + ('d3d8.dll', 'd3d8-probe-x86.exe',
+    'i386-windows': CORE + GRAPHICS + RUNTIME_INSTALLER + ('d3d8.dll', 'd3d8-probe-x86.exe',
                                       'd3d9.dll', 'd3d10core.dll', 'd3dx9_43.dll'),
 }
 LIBRARIES = (

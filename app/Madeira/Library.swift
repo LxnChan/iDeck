@@ -1313,6 +1313,7 @@ final class LibraryModel: ObservableObject {
         }
     }
     private func finish() {
+        Task { @MainActor in LegacyRuntimeModel.shared.sessionEnded() }
         if sawProcess, let report = exitReport() { error = report }
         timer?.invalidate(); timer = nil
         saveCurrentProfile()
@@ -2900,6 +2901,7 @@ struct LibraryView: View {
             }
             if settingsShow("Steam Cloud", "Cloud", "sync", "saves", "backup", "restore", "save games") { SavesSection() }
             if settingsShow(".NET", "Mono", "Wine Mono", "framework", "download") { WineMonoSettingsSection() }
+            if settingsShow("Windows runtimes", "MFC42", "Visual C++", "DLL", "runtime") { LegacyRuntimeSettingsSection() }
             // Search: the matching options of All settings, editable here.
             if !settingsSearch.trimmingCharacters(in: .whitespaces).isEmpty {
                 SettingsSearchResults(query: settingsSearch.trimmingCharacters(in: .whitespaces), refresh: settingsRefresh)
@@ -3171,6 +3173,7 @@ struct LibraryView: View {
         .onChange(of: model.restartNotice) { _, notice in if notice != nil { selected = nil } }
         .onChange(of: model.jitNotice) { _, notice in if notice != nil { selected = nil } }
         .onChange(of: model.cloudNotice) { _, notice in if notice != nil { selected = nil } }
+        .onReceive(LegacyRuntimeModel.shared.$presented) { showing in if showing { selected = nil } }
         .onChange(of: model.compatibilityPrompt != nil) { _, showing in if showing { selected = nil } }
         .onChange(of: jit.showSetup) { _, show in if show { selected = nil } }
         .onChange(of: model.showDetail) { _, id in

@@ -1437,6 +1437,8 @@ struct ContentView: View {
     /// replaces both bodies below, and a running library session gets the
     /// full-screen `sessionBody`.
     @ObservedObject private var library = LibraryModel.shared
+    @ObservedObject private var legacyRuntimes = LegacyRuntimeModel.shared
+    @State private var legacyRuntimeSheetPresented = false
     /// "Use New Interface" (actionButtons) applies at the next start.
     @State private var showFrontendRestart = false
 
@@ -1507,6 +1509,15 @@ struct ContentView: View {
                 Button("Later", role: .cancel) { library.jitNotice = nil }
             } message: { Text(library.jitNotice ?? "") }
             .sheet(isPresented: $jitCoordinator.showSetup) { JITSetupView() }
+            .sheet(isPresented: $legacyRuntimeSheetPresented, onDismiss: { legacyRuntimes.dismissed() }) { LegacyRuntimeSheet() }
+            .onChange(of: legacyRuntimes.presented) { _, showing in
+                if showing {
+                    devSheet = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        if legacyRuntimes.presented { legacyRuntimeSheetPresented = true }
+                    }
+                } else { legacyRuntimeSheetPresented = false }
+            }
             .sheet(isPresented: Binding(get: { cloudSheetPresented },
                                        set: { if !$0 { finishCloudLaunch(launch: false) } }),
                    onDismiss: cloudDismissed) {
@@ -2873,7 +2884,7 @@ struct ContentView: View {
     /// Play in the library (Library.swift): checks that a session can start,
     /// applies the entry's launch profile and runs the same full sequence as the
     /// developer interface's buttons.
-    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false) {
+    private func launchLibraryEntry(_ entry: LibraryEntry, compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false, runtimesChecked: Bool = false) {
         // Dock launches use the same notice in startDock, including starts outside the library.
         if entry.startsSteamGameDirectly, !compatibilityConfirmed,
            let prompt = SteamCompatibilityPrompt(appID: entry.steamAppID, action: .launch,
@@ -2917,6 +2928,15 @@ struct ContentView: View {
         if LibraryModel.sessionsThisRun > 0, MadeiraConfig.flag("MADEIRA_ONE_SESSION_PER_RUN") {
             LogStore.shared.log("[session-once] launch held: \(LibraryModel.sessionsThisRun) session(s) already ran in this app run")
             library.restartNotice = LibraryModel.restartMessage; return
+        }
+        if !runtimesChecked, entry.desktop != true {
+            do {
+                let file = try LibraryModel.executable(entry.launchRelativePath)
+                legacyRuntimes.check(executable: file, prefix: SteamUIExperiment.runtimePrefix) {
+                    launchLibraryEntry(entry, compatibilityConfirmed: true, cloudConfirmed: true, runtimesChecked: true)
+                }
+            } catch { library.error = error.localizedDescription }
+            return
         }
         // The same precondition runWineFullSequence checks: the JIT pool is
         // taken at launch, through the debugger. Without it, Play enables JIT and
@@ -3739,7 +3759,7 @@ struct ContentView: View {
     /// `profile` is a Steam game's library entry (its Game details page): the
     /// session then takes that entry's display, performance and on-screen settings.
     private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil,
-                           compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false) {
+                           compatibilityConfirmed: Bool = false, cloudConfirmed: Bool = false, runtimesChecked: Bool = false) {
         if !compatibilityConfirmed,
            let prompt = SteamCompatibilityPrompt(appID: game.id, action: .launch,
                 proceed: { startDock(game, compactPool: compactPool, profile: profile,
@@ -3777,6 +3797,14 @@ struct ContentView: View {
         guard cloudConfirmed || cloudClear(game.id, name: game.name, offline: offline,
                          retry: { startDock(game, compactPool: compactPool, profile: profile,
                                             compatibilityConfirmed: true, cloudConfirmed: true) }) else { return }
+        if !runtimesChecked {
+            let folder = MadeiraDock.drive.appendingPathComponent(game.library + "/common/" + game.installDir)
+            legacyRuntimes.check(executable: folder, prefix: MadeiraDock.prefix) {
+                startDock(game, compactPool: compactPool, profile: profile,
+                          compatibilityConfirmed: true, cloudConfirmed: true, runtimesChecked: true)
+            }
+            return
+        }
         guard jitReadyForLaunch(inLibrary: inLibrary, entry: profile?.id,
                                 then: { startDock(game, compactPool: compactPool, profile: profile,
                                                    compatibilityConfirmed: true, cloudConfirmed: true) }) else { return }
@@ -4153,6 +4181,12 @@ struct ContentView: View {
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let winePrefixPath = SteamUIExperiment.runtimePrefix.path
 
+        do { try LegacyRuntimeLaunch.apply(prefix: SteamUIExperiment.runtimePrefix) }
+        catch {
+            logStore.log("[legacy-runtime] launch held: \(error.localizedDescription)", level: .error)
+            DispatchQueue.main.async { LibraryModel.shared.launchFailed(error.localizedDescription) }
+            return
+        }
         // Call synchronously — caller already waited for wineserver to be ready
         let result = wine_process_start(winePrefixPath)
         if result == 0 {
