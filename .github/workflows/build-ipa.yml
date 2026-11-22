@@ -107,6 +107,7 @@ jobs:
           python3 -B tests/host/check-steam-cm-transport.py --require-swift
           python3 -B tests/host/check-child-launch-arguments.py --require-swift
           python3 -B tests/host/check-dotnet-gc.py
+          python3 -B tests/host/check-launch-routing.py
           python3 -B tests/host/check-legacy-runtime.py --require-swift
           echo "::endgroup::"
           echo "::group::Audio regressions"

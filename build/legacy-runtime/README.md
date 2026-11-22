@@ -59,6 +59,11 @@ the production helper against the real package without downloading or publishing
 it. This checks nested extraction, hashes, idempotence, conflict retention,
 tampering, child argv/exit status and refusal to launch after installation failure.
 
+`tests/host/check-launch-routing.py` also checks the shared architecture probe
+before system-directory links are created or refreshed. Bundled syswow64
+programs are probed from the current bundle so a first install or stale link
+does not select the wrong session architecture.
+
 Host checks do not validate Wine FDI/FEX on an iPad or full game compatibility.
 Those require a device test, including a first download/consent, offline reuse,
 cancel/retry and Ballance's plugin loading with MFC42 installed.

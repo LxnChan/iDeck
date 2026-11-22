@@ -25,6 +25,7 @@
 #include <pwd.h>
 #include <limits.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <sys/sysctl.h>
@@ -879,6 +880,19 @@ static uint16_t madeira_target_machine(const char *exe, const char *prefix, NSSt
 
     if ((exe[0] == 'C' || exe[0] == 'c') && exe[1] == ':' && exe[2] == '\\')
     {
+        /* Probe bundled syswow64 programs before creating/refreshing farm
+         * links. The prefix may have no link yet, or one from an old app. */
+        static const char wow64[] = "windows\\syswow64\\";
+        if (!strncasecmp(exe + 3, wow64, sizeof(wow64) - 1))
+        {
+            const char *name = exe + 3 + sizeof(wow64) - 1;
+            if (*name && !strpbrk(name, "\\/:") && strcmp(name, ".") && strcmp(name, "..") &&
+                snprintf(probe, sizeof(probe), "%s/i386-windows/%s", bundle.fileSystemRepresentation, name) < (int)sizeof(probe))
+            {
+                uint16_t machine = madeira_pe_machine(probe);
+                if (machine) return machine;
+            }
+        }
         skip = strlen(prefix) + strlen("/drive_c/");
         if (snprintf(probe, sizeof(probe), "%s/drive_c/%s", prefix, exe + 3) >= (int)sizeof(probe))
             return 0;

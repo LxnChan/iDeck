@@ -9,10 +9,16 @@ and ios_main_image_i386 is published before __wine_main. Part B compiles the pro
 madeira_pe_machine and madeira_target_machine against synthetic PE files and a fake bundle.
 """
 from pathlib import Path
+import argparse
 import re, subprocess, tempfile
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--compiler', default='cc')
+parser.add_argument('--no-sanitize', action='store_true')
+args = parser.parse_args()
+
 root = Path(__file__).resolve().parents[2]
-src = (root / "app/Madeira/WineProcessBridge.m").read_text().replace("\r\n", "\n")
+src = (root / "app/Madeira/WineProcessBridge.m").read_text(encoding="utf-8").replace("\r\n", "\n")
 
 def function(source, start):
     a = source.index(start); b = source.index("{", a); depth = 1; c = b + 1
@@ -61,6 +67,7 @@ code = r"""
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <limits.h>
 #include <assert.h>
@@ -89,6 +96,14 @@ int main(int argc, char **argv)
     assert(madeira_target_machine("both.exe", prefix, bundle) == 0);
     assert(madeira_target_machine("only32.exe", prefix, bundle) == 0x14c);
     assert(madeira_target_machine("nowhere.exe", prefix, bundle) == 0);
+    /* The first session has no farm links yet; a shared name must still select x86. */
+    assert(madeira_target_machine("C:\\windows\\syswow64\\both.exe", prefix, bundle) == 0x14c);
+    assert(madeira_target_machine("c:\\WINDOWS\\SysWOW64\\only32.exe", prefix, bundle) == 0x14c);
+    assert(madeira_target_machine("C:\\windows\\syswow64\\nowhere.exe", prefix, bundle) == 0);
+    /* Existing private programs outside the bundled farm still probe the prefix. */
+    assert(madeira_target_machine("C:\\windows\\syswow64\\private.exe", prefix, bundle) == 0x14c);
+    /* Farm refresh replaces an obsolete link/file, so its old machine must not win. */
+    assert(madeira_target_machine("C:\\windows\\syswow64\\stale.exe", prefix, bundle) == 0x14c);
     puts("probe ok");
     return 0;
 }
@@ -113,9 +128,15 @@ with tempfile.TemporaryDirectory() as tmp:
     (t / "bundle/aarch64-windows/both.exe").write_bytes(pe(0xaa64))
     (t / "bundle/i386-windows/both.exe").write_bytes(pe(0x14c))
     (t / "bundle/i386-windows/only32.exe").write_bytes(pe(0x14c))
+    (t / "bundle/i386-windows/stale.exe").write_bytes(pe(0x14c))
+    wow = t / "prefix/drive_c/windows/syswow64"; wow.mkdir(parents=True)
+    (wow / "private.exe").write_bytes(pe(0x14c))
+    (wow / "stale.exe").write_bytes(pe(0x8664))
     c = t / "check.c"; exe = t / "check"; c.write_text(code)
-    subprocess.run(["cc", "-std=gnu11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+    sanitizers = [] if args.no_sanitize else ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+    subprocess.run([args.compiler, "-std=gnu11", "-O1", "-g", *sanitizers,
                     "-Werror=implicit-function-declaration", str(c), "-o", str(exe)], check=True)
     out = subprocess.run([str(exe), str(t)], check=True, capture_output=True, text=True)
     assert "probe ok" in out.stdout, out.stdout + out.stderr
 print("PASS: PE machine probe: PE32/PE32+/non-PE/truncated/huge e_lfanew; drive_c paths; bare names prefer the 64-bit farms")
+print("PASS: full syswow64 paths before first farm creation, mixed-case directories, stale links and private system programs")
