@@ -2886,12 +2886,10 @@ static volatile int ios_jit_anon_alias_hiwater = 0;
 static volatile int ios_jit_anon_alias_tombstones = 0;
 /* iOS-Madeira ml635: per-alias write telemetry.
  *
- * The iOS Mach write path emulates a store through the RW alias and then simply
- * advances PC — it NEVER invalidates FEX's cached translation, unlike the normal
- * ARM64EC path (Module.cpp HandleRWXAccessViolation). So FEX can translate a page
- * while it is still zeros, Mono can then fill it through millions of emulated
- * writes, and execution keeps following the STALE zero translation until it runs
- * off the end of the mapping. These counters decide that outright:
+ * The Mach write path used to advance PC after writing through the RW alias
+ * without letting FEX invalidate cached translations. It now dispatches logical
+ * write traps before emulating a store, so HandleRWXAccessViolation can invalidate
+ * and untrap the page first. These counters track the subsequent alias writes:
  *   write_gen  — bumped on every emulated write into this alias
  *   written    — bit per 16KB chunk that has EVER been written (first 32 chunks) */
 static volatile unsigned int ios_alias_write_gen[IOS_JIT_MAX_ANON_ALIASES];

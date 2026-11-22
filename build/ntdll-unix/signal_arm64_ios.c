@@ -1424,6 +1424,26 @@ void ios_dump_guest_callers( const char *tag, unsigned long long x28 )
 }
 
 
+/* The pool's native code buffers always use their physical RW alias. Guest
+ * aliases must also obey Wine's current logical protection: FEX removes WRITE
+ * when it translates an RWX page, and the resulting fault must invalidate that
+ * translation before any store lands. Merely having an RW alias is not write
+ * permission. CoreCLR's UMEntryThunk otherwise keeps calling its cached
+ * prestub after RunTimeInit has rewritten the thunk millions of times.
+ *
+ * This lock-free lookup also leaves guard, write-watch and genuinely readonly
+ * pages to normal fault handling. Once FEX untraps a page, alias emulation can
+ * resume without making the RX view writable (which could split it by COW). */
+static int ios_mach_alias_store_allowed( int in_jit, uintptr_t addr )
+{
+    extern int ios_page_expected_prot( const void *addr );
+    int prot;
+
+    if (in_jit) return 1;
+    prot = ios_page_expected_prot( (const void *)addr );
+    return prot >= 0 && (prot & PROT_WRITE);
+}
+
 /* Signal-safe 32/64-bit CAS core, shared semantics with the BSD alias path.
  * Caller establishes full alias coverage. FP/LR encodings deliberately
  * decline: Darwin's __x array contains only x0..x28. No Wine logging here. */
@@ -3599,7 +3619,15 @@ static void *ios_mach_exception_thread( void *arg )
                                 (unsigned long long)fault_pc);
                     }
                 }
-                if (rw_addr && (uintptr_t)fault_pc >= 0x100000000ULL)
+                if (rw_addr && !ios_mach_alias_store_allowed( in_jit, (uintptr_t)fault_addr ))
+                {
+                    static unsigned alias_trap_logs;
+                    if (alias_trap_logs++ < 16)
+                        dprintf( STDERR_FILENO,
+                                 "[alias-write-trap] pc=%llx addr=%llx: logical write denied; dispatching before alias store\n",
+                                 (unsigned long long)fault_pc, (unsigned long long)fault_addr );
+                }
+                else if (rw_addr && (uintptr_t)fault_pc >= 0x100000000ULL)
                 {
                     uint32_t insn; ios_fault_read_insn( (uint64_t)(uintptr_t)fault_pc, &insn );  /* ml982 */
                     int emulated = 0;
@@ -4482,10 +4510,9 @@ static void *ios_mach_exception_thread( void *arg )
                     }
                     if (emulated)
                     {
-                        /* ml635: record that this alias page was written. FEX's cached
-                         * translation is NOT invalidated here (the ARM64EC path would call
-                         * HandleRWXAccessViolation); this counter is what proves whether a
-                         * page was filled AFTER its translation was compiled. */
+                        /* Record the physical alias write. A logical write trap was
+                         * dispatched above, before touching memory, so FEX can invalidate
+                         * translated guest code and restore logical WRITE first. */
                         {
                             extern void ios_jit_anon_alias_note_write( unsigned long long );
                             ios_jit_anon_alias_note_write( (unsigned long long)fault_addr );
@@ -4500,12 +4527,10 @@ static void *ios_mach_exception_thread( void *arg )
                              * thread, serviced by a single handler running at 86%
                              * duty. That is the largest measured cost in the app.
                              *
-                             * WHY THIS IS SAFER THAN IT LOOKS: the ml635 comment
-                             * in this file records that this path "NEVER
-                             * invalidates FEX's cached translation". So the fault
-                             * buys no coherence TODAY -- it is pure cost. Letting
-                             * the store land directly loses nothing we currently
-                             * have.
+                             * Historical rationale: this path originally never
+                             * dispatched logical write traps to FEX. The gate
+                             * above now preserves those traps; this experimental
+                             * demotion remains opt-in and disabled by default.
                              *
                              * Mechanism: drop PROT_EXEC and add PROT_WRITE on the
                              * guest page. FEX never executes the guest page (it
