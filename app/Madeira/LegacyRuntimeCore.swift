@@ -187,6 +187,15 @@ enum LegacyRuntimePin {
     static let dllSHA256 = "ec63a85030c60716acdcf060abfaa95a6a3528631622fa60e7d17fbea2f751f9"
     static let relativePackage = "madeira-runtime/VC6RedistSetup_deu.exe"
     static let helper = "madeira-runtime-install.exe"
+    /// The initial program becomes a child only while this install is pending.
+    /// Let the existing child-launch path apply its profile arguments once.
+    static func requiresInstallation(prefix: URL) -> Bool {
+        let marker = prefix.appendingPathComponent("drive_c/madeira-runtime/pending-mfc42")
+        guard (try? String(contentsOf: marker, encoding: .utf8)) == sha256 else { return false }
+        let folder = prefix.appendingPathComponent("drive_c/windows/syswow64")
+        guard let file = LegacyRuntimeDependency.matching("mfc42.dll", in: folder) else { return true }
+        return (try? LegacyRuntimePE(url: file).mfc42Exports()) == nil
+    }
     static func allowed(_ url: URL?) -> Bool {
         url?.scheme == "https" && url?.host?.lowercased() == "download.microsoft.com"
             && (url?.port == nil || url?.port == 443) && url?.user == nil && url?.password == nil

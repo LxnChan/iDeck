@@ -38,7 +38,8 @@ for trait in ('smartDashesType', 'smartQuotesType', 'smartInsertDeleteType', 'au
     assert f'field.{trait} = .no' in field
 assert 'for: .editingChanged' in field
 start = content[content.index('private func startLibraryEntry('):content.index('static func reassertBCDSwitches(')]
-assert start.index('entry.configureLaunch()') < start.index('BCDLaunch.appendInitialArguments(entry)') < start.index('library.begin(entry)')
+assert start.index('entry.configureLaunch()') < start.index('BCDLaunch.appendInitialArguments(entry,') < start.index('library.begin(entry)')
+assert 'initialProgramIsChild: LegacyRuntimePin.requiresInstallation(prefix:' in start
 assert bridge.index('LOG("game config env:') < bridge.index('const char *madeira_exe = getenv("MADEIRA_EXE")')
 assert 'child_extra_args( getenv( "MADEIRA_CHILD_ARGS" )' in native
 print('PASS: unified program chooser, literal punctuation, preview and persistent editor wiring')
@@ -247,6 +248,15 @@ func rejects(_ operation: () throws -> Void) {
         setenv("MADEIRA_ARGS", "-existing", 1)
         try BCDLaunch.appendInitialArguments(game)
         check(env("MADEIRA_ARGS") == "-existing " + rule.arguments, "initial game gets appended arguments")
+        setenv("MADEIRA_ARGS", "-existing", 1)
+        try BCDLaunch.appendInitialArguments(game, initialProgramIsChild: true)
+        check(env("MADEIRA_ARGS") == "-existing", "runtime wrapper defers profile arguments to the child")
+        let child = try rule.appending(to: env("MADEIRA_ARGS"), executable: env("MADEIRA_EXE"))
+        check(child == "-existing " + rule.arguments, "original program gets its profile arguments once")
+        let withinBudget = LegacyRuntimePin.wrapped(executable: "abc.exe", arguments: Array(repeating: "-x", count: 59).joined(separator: " "), bits: 32)
+        try ChildLaunchArguments.validateArguments(withinBudget.args, asciiOnly: false)
+        let overBudget = LegacyRuntimePin.wrapped(executable: "abc.exe", arguments: Array(repeating: "-x", count: 60).joined(separator: " "), bits: 32)
+        rejects { try ChildLaunchArguments.validateArguments(overBudget.args, asciiOnly: false) }
         for executable in ["explorer.exe", #"C:\windows\system32\cmd.exe"#, "steam.exe", "other.exe"] {
             setenv("MADEIRA_EXE", executable, 1)
             setenv("MADEIRA_ARGS", "-existing", 1)
@@ -273,6 +283,7 @@ with tempfile.TemporaryDirectory(prefix='ideck-child-args-') as directory:
     executable = folder / 'checks'
     subprocess.run([swiftc, '-parse-as-library', '-swift-version', '5', *files,
                     str(app / 'LibraryPrefs.swift'), str(app / 'LibraryBCD.swift'),
+                    str(app / 'LegacyRuntimeCore.swift'),
                     '-o', str(executable)], check=True)
     subprocess.run([str(executable), str(folder)], check=True)
     for mode in ('write-valid', 'read-valid', 'enable-opengl', 'read-opengl', 'write-draft', 'read-draft',

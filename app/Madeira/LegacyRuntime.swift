@@ -89,7 +89,8 @@ enum LegacyRuntimeLaunch {
         let report = try LegacyRuntimeStorage.destination("drive_c/madeira-runtime/result.txt", prefix: prefix)
         if FileManager.default.fileExists(atPath: report.path) { try FileManager.default.removeItem(at: report) }
         let wrapped = LegacyRuntimePin.wrapped(executable: exe, arguments: args, bits: bits)
-        guard wrapped.args.utf8.count < 4096 else { throw LegacyRuntimeError.message("The launch arguments are too long to prepare the runtime. Import MFC42.DLL manually first.") }
+        do { try ChildLaunchArguments.validateArguments(wrapped.args, asciiOnly: false) }
+        catch { throw LegacyRuntimeError.message("The launch command exceeds the runtime installer's argument limits. Import MFC42.DLL manually first.") }
         let chosen = getenv("MADEIRA_WORKDIR").map { String(cString: $0) }
         if let folder = LegacyRuntimePin.workingDirectory(executable: exe, chosen: chosen) { setenv("MADEIRA_WORKDIR", folder, 1) }
         setenv("MADEIRA_EXE", wrapped.exe, 1); setenv("MADEIRA_ARGS", wrapped.args, 1)

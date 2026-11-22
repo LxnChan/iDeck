@@ -2961,7 +2961,7 @@ struct ContentView: View {
         entry.configureLaunch()
         // madeira-bcd: the game's own options (LibraryBCD.swift).
         BCDLaunch.applyLibrary(entry)
-        do { try BCDLaunch.appendInitialArguments(entry) }
+        do { try BCDLaunch.appendInitialArguments(entry, initialProgramIsChild: LegacyRuntimePin.requiresInstallation(prefix: SteamUIExperiment.runtimePrefix)) }
         catch { library.error = error.localizedDescription; return }
         exportBCDDesktopProfile(entry)
         // This run's log under the program's name too (Documents/logs). A Steam game started

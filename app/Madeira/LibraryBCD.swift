@@ -15,8 +15,10 @@ import Foundation
 enum BCDLaunch {
     /// Direct game starts need the same rule as games created later by Steam.
     /// The actual initial executable keeps desktop/services routes from adding twice.
-    static func appendInitialArguments(_ entry: LibraryEntry) throws {
-        guard entry.desktop != true,
+    static func appendInitialArguments(_ entry: LibraryEntry, initialProgramIsChild: Bool = false) throws {
+        // Runtime preparation starts the original program as a child. Its
+        // normal child-launch path will apply this same rule exactly once.
+        guard !initialProgramIsChild, entry.desktop != true,
               let rule = ChildLaunchArguments(configuration: GameProfile(windowsPath: entry.windowsPath).text),
               let executable = getenv("MADEIRA_EXE"), let arguments = getenv("MADEIRA_ARGS") else { return }
         let original = String(cString: arguments)

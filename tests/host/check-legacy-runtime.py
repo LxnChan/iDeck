@@ -55,6 +55,8 @@ import Foundation
 let args = CommandLine.arguments
 do {
     switch args[1] {
+    case "pending":
+        print(LegacyRuntimePin.requiresInstallation(prefix: URL(fileURLWithPath: args[2])))
     case "inspect":
         let pe = try LegacyRuntimePE(url: URL(fileURLWithPath: args[2]))
         let symbols = try pe.mfc42Imports().sorted()
@@ -129,11 +131,19 @@ def main():
         plugin.write_bytes(pe(imports=True))
         runtime = drive / 'windows/syswow64/MFC42.DLL'; runtime.parent.mkdir(parents=True)
         runtime.write_bytes(pe(exports=True))
+        run('pending', prefix, expected='false')
+        marker = drive / 'madeira-runtime/pending-mfc42'; marker.parent.mkdir()
+        marker.write_text('c2eb91d9c4448d50e46a32fecbcc3b418706d002beab9b5f4981de552098cee7')
+        run('pending', prefix, expected='false')
         run('scan', binary, drive, prefix, expected='satisfied')
         run('scan', other, drive, prefix, expected='satisfied')
         runtime.write_bytes(pe(64, exports=True))
+        run('pending', prefix, expected='true')
         run('scan', binary, drive, prefix, failure=True)
         runtime.unlink()
+        run('pending', prefix, expected='true')
+        marker.write_text('unverified')
+        run('pending', prefix, expected='false')
         # A different/broken application-local DLL must remain a visible conflict.
         (binary.parent / 'mfc42.dll').write_bytes(b'broken existing runtime')
         run('scan', binary, drive, prefix, failure=True)
