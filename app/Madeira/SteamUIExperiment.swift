@@ -1012,6 +1012,9 @@ struct IDeckLauncher: View {
                         Button("Redownload DDI") { jit.redownloadDDI() }
                             .buttonStyle(.bordered).disabled(jit.busy)
                     }
+                    if jit.serviceProblem {
+                        Button("Open JIT Setup") { jit.showSetup = true }
+                    }
                     if let error = state.error { Text(error).foregroundStyle(.orange) }
                     Button(action: start) {
                         Label(jit.busy ? "Enabling JIT…" : (state.bigPictureMode ? "Launch Steam Big Picture" : "Launch Steam (Desktop Mode)"), systemImage: "play.fill")

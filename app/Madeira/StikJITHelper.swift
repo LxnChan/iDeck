@@ -25,7 +25,7 @@ enum StikJITHelper {
             case .timedOut:
                 return "StikDebug did not attach to Madeira within 90 seconds. Check its pairing file and LocalDevVPN, then try again."
             case .builtInTimedOut:
-                return "Madeira's built-in JIT helper did not attach after waiting for the Developer Disk Image. Open JIT setup, check the DDI, pairing and LocalDevVPN, then try again."
+                return "The Developer Disk Image is ready, but Madeira's built-in JIT helper did not attach within 90 seconds. Open JIT setup and check the device's developer services, then try again."
             }
         }
     }

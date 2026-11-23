@@ -39,11 +39,11 @@ private enum StikJIT {
                         "Built-in JIT is available only on a physical device."])
     }
     static func resetCachedDDI(at paths: DDIPaths) throws {}
-    static func downloadDDIIfNeeded(to paths: DDIPaths,
-                                    progress: (Double, String) -> Void) async throws {
+    static func isDDIMounted(pairingFile: URL) throws -> Bool { false }
+    static func mountDDI(pairingFile: URL, paths: DDIPaths,
+                         progress: (Double) -> Void) throws {
         throw NSError(domain: "MadeiraJITHelper", code: 100,
-                      userInfo: [NSLocalizedDescriptionKey:
-                        "Built-in JIT is available only on a physical device."])
+                      userInfo: [NSLocalizedDescriptionKey: "Built-in JIT is available only on a physical device."])
     }
 }
 #endif
@@ -51,6 +51,35 @@ private enum StikJIT {
 private actor MadeiraJITWork {
     static let shared = MadeiraJITWork()
     private var active = false
+    private var stage: MadeiraJITRequest.FailureStage?
+    private var diagnostics: [String] = []
+
+    private func record(_ message: String) {
+        diagnostics.append(message)
+        NSLog("[MadeiraJIT] %@", message)
+    }
+
+    private func response(success: Bool, message: String, txmPresent: Bool?) -> MadeiraJITRequest.Response {
+        .init(success: success, message: message, txmPresent: txmPresent,
+              failureStage: success ? nil : stage, diagnostics: diagnostics)
+    }
+
+    private func preparationProgress(_ progress: StikJIT.PreparationStage) {
+#if targetEnvironment(simulator)
+        stage = .deviceConnection
+#else
+        switch progress {
+        case .checkingReachability: stage = .deviceConnection
+        case .checkingDDI: stage = .ddiCheck
+        case .downloadingDDI: stage = .ddiDownload
+        case .mountingDDI: stage = .ddiMount
+        case .verifyingDDI: stage = .ddiVerification
+        case .ready: stage = .debugServices
+        @unknown default: break
+        }
+#endif
+        record("Preparation stage: \(String(describing: progress))")
+    }
 
     /// One request at a time, as the XPC handler ran them before. The actor can
     /// re-enter while a DDI download awaits, so reject a second request explicitly.
@@ -62,6 +91,8 @@ private actor MadeiraJITWork {
         }
         active = true
         defer { active = false }
+        stage = nil
+        diagnostics = []
 
         let manager = FileManager.default
         let root = manager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
@@ -87,22 +118,11 @@ private actor MadeiraJITWork {
 
             switch request.operation {
             case .prepare:
-                return prepare(pairingURL: pairingURL, paths: paths)
+                return try await prepare(pairingURL: pairingURL, paths: paths,
+                                         root: root, proxy: request.downloadProxy, forceDownload: false)
             case .redownloadDDI:
-                try StikJIT.resetCachedDDI(at: paths)
-                // This target is an app extension, so refine the extension platform's
-                // availability before calling StikJIT's iOS 17.4 download API.
-                if #available(iOSApplicationExtension 17.4, *) {
-                    try await StikJIT.downloadDDIIfNeeded(to: paths) { fraction, status in
-                        NSLog("[MadeiraJIT] redownload: %.0f%% %@", fraction * 100, status)
-                    }
-                } else {
-                    throw NSError(domain: "MadeiraJITHelper", code: 3,
-                                  userInfo: [NSLocalizedDescriptionKey:
-                                    "Developer Disk Image redownload requires iOS 17.4 or later."])
-                }
-                return prepare(pairingURL: pairingURL, paths: paths,
-                               readyMessage: "The Developer Disk Image was downloaded and verified.")
+                return try await prepare(pairingURL: pairingURL, paths: paths,
+                                         root: root, proxy: request.downloadProxy, forceDownload: true)
             case .enable:
                 guard let targetPID = request.targetPID,
                       let scriptBase64 = request.scriptBase64,
@@ -117,9 +137,7 @@ private actor MadeiraJITWork {
                     ddiPaths: paths,
                     script: .customBase64(scriptBase64),
                     forceScript: true,
-                    preparationProgress: {
-                        NSLog("[MadeiraJIT] prepare: %@", String(describing: $0))
-                    },
+                    preparationProgress: { self.preparationProgress($0) },
                     progress: { NSLog("[MadeiraJIT] %@", $0) })
                 return .init(success: true,
                              message: "Madeira detached cleanly from its built-in JIT helper.",
@@ -128,29 +146,57 @@ private actor MadeiraJITWork {
                 preconditionFailure("Handled above")
             }
         } catch {
-            return .init(success: false, message: error.localizedDescription,
-                         txmPresent: StikJIT.isTXMPresent)
+            return response(success: false, message: error.localizedDescription,
+                            txmPresent: StikJIT.isTXMPresent)
         }
     }
 
-    private func prepare(pairingURL: URL, paths: DDIPaths,
-                         readyMessage: String = "LocalDevVPN is reachable and the Developer Disk Image is ready.")
+    private func prepare(pairingURL: URL, paths: DDIPaths, root: URL,
+                         proxy: MadeiraJITRequest.DownloadProxy?, forceDownload: Bool) async throws
         -> MadeiraJITRequest.Response {
-        let readiness = StikJIT.prepareDevice(
-            pairingFile: pairingURL, paths: paths,
-            progress: { NSLog("[MadeiraJIT] prepare: %@", String(describing: $0)) })
-        switch readiness {
-        case .ready(let security):
-            return .init(success: true, message: readyMessage,
-                         txmPresent: security.isTXMPresent)
-        case .unreachable(let reason), .preparationFailed(let reason):
-            return .init(success: false, message: reason,
-                         txmPresent: StikJIT.isTXMPresent)
-        @unknown default:
-            return .init(success: false,
-                         message: "StikJIT returned an unknown preparation state.",
-                         txmPresent: StikJIT.isTXMPresent)
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let cryptex = version.majorVersion > 26 || (version.majorVersion == 26 && version.minorVersion >= 4)
+        let session = URLSession(configuration: DDIDownloader.configuration(proxy: proxy))
+        defer { session.invalidateAndCancel() }
+        let downloader = DDIDownloader(session: session, cryptex: cryptex)
+        let cache = root.appendingPathComponent("DDI", isDirectory: true)
+
+        // A forced download must work even when the device's DDI service is missing.
+        // Ordinary setup can use an already mounted image without any internet access.
+        var mounted = false
+        if !forceDownload {
+            stage = .ddiCheck
+            record("Checking mounted DDI")
+            mounted = try StikJIT.isDDIMounted(pairingFile: pairingURL)
         }
+        if forceDownload || (!mounted && !downloader.cacheUsable(at: cache)) {
+            stage = .ddiDownload
+            record("Downloading DDI (app-proxy=\(proxy == nil ? 0 : 1))")
+            try await downloader.download(to: cache) { message in await self.record(message) }
+        }
+
+        if forceDownload {
+            stage = .ddiCheck
+            record("Checking mounted DDI after downloading replacement files")
+            mounted = try StikJIT.isDDIMounted(pairingFile: pairingURL)
+        }
+
+        if !mounted {
+            stage = .ddiMount
+            record("Installing DDI")
+            try StikJIT.mountDDI(pairingFile: pairingURL, paths: paths) { _ in }
+        }
+        stage = .ddiVerification
+        record("Verifying mounted DDI")
+        guard try StikJIT.isDDIMounted(pairingFile: pairingURL) else {
+            throw NSError(domain: "MadeiraJITHelper", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "The Developer Disk Image was not mounted after the mount operation completed."])
+        }
+        return response(success: true,
+                        message: forceDownload ? "The Developer Disk Image was downloaded and verified."
+                            : "LocalDevVPN is reachable and the Developer Disk Image is ready.",
+                        txmPresent: StikJIT.isTXMPresent)
     }
 }
 

@@ -166,6 +166,12 @@ private final class HelperRequest {
             return
         }
         LogStore.shared.log("[jit-helper] \(operation): finished success=\(response.success ? 1 : 0)")
+        for message in response.diagnostics ?? [] {
+            LogStore.shared.log("[jit-helper] \(operation): \(message)")
+        }
+        if let stage = response.failureStage {
+            LogStore.shared.log("[jit-helper] \(operation): failed-stage=\(stage.rawValue)", level: .error)
+        }
         end(.success(response))
     }
 

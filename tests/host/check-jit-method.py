@@ -147,19 +147,20 @@ problem = setup[setup.index("enum ConnectionProblem"):setup.index("var message: 
 require(problem.index('"connectionreset"') < problem.index("self = .pairing") < problem.index('"connectionrefused"')
         < problem.index('"timedout"') < problem.index("self = .vpn"),
         "a reset connection reads as a rejected pairing; refused, timed out or unreachable as LocalDevVPN")
-require(setup.count("helperFailure(response.message)") == 3,
-        "Check setup, Enable JIT and DDI redownload explain helper failures")
+require(setup.count("helperFailure(response)") == 4,
+        "Check setup, Play preparation, debugger attach and DDI redownload explain helper failures")
 require("enum DDIProblem: Equatable" in setup
         and 'text.contains("failed to download developer disk image")' in setup
         and 'Button("Redownload Developer Disk Image")' in setup
-        and "MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing))" in setup
+        and "MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing, downloadProxy: downloadProxy))" in setup
         and "case redownloadDDI" in messages
-        and "try StikJIT.resetCachedDDI(at: paths)" in helper
-        and "try await StikJIT.downloadDDIIfNeeded(to: paths)" in helper
-        and "#available(iOSApplicationExtension 17.4, *)" in helper,
+        and "try await downloader.download(to: cache)" in helper
+        and "failureStage" in messages and "diagnostics" in messages,
         "DDI failures offer a true cache replacement, download and verification flow")
-require("timeout: 660, timeoutError: .builtInTimedOut" in setup,
-        "Built-in JIT leaves time for DDI preparation without changing StikDebug's timeout")
+require("timeout: 90, timeoutError: .builtInTimedOut" in setup
+        and "attachBuiltIn(pairing: pairing, script: script, completion: completion)"
+        in setup[setup.index("func enableBuiltIn("):setup.index("private func attachBuiltIn(")],
+        "Built-in JIT prepares the DDI before starting its debugger attach timer")
 library_source = (app / "Library.swift").read_text()
 require("if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) { model.error = nil } }" in library_source,
         "the library's JIT error offers Pair Again and LocalDevVPN (or the shortcut)")
@@ -167,7 +168,7 @@ require("if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) 
 # (an alert inside the Library page waited until that tab came back).
 body = library_source[library_source.index('struct LibraryView: View {'):]
 body = body[body.index('    var body: some View {'):body.index('    @ToolbarContentBuilder private var libraryToolbar')]
-require('.alert(jitProblem == nil && jitDDIProblem == nil ? "Library" : "Couldn\'t Enable JIT"' in body,
+require('.alert(jitProblem == nil && jitDDIProblem == nil && !jitServiceProblem ? "Library" : "Couldn\'t Enable JIT"' in body,
         "the library's error alert is on the tab view, shown on the Settings tab as well")
 require('Button("Redownload DDI")' in body and "jit.redownloadDDI()" in body,
         "the library JIT error offers DDI recovery directly")

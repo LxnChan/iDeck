@@ -121,9 +121,22 @@ observer").
 
 If setup reports a Developer Disk Image download, cache, installation or
 verification failure after an iOS update, it identifies that stage and offers
-**Redownload Developer Disk Image**. This removes the helper's cached DDI,
-downloads a complete replacement, installs it and verifies it before reporting
-success.
+**Redownload Developer Disk Image**. This stages a complete replacement before
+replacing the helper's cache, installs it when needed and verifies the mounted
+image before reporting success. An interrupted download keeps the previous cache.
+
+Both setup and redownload use a 120-second idle timeout and a 10-minute transfer
+limit per file. If the GitHub raw-file host fails, Madeira tries GitHub's Contents
+API for the same files. Downloads honor Settings' app HTTP or SOCKS5 proxy;
+LocalDevVPN's device connection does not use that proxy. A download error reports
+the file, attempted hosts and underlying error codes. The exported log also
+records whether a failure occurred while checking, downloading, installing or
+verifying the DDI, or while connecting the debugger after preparation succeeded.
+
+Play finishes DDI preparation before starting its 90-second debugger attach timer.
+`ServiceNotFound` after successful DDI preparation is reported as an unavailable
+developer/debugging service, not as a failed download. Downloading again does not
+guarantee compatibility with a new iOS debugging service.
 
 If the device resets the connection, it no longer accepts the pairing (each
 in-app pairing replaces the last), so Madeira offers **Pair Again**. If the

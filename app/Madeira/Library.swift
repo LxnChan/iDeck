@@ -2653,6 +2653,7 @@ struct LibraryView: View {
     private var jitDDIProblem: JITCoordinator.DDIProblem? {
         jit.ddiProblem.flatMap { model.error == $0.message ? $0 : nil }
     }
+    private var jitServiceProblem: Bool { jit.serviceProblem && model.error == jit.error }
     @State private var browser = false
     @State private var selected: LibraryEntry?
     @State private var search = ""
@@ -2768,7 +2769,7 @@ struct LibraryView: View {
         // On the tab view, not inside one tab's page: an alert attached to the Library
         // page cannot present while Settings is showing, so an error raised there (its
         // Enable JIT, for one) waited until the Library tab came back.
-        .alert(jitProblem == nil && jitDDIProblem == nil ? "Library" : "Couldn't Enable JIT",
+        .alert(jitProblem == nil && jitDDIProblem == nil && !jitServiceProblem ? "Library" : "Couldn't Enable JIT",
                isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) { model.error = nil } }
             if jitDDIProblem != nil {
@@ -2777,6 +2778,9 @@ struct LibraryView: View {
                     jit.showSetup = true
                     jit.redownloadDDI()
                 }
+            }
+            if jitServiceProblem {
+                Button("Open JIT Setup") { model.error = nil; jit.showSetup = true }
             }
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }

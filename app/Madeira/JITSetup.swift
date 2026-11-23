@@ -132,12 +132,14 @@ final class JITCoordinator: ObservableObject {
         case setupRequired(String)
         case pairingMissing
         case scriptMissing
+        case busy
 
         var errorDescription: String? {
             switch self {
             case .setupRequired(let message): return message
             case .pairingMissing: return "Pair this device or import its pairing file first."
             case .scriptMissing: return "Madeira's JIT script is missing from this installation. Reinstall Madeira."
+            case .busy: return "A JIT setup operation is already in progress. Wait for it to finish, then try again."
             }
         }
     }
@@ -182,7 +184,7 @@ final class JITCoordinator: ObservableObject {
         case mount(String)
         case verification(String)
 
-        init?(helperMessage: String) {
+        init?(helperMessage: String, stage: MadeiraJITRequest.FailureStage? = nil) {
             let message = helperMessage
                 .replacingOccurrences(of: "The device is not ready for JIT: ", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -191,7 +193,7 @@ final class JITCoordinator: ObservableObject {
                 guard let range = message.range(of: prefix, options: .caseInsensitive) else { return message }
                 return String(message[range.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ."))
             }
-            if text.contains("failed to download developer disk image") {
+            if stage == .ddiDownload || text.contains("failed to download developer disk image") {
                 self = .download(detail(after: "Failed to download Developer Disk Image:"))
             } else if text.contains("developer disk image files missing")
                         || text.contains("ddi cryptex assets could not be loaded") {
@@ -201,6 +203,10 @@ final class JITCoordinator: ObservableObject {
                 self = .mount(message)
             } else if text.contains("developer disk image was not mounted")
                         || text.contains("failed to query installed ddi cryptex") {
+                self = .verification(message)
+            } else if stage == .ddiMount {
+                self = .mount(message)
+            } else if stage == .ddiCheck || stage == .ddiVerification {
                 self = .verification(message)
             } else {
                 return nil
@@ -217,7 +223,7 @@ final class JITCoordinator: ObservableObject {
             case .mount(let detail):
                 return "The Developer Disk Image could not be installed on this device (\(detail)). Redownload the DDI, then try again."
             case .verification(let detail):
-                return "The Developer Disk Image could not be verified after installation (\(detail)). Redownload the DDI, then try again."
+                return "The device's Developer Disk Image readiness check failed (\(detail)). Redownload the DDI, then check setup again. If the service is still unavailable, the device's developer services need further diagnosis."
             }
         }
     }
@@ -227,6 +233,7 @@ final class JITCoordinator: ObservableObject {
     }
     @Published private(set) var connectionProblem: ConnectionProblem?
     @Published private(set) var ddiProblem: DDIProblem?
+    @Published private(set) var serviceProblem = false
     /// What the last loopback check found (nil: none ran). A JIT failure after it found no
     /// lockdownd is a LocalDevVPN problem whatever the helper's message says: a network
     /// that accepts any connection makes the helper's read end early ("early eof").
@@ -261,6 +268,7 @@ final class JITCoordinator: ObservableObject {
     }
 
     func enable(completion: @escaping (Result<Void, Error>) -> Void) {
+        guard !busy else { completion(.failure(CoordinatorError.busy)); return }
         guard SigningStatus.current.debuggable else {
             completion(.failure(NSError(
                 domain: "MadeiraJIT", code: 11,
@@ -275,6 +283,7 @@ final class JITCoordinator: ObservableObject {
         status = nil
         connectionProblem = nil
         ddiProblem = nil
+        serviceProblem = false
         ensureLoopback(then: { [weak self] restoreOnFailure in
             self?.enableResolved { result in
                 // Nothing will hold the network open now: put back what the shortcut changed.
@@ -412,6 +421,7 @@ final class JITCoordinator: ObservableObject {
     }
 
     func prepareBuiltIn() {
+        guard !busy else { return }
         guard SigningStatus.current.debuggable else {
             error = SigningStatus.notDebuggableMessage
             return
@@ -428,15 +438,16 @@ final class JITCoordinator: ObservableObject {
         error = nil
         connectionProblem = nil
         ddiProblem = nil
+        serviceProblem = false
         status = "Checking LocalDevVPN and the Developer Disk Image…"
-        MadeiraBuiltInJIT.send(.prepare(pairingData: pairing)) { [weak self] result in
+        MadeiraBuiltInJIT.send(.prepare(pairingData: pairing, downloadProxy: downloadProxy)) { [weak self] result in
             guard let self else { return }
             busy = false
             switch result {
             case .success(let response):
                 txmPresent = response.txmPresent
                 status = response.success ? response.message : nil
-                error = response.success ? nil : helperFailure(response.message)
+                error = response.success ? nil : helperFailure(response)
             case .failure(let failure):
                 error = failure.localizedDescription
             }
@@ -444,6 +455,7 @@ final class JITCoordinator: ObservableObject {
     }
 
     func enableBuiltIn(completion: @escaping (Result<Void, Error>) -> Void = { _ in }) {
+        guard !busy else { completion(.failure(CoordinatorError.busy)); return }
         guard MadeiraBuiltInJIT.isAvailable else {
             let failure = NSError(
                 domain: "MadeiraJIT", code: 12,
@@ -466,9 +478,37 @@ final class JITCoordinator: ObservableObject {
 
         busy = true
         error = nil
-        status = "Starting Madeira's JIT helper…"
+        status = "Preparing the Developer Disk Image for JIT…"
         connectionProblem = nil
         ddiProblem = nil
+        serviceProblem = false
+        // Download and verify before starting the debugger's attach timer. The
+        // preparation request returns detailed network failures even on slow links.
+        MadeiraBuiltInJIT.send(.prepare(pairingData: pairing, downloadProxy: downloadProxy)) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let response) where response.success:
+                txmPresent = response.txmPresent
+                attachBuiltIn(pairing: pairing, script: script, completion: completion)
+            case .success(let response):
+                busy = false
+                status = nil
+                let message = helperFailure(response)
+                error = message
+                completion(.failure(NSError(domain: "MadeiraJIT", code: 13,
+                                            userInfo: [NSLocalizedDescriptionKey: message])))
+            case .failure(let failure):
+                busy = false
+                status = nil
+                error = failure.localizedDescription
+                completion(.failure(failure))
+            }
+        }
+    }
+
+    private func attachBuiltIn(pairing: Data, script: Data,
+                               completion: @escaping (Result<Void, Error>) -> Void) {
+        status = "Starting Madeira's JIT helper…"
         var readinessTimer: Timer?
         var readinessFinished = false
         MadeiraBuiltInJIT.send(
@@ -476,11 +516,8 @@ final class JITCoordinator: ObservableObject {
                     scriptBase64: script.base64EncodedString()),
             started: { [weak self] in
                 self?.status = "Waiting for Madeira's JIT helper to attach…"
-                // A fresh DDI download can legitimately outlive StikDebug's 90-second
-                // attach window. The helper still returns download and mount failures
-                // immediately, before this longer safety timeout.
                 readinessTimer = StikJITHelper.waitForDebugger(
-                    timeout: 660, timeoutError: .builtInTimedOut) { [weak self] result in
+                    timeout: 90, timeoutError: .builtInTimedOut) { [weak self] result in
                     guard !readinessFinished else { return }
                     readinessFinished = true
                     self?.busy = false
@@ -504,7 +541,7 @@ final class JITCoordinator: ObservableObject {
                         readinessFinished = true
                         readinessTimer?.invalidate()
                         busy = false
-                        let message = helperFailure(response.message)
+                        let message = helperFailure(response)
                         error = message
                         completion(.failure(NSError(
                             domain: "MadeiraJIT", code: 13,
@@ -524,13 +561,25 @@ final class JITCoordinator: ObservableObject {
 
     /// The helper's failure as shown: a connection problem gets its plain explanation
     /// (the helper's own message is already in the log).
-    private func helperFailure(_ message: String) -> String {
-        if let problem = DDIProblem(helperMessage: message) {
+    private func helperFailure(_ response: MadeiraJITRequest.Response) -> String {
+        let message = response.message
+        serviceProblem = response.failureStage == .debugServices && message.contains("ServiceNotFound")
+        if response.failureStage != .ddiDownload, let problem = ConnectionProblem(helperMessage: message) {
+            connectionProblem = problem
+            ddiProblem = nil
+            serviceProblem = false
+            return problem.message
+        }
+        if let problem = DDIProblem(helperMessage: message, stage: response.failureStage) {
             ddiProblem = problem
             connectionProblem = nil
             return problem.message
         }
         ddiProblem = nil
+        if serviceProblem {
+            connectionProblem = nil
+            return "The DDI preparation completed, but a required JIT debugging service is unavailable (\(message)). Open JIT setup and check the device's developer services."
+        }
         connectionProblem = ConnectionProblem(helperMessage: message) ?? (loopbackAnswered == false ? .vpn : nil)
         return connectionProblem?.message ?? message
     }
@@ -552,6 +601,7 @@ final class JITCoordinator: ObservableObject {
     }
 
     func redownloadDDI() {
+        guard !busy else { return }
         guard SigningStatus.current.debuggable else {
             error = SigningStatus.notDebuggableMessage
             return
@@ -569,7 +619,8 @@ final class JITCoordinator: ObservableObject {
         status = "Redownloading the Developer Disk Image…"
         connectionProblem = nil
         ddiProblem = nil
-        MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing)) { [weak self] result in
+        serviceProblem = false
+        MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing, downloadProxy: downloadProxy)) { [weak self] result in
             guard let self else { return }
             busy = false
             switch result {
@@ -578,12 +629,19 @@ final class JITCoordinator: ObservableObject {
                 LogStore.shared.log("[jit-built-in] redownload: \(response.message)",
                                     level: response.success ? .success : .error)
                 status = response.success ? response.message : nil
-                error = response.success ? nil : helperFailure(response.message)
+                error = response.success ? nil : helperFailure(response)
             case .failure(let failure):
                 status = nil
                 error = failure.localizedDescription
             }
         }
+    }
+
+    private var downloadProxy: MadeiraJITRequest.DownloadProxy? {
+        let proxy = NetworkProxySettings.shared
+        guard proxy.isAppActive, (1...65535).contains(proxy.port) else { return nil }
+        return .init(host: proxy.cleanHost, port: proxy.port,
+                     socks5: proxy.type == NetworkProxyType.socks5.rawValue)
     }
 }
 

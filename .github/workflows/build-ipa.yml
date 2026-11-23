@@ -98,6 +98,8 @@ jobs:
           echo "::group::Release and launch policy"
           python3 -B -m unittest discover -s tests/release -p 'test_*.py'
           python3 -B tests/host/check-development-signing.py
+          python3 -B tests/host/check-jit-ddi-download.py --require-swift
+          python3 -B tests/host/check-jit-method.py
           python3 -B tests/host/check-library-sections.py
           python3 -B tests/host/check-ideck.py
           python3 -B tests/host/check-config-catalog.py
