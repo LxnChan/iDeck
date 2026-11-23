@@ -155,7 +155,8 @@ require("enum DDIProblem: Equatable" in setup
         and "MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing))" in setup
         and "case redownloadDDI" in messages
         and "try StikJIT.resetCachedDDI(at: paths)" in helper
-        and "try await StikJIT.downloadDDIIfNeeded(to: paths)" in helper,
+        and "try await StikJIT.downloadDDIIfNeeded(to: paths)" in helper
+        and "#available(iOSApplicationExtension 17.4, *)" in helper,
         "DDI failures offer a true cache replacement, download and verification flow")
 require("timeout: 660, timeoutError: .builtInTimedOut" in setup,
         "Built-in JIT leaves time for DDI preparation without changing StikDebug's timeout")

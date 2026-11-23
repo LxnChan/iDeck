@@ -90,7 +90,9 @@ private actor MadeiraJITWork {
                 return prepare(pairingURL: pairingURL, paths: paths)
             case .redownloadDDI:
                 try StikJIT.resetCachedDDI(at: paths)
-                if #available(iOS 17.4, *) {
+                // This target is an app extension, so refine the extension platform's
+                // availability before calling StikJIT's iOS 17.4 download API.
+                if #available(iOSApplicationExtension 17.4, *) {
                     try await StikJIT.downloadDDIIfNeeded(to: paths) { fraction, status in
                         NSLog("[MadeiraJIT] redownload: %.0f%% %@", fraction * 100, status)
                     }
