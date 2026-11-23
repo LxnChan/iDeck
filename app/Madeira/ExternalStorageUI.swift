@@ -6,12 +6,36 @@ import UniformTypeIdentifiers
 
 struct ExternalStorageIndicator: View {
     @ObservedObject private var storage = ExternalStorage.shared
+    @State private var showingStatus = false
     var body: some View {
         if let status = storage.connectionIndicator {
-            Image(systemName: "externaldrive.fill")
-                .foregroundStyle(color(status))
-                .accessibilityLabel(status.label)
-                .help(status.label)
+            Button {
+                storage.refresh()
+                showingStatus.toggle()
+            } label: {
+                Image(systemName: "externaldrive.fill")
+                    .foregroundStyle(color(status))
+                    .frame(minWidth: 32, minHeight: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(status.label)
+            .accessibilityHint("Show external storage status")
+            .popover(isPresented: $showingStatus, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("External storage").font(.headline)
+                    Text(status.label).foregroundStyle(color(status))
+                    let enabled = storage.records.filter(\.enabled)
+                    let connected = enabled.filter { storage.statuses[$0.id]?.ready == true }.count
+                    Text("\(connected) of \(enabled.count) external folders connected")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+                .padding(16)
+                .frame(idealWidth: 280, maxWidth: 300, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .presentationCompactAdaptation(.popover)
+            }
         }
     }
     private func color(_ status: ExternalStorage.ConnectionIndicator) -> Color {

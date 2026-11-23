@@ -1479,17 +1479,38 @@ enum LibraryBuildIdentity {
 struct LibraryTitleText: View {
     @ObservedObject private var alignment = LibraryHeaderAlignment.shared
     @ObservedObject private var jitState = LibraryJITState.shared
+    @State private var showingJITStatus = false
     var body: some View {
         let jit = jitState.enabled
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(LibraryHeaderAlignment.title).accessibilityAddTraits(.isHeader)
-                Image(systemName: jit ? "bolt.fill" : "bolt")
-                    .font(.system(size: LibraryHeaderAlignment.titleFont().pointSize * 0.53, weight: .thin))
-                    .foregroundStyle(jit ? Color.accentColor : Color.primary)
-                    .contentTransition(.symbolEffect(.replace))
-                    .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
-                    .accessibilityLabel(jit ? "JIT enabled" : "JIT not enabled")
+                Button {
+                    jitState.refresh()
+                    showingJITStatus.toggle()
+                } label: {
+                    Image(systemName: jit ? "bolt.fill" : "bolt")
+                        .font(.system(size: LibraryHeaderAlignment.titleFont().pointSize * 0.53, weight: .thin))
+                        .foregroundStyle(jit ? Color.accentColor : Color.primary)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(minWidth: 32, minHeight: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
+                .accessibilityLabel(jit ? "JIT enabled" : "JIT not enabled")
+                .accessibilityHint("Show JIT status")
+                .popover(isPresented: $showingJITStatus, arrowEdge: .top) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(jit ? "JIT enabled" : "JIT not enabled").font(.headline)
+                        Text(jit ? "JIT is ready for game launches." : "Enable JIT before starting a game.")
+                    }
+                    .font(.subheadline)
+                    .padding(16)
+                    .frame(idealWidth: 280, maxWidth: 300, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .presentationCompactAdaptation(.popover)
+                }
                 ExternalStorageIndicator()
                     .font(.system(size: LibraryHeaderAlignment.titleFont().pointSize * 0.53))
                     .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + LibraryHeaderAlignment.titleFont().capHeight / 2 }
