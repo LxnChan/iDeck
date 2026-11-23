@@ -90,8 +90,14 @@ private actor MadeiraJITWork {
                 return prepare(pairingURL: pairingURL, paths: paths)
             case .redownloadDDI:
                 try StikJIT.resetCachedDDI(at: paths)
-                try await StikJIT.downloadDDIIfNeeded(to: paths) { fraction, status in
-                    NSLog("[MadeiraJIT] redownload: %.0f%% %@", fraction * 100, status)
+                if #available(iOS 17.4, *) {
+                    try await StikJIT.downloadDDIIfNeeded(to: paths) { fraction, status in
+                        NSLog("[MadeiraJIT] redownload: %.0f%% %@", fraction * 100, status)
+                    }
+                } else {
+                    throw NSError(domain: "MadeiraJITHelper", code: 3,
+                                  userInfo: [NSLocalizedDescriptionKey:
+                                    "Developer Disk Image redownload requires iOS 17.4 or later."])
                 }
                 return prepare(pairingURL: pairingURL, paths: paths,
                                readyMessage: "The Developer Disk Image was downloaded and verified.")
