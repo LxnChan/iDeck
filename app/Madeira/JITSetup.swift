@@ -173,10 +173,60 @@ final class JITCoordinator: ObservableObject {
         }
     }
 
+    /// A Developer Disk Image failure that can be recovered by replacing the
+    /// helper's cached files. Keep the underlying detail for diagnostics while
+    /// giving every JIT entry point the same actionable recovery message.
+    enum DDIProblem: Equatable {
+        case download(String)
+        case files(String)
+        case mount(String)
+        case verification(String)
+
+        init?(helperMessage: String) {
+            let message = helperMessage
+                .replacingOccurrences(of: "The device is not ready for JIT: ", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = message.lowercased()
+            func detail(after prefix: String) -> String {
+                guard let range = message.range(of: prefix, options: .caseInsensitive) else { return message }
+                return String(message[range.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+            }
+            if text.contains("failed to download developer disk image") {
+                self = .download(detail(after: "Failed to download Developer Disk Image:"))
+            } else if text.contains("developer disk image files missing")
+                        || text.contains("ddi cryptex assets could not be loaded") {
+                self = .files(message)
+            } else if text.contains("failed to install ddi cryptex")
+                        || text.contains("failed to mount personalized developer disk image") {
+                self = .mount(message)
+            } else if text.contains("developer disk image was not mounted")
+                        || text.contains("failed to query installed ddi cryptex") {
+                self = .verification(message)
+            } else {
+                return nil
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .download(let detail):
+                let reason = detail.isEmpty ? "The network request did not complete." : detail
+                return "The Developer Disk Image download failed: \(reason). Check your internet connection, then redownload the DDI."
+            case .files(let detail):
+                return "The cached Developer Disk Image is missing or incomplete (\(detail)). Redownload the DDI, then try again."
+            case .mount(let detail):
+                return "The Developer Disk Image could not be installed on this device (\(detail)). Redownload the DDI, then try again."
+            case .verification(let detail):
+                return "The Developer Disk Image could not be verified after installation (\(detail)). Redownload the DDI, then try again."
+            }
+        }
+    }
+
     @Published var method: JITMethod {
         didSet { UserDefaults.standard.set(method.rawValue, forKey: "madeiraJITMethod") }
     }
     @Published private(set) var connectionProblem: ConnectionProblem?
+    @Published private(set) var ddiProblem: DDIProblem?
     /// What the last loopback check found (nil: none ran). A JIT failure after it found no
     /// lockdownd is a LocalDevVPN problem whatever the helper's message says: a network
     /// that accepts any connection makes the helper's read end early ("early eof").
@@ -224,6 +274,7 @@ final class JITCoordinator: ObservableObject {
         error = nil
         status = nil
         connectionProblem = nil
+        ddiProblem = nil
         ensureLoopback(then: { [weak self] restoreOnFailure in
             self?.enableResolved { result in
                 // Nothing will hold the network open now: put back what the shortcut changed.
@@ -376,6 +427,7 @@ final class JITCoordinator: ObservableObject {
         busy = true
         error = nil
         connectionProblem = nil
+        ddiProblem = nil
         status = "Checking LocalDevVPN and the Developer Disk Image…"
         MadeiraBuiltInJIT.send(.prepare(pairingData: pairing)) { [weak self] result in
             guard let self else { return }
@@ -415,6 +467,8 @@ final class JITCoordinator: ObservableObject {
         busy = true
         error = nil
         status = "Starting Madeira's JIT helper…"
+        connectionProblem = nil
+        ddiProblem = nil
         var readinessTimer: Timer?
         var readinessFinished = false
         MadeiraBuiltInJIT.send(
@@ -422,7 +476,11 @@ final class JITCoordinator: ObservableObject {
                     scriptBase64: script.base64EncodedString()),
             started: { [weak self] in
                 self?.status = "Waiting for Madeira's JIT helper to attach…"
-                readinessTimer = StikJITHelper.waitForDebugger { [weak self] result in
+                // A fresh DDI download can legitimately outlive StikDebug's 90-second
+                // attach window. The helper still returns download and mount failures
+                // immediately, before this longer safety timeout.
+                readinessTimer = StikJITHelper.waitForDebugger(
+                    timeout: 660, timeoutError: .builtInTimedOut) { [weak self] result in
                     guard !readinessFinished else { return }
                     readinessFinished = true
                     self?.busy = false
@@ -467,6 +525,12 @@ final class JITCoordinator: ObservableObject {
     /// The helper's failure as shown: a connection problem gets its plain explanation
     /// (the helper's own message is already in the log).
     private func helperFailure(_ message: String) -> String {
+        if let problem = DDIProblem(helperMessage: message) {
+            ddiProblem = problem
+            connectionProblem = nil
+            return problem.message
+        }
+        ddiProblem = nil
         connectionProblem = ConnectionProblem(helperMessage: message) ?? (loopbackAnswered == false ? .vpn : nil)
         return connectionProblem?.message ?? message
     }
@@ -483,6 +547,41 @@ final class JITCoordinator: ObservableObject {
                 self?.error = response.success ? nil : response.message
             case .failure(let failure):
                 self?.error = failure.localizedDescription
+            }
+        }
+    }
+
+    func redownloadDDI() {
+        guard SigningStatus.current.debuggable else {
+            error = SigningStatus.notDebuggableMessage
+            return
+        }
+        guard MadeiraBuiltInJIT.isAvailable else {
+            error = MadeiraBuiltInJIT.unavailableReason
+            return
+        }
+        guard let pairing = try? JITPairingFileStore.data() else {
+            error = CoordinatorError.pairingMissing.localizedDescription
+            return
+        }
+        busy = true
+        error = nil
+        status = "Redownloading the Developer Disk Image…"
+        connectionProblem = nil
+        ddiProblem = nil
+        MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing)) { [weak self] result in
+            guard let self else { return }
+            busy = false
+            switch result {
+            case .success(let response):
+                txmPresent = response.txmPresent
+                LogStore.shared.log("[jit-built-in] redownload: \(response.message)",
+                                    level: response.success ? .success : .error)
+                status = response.success ? response.message : nil
+                error = response.success ? nil : helperFailure(response.message)
+            case .failure(let failure):
+                status = nil
+                error = failure.localizedDescription
             }
         }
     }
@@ -644,9 +743,9 @@ struct JITSetupView: View {
                             .disabled(coordinator.busy || !coordinator.pairingImported)
                         Button("Enable JIT") { coordinator.enableBuiltIn() }
                             .disabled(coordinator.busy || !coordinator.pairingImported)
-                        Button("Reset Developer Disk Image", role: .destructive) {
-                            coordinator.resetDDI()
-                        }.disabled(coordinator.busy)
+                        Button("Redownload Developer Disk Image") {
+                            coordinator.redownloadDDI()
+                        }.disabled(coordinator.busy || !coordinator.pairingImported)
                     }
                 } else {
                     Section {
@@ -667,6 +766,9 @@ struct JITSetupView: View {
                     Section {
                         Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
                         if let problem = coordinator.connectionProblem { jitConnectionActions(problem) }
+                        if coordinator.ddiProblem != nil {
+                            Button("Redownload Developer Disk Image") { coordinator.redownloadDDI() }
+                        }
                     }
                 } else if let status = coordinator.status {
                     Section { Label(status, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }

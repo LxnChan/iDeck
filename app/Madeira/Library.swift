@@ -2650,6 +2650,9 @@ struct LibraryView: View {
     private var jitProblem: JITCoordinator.ConnectionProblem? {
         jit.connectionProblem.flatMap { model.error == $0.message ? $0 : nil }
     }
+    private var jitDDIProblem: JITCoordinator.DDIProblem? {
+        jit.ddiProblem.flatMap { model.error == $0.message ? $0 : nil }
+    }
     @State private var browser = false
     @State private var selected: LibraryEntry?
     @State private var search = ""
@@ -2765,9 +2768,16 @@ struct LibraryView: View {
         // On the tab view, not inside one tab's page: an alert attached to the Library
         // page cannot present while Settings is showing, so an error raised there (its
         // Enable JIT, for one) waited until the Library tab came back.
-        .alert(jitProblem == nil ? "Library" : "Couldn't Enable JIT",
+        .alert(jitProblem == nil && jitDDIProblem == nil ? "Library" : "Couldn't Enable JIT",
                isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) { model.error = nil } }
+            if jitDDIProblem != nil {
+                Button("Redownload DDI") {
+                    model.error = nil
+                    jit.showSetup = true
+                    jit.redownloadDDI()
+                }
+            }
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
         .alert("Proxy Connection Failed", isPresented: $networkChecker.showDisableProxyAlert) {

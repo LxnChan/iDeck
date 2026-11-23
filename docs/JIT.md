@@ -119,8 +119,11 @@ rename: its extension point is named in files sideloaders do not rewrite, so
 iOS registers none for the renamed Madeira and the lookup fails ("Failed to add
 observer").
 
-If setup reports stale Developer Disk Image data after an iOS update, use
-**Reset Developer Disk Image**, then **Check setup** again.
+If setup reports a Developer Disk Image download, cache, installation or
+verification failure after an iOS update, it identifies that stage and offers
+**Redownload Developer Disk Image**. This removes the helper's cached DDI,
+downloads a complete replacement, installs it and verifies it before reporting
+success.
 
 If the device resets the connection, it no longer accepts the pairing (each
 in-app pairing replaces the last), so Madeira offers **Pair Again**. If the

@@ -39,14 +39,30 @@ private enum StikJIT {
                         "Built-in JIT is available only on a physical device."])
     }
     static func resetCachedDDI(at paths: DDIPaths) throws {}
+    static func downloadDDIIfNeeded(to paths: DDIPaths,
+                                    progress: (Double, String) -> Void) async throws {
+        throw NSError(domain: "MadeiraJITHelper", code: 100,
+                      userInfo: [NSLocalizedDescriptionKey:
+                        "Built-in JIT is available only on a physical device."])
+    }
 }
 #endif
 
-private enum MadeiraJITWork {
-    /// One request at a time, as the XPC handler ran them before.
-    static let queue = DispatchQueue(label: "com.willfaust.madeora.jit-helper")
+private actor MadeiraJITWork {
+    static let shared = MadeiraJITWork()
+    private var active = false
 
-    static func handle(_ request: MadeiraJITRequest) -> MadeiraJITRequest.Response {
+    /// One request at a time, as the XPC handler ran them before. The actor can
+    /// re-enter while a DDI download awaits, so reject a second request explicitly.
+    func handle(_ request: MadeiraJITRequest) async -> MadeiraJITRequest.Response {
+        guard !active else {
+            return .init(success: false,
+                         message: "Madeira's JIT helper is already handling another request.",
+                         txmPresent: StikJIT.isTXMPresent)
+        }
+        active = true
+        defer { active = false }
+
         let manager = FileManager.default
         let root = manager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("StikJIT", isDirectory: true)
@@ -71,22 +87,14 @@ private enum MadeiraJITWork {
 
             switch request.operation {
             case .prepare:
-                let readiness = StikJIT.prepareDevice(
-                    pairingFile: pairingURL, paths: paths,
-                    progress: { NSLog("[MadeiraJIT] prepare: %@", String(describing: $0)) })
-                switch readiness {
-                case .ready(let security):
-                    return .init(success: true,
-                                 message: "LocalDevVPN is reachable and the Developer Disk Image is ready.",
-                                 txmPresent: security.isTXMPresent)
-                case .unreachable(let reason), .preparationFailed(let reason):
-                    return .init(success: false, message: reason,
-                                 txmPresent: StikJIT.isTXMPresent)
-                @unknown default:
-                    return .init(success: false,
-                                 message: "StikJIT returned an unknown preparation state.",
-                                 txmPresent: StikJIT.isTXMPresent)
+                return prepare(pairingURL: pairingURL, paths: paths)
+            case .redownloadDDI:
+                try StikJIT.resetCachedDDI(at: paths)
+                try await StikJIT.downloadDDIIfNeeded(to: paths) { fraction, status in
+                    NSLog("[MadeiraJIT] redownload: %.0f%% %@", fraction * 100, status)
                 }
+                return prepare(pairingURL: pairingURL, paths: paths,
+                               readyMessage: "The Developer Disk Image was downloaded and verified.")
             case .enable:
                 guard let targetPID = request.targetPID,
                       let scriptBase64 = request.scriptBase64,
@@ -116,6 +124,26 @@ private enum MadeiraJITWork {
                          txmPresent: StikJIT.isTXMPresent)
         }
     }
+
+    private func prepare(pairingURL: URL, paths: DDIPaths,
+                         readyMessage: String = "LocalDevVPN is reachable and the Developer Disk Image is ready.")
+        -> MadeiraJITRequest.Response {
+        let readiness = StikJIT.prepareDevice(
+            pairingFile: pairingURL, paths: paths,
+            progress: { NSLog("[MadeiraJIT] prepare: %@", String(describing: $0)) })
+        switch readiness {
+        case .ready(let security):
+            return .init(success: true, message: readyMessage,
+                         txmPresent: security.isTXMPresent)
+        case .unreachable(let reason), .preparationFailed(let reason):
+            return .init(success: false, message: reason,
+                         txmPresent: StikJIT.isTXMPresent)
+        @unknown default:
+            return .init(success: false,
+                         message: "StikJIT returned an unknown preparation state.",
+                         txmPresent: StikJIT.isTXMPresent)
+        }
+    }
 }
 
 /// NSExtensionPrincipalClass (Info.plist). The request arrives as JSON in the first input
@@ -127,10 +155,10 @@ final class MadeiraJITHelperHandler: NSObject, NSExtensionRequestHandling {
     func beginRequest(with context: NSExtensionContext) {
         let info = (context.inputItems.first as? NSExtensionItem)?.userInfo
         let data = info?[MadeiraJITRequest.itemKey] as? Data
-        MadeiraJITWork.queue.async {
+        Task {
             let response: MadeiraJITRequest.Response
             if let data, let request = try? JSONDecoder().decode(MadeiraJITRequest.self, from: data) {
-                response = MadeiraJITWork.handle(request)
+                response = await MadeiraJITWork.shared.handle(request)
             } else {
                 response = .init(success: false, message: "Madeira's JIT helper received no request.",
                                  txmPresent: nil)

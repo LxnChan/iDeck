@@ -48,8 +48,9 @@ require('Bundle.main.url(forResource: "madeira-jit", withExtension: "js")' in st
         and "private static let scriptBase64" not in stik,
         "the bundled JavaScript file is the single script source")
 wait = function(stik, "static func waitForDebugger(")
-require("timeout: TimeInterval = 90" in wait and "if ready {" in wait,
-        "StikDebug attach has a finite 90-second readiness timeout")
+require("timeout: TimeInterval = 90" in wait and "timeoutError: RequestError = .timedOut" in wait
+        and "if ready {" in wait,
+        "StikDebug attach has a finite 90-second readiness timeout and a method-specific error")
 ready = function(stik, "static var ready: Bool")
 # ml1235 (local): `ready` reads CS_DEBUGGED through SigningStatus.current.debugged,
 # the same csops query without jit_check_debugged's log line (the library polls
@@ -135,9 +136,10 @@ require(helper_plist["CFBundlePackageType"] == "XPC!" and "EXAppExtensionAttribu
         "the helper is a classic app extension in PlugIns, as LiveContainer's LiveProcess")
 project = (root / "app/Madeira.xcodeproj/project.pbxproj").read_text()
 helper_source = (root / "app/MadeiraJITHelper/MadeiraJITHelper.swift").read_text()
+base_identifiers = re.findall(r"MADEIRA_BUNDLE_IDENTIFIER = ([^;]+);", project)
 require(project.count('PRODUCT_BUNDLE_IDENTIFIER = "$(MADEIRA_BUNDLE_IDENTIFIER)";') == 2
         and project.count('PRODUCT_BUNDLE_IDENTIFIER = "$(MADEIRA_BUNDLE_IDENTIFIER).JITHelper";') == 2
-        and project.count("MADEIRA_BUNDLE_IDENTIFIER = com.kuschqin.madeira.steamui;") == 2
+        and len(base_identifiers) == 2 and len(set(base_identifiers)) == 1
         and "AppExtensionPoint" not in helper_source,
         "one setting, MADEIRA_BUNDLE_IDENTIFIER, names the app and the helper")
 
@@ -145,8 +147,18 @@ problem = setup[setup.index("enum ConnectionProblem"):setup.index("var message: 
 require(problem.index('"connectionreset"') < problem.index("self = .pairing") < problem.index('"connectionrefused"')
         < problem.index('"timedout"') < problem.index("self = .vpn"),
         "a reset connection reads as a rejected pairing; refused, timed out or unreachable as LocalDevVPN")
-require(setup.count("helperFailure(response.message)") == 2,
-        "Check setup and Enable JIT both explain connection problems")
+require(setup.count("helperFailure(response.message)") == 3,
+        "Check setup, Enable JIT and DDI redownload explain helper failures")
+require("enum DDIProblem: Equatable" in setup
+        and 'text.contains("failed to download developer disk image")' in setup
+        and 'Button("Redownload Developer Disk Image")' in setup
+        and "MadeiraBuiltInJIT.send(.redownloadDDI(pairingData: pairing))" in setup
+        and "case redownloadDDI" in messages
+        and "try StikJIT.resetCachedDDI(at: paths)" in helper
+        and "try await StikJIT.downloadDDIIfNeeded(to: paths)" in helper,
+        "DDI failures offer a true cache replacement, download and verification flow")
+require("timeout: 660, timeoutError: .builtInTimedOut" in setup,
+        "Built-in JIT leaves time for DDI preparation without changing StikDebug's timeout")
 library_source = (app / "Library.swift").read_text()
 require("if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) { model.error = nil } }" in library_source,
         "the library's JIT error offers Pair Again and LocalDevVPN (or the shortcut)")
@@ -154,9 +166,12 @@ require("if let jitProblem { jitConnectionActions(jitProblem, retry: enableJIT) 
 # (an alert inside the Library page waited until that tab came back).
 body = library_source[library_source.index('struct LibraryView: View {'):]
 body = body[body.index('    var body: some View {'):body.index('    @ToolbarContentBuilder private var libraryToolbar')]
-require('.alert(jitProblem == nil ? "Library" : "Couldn\'t Enable JIT"' in body,
+require('.alert(jitProblem == nil && jitDDIProblem == nil ? "Library" : "Couldn\'t Enable JIT"' in body,
         "the library's error alert is on the tab view, shown on the Settings tab as well")
-require('URL(string: "localdevvpn://enable?scheme=\\(SteamUIExperiment.callbackScheme)")' in setup
+require('Button("Redownload DDI")' in body and "jit.redownloadDDI()" in body,
+        "the library JIT error offers DDI recovery directly")
+require('parts.scheme = "localdevvpn"; parts.host = "enable"' in setup
+        and 'URLQueryItem(name: "scheme", value: scheme)' in setup
         and "localdevvpn" in app_plist["LSApplicationQueriesSchemes"]
         and any("madeira-steamui" in t.get("CFBundleURLSchemes", []) for t in app_plist.get("CFBundleURLTypes", [])),
         "LocalDevVPN opens to connect and returns to Madeira's own URL scheme")

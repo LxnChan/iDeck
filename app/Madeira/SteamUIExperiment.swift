@@ -1008,6 +1008,10 @@ struct IDeckLauncher: View {
                     if state.preparing { ProgressView("Preparing runtime…") }
                     if let message = jit.status { Text(message).font(.caption).foregroundStyle(.secondary) }
                     if let message = jit.error { Text(message).foregroundStyle(.orange) }
+                    if jit.ddiProblem != nil {
+                        Button("Redownload DDI") { jit.redownloadDDI() }
+                            .buttonStyle(.bordered).disabled(jit.busy)
+                    }
                     if let error = state.error { Text(error).foregroundStyle(.orange) }
                     Button(action: start) {
                         Label(jit.busy ? "Enabling JIT…" : (state.bigPictureMode ? "Launch Steam Big Picture" : "Launch Steam (Desktop Mode)"), systemImage: "play.fill")

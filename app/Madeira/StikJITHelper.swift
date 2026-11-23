@@ -12,6 +12,7 @@ enum StikJITHelper {
         case invalidRequest
         case unavailable
         case timedOut
+        case builtInTimedOut
 
         var errorDescription: String? {
             switch self {
@@ -23,6 +24,8 @@ enum StikJITHelper {
                 return "StikDebug is not installed. Install it, or configure Built-in StikJIT."
             case .timedOut:
                 return "StikDebug did not attach to Madeira within 90 seconds. Check its pairing file and LocalDevVPN, then try again."
+            case .builtInTimedOut:
+                return "Madeira's built-in JIT helper did not attach after waiting for the Developer Disk Image. Open JIT setup, check the DDI, pairing and LocalDevVPN, then try again."
             }
         }
     }
@@ -84,6 +87,7 @@ enum StikJITHelper {
     /// sticky CS_DEBUGGED flag and a live debugger that can answer Madeira's BRK.
     @discardableResult
     static func waitForDebugger(timeout: TimeInterval = 90,
+                                timeoutError: RequestError = .timedOut,
                                 completion: @escaping (Result<Void, Error>) -> Void) -> Timer {
         let deadline = Date().addingTimeInterval(timeout)
         let timer = Timer(timeInterval: 0.5, repeats: true) { timer in
@@ -93,8 +97,8 @@ enum StikJITHelper {
                 completion(.success(()))
             } else if Date() >= deadline {
                 timer.invalidate()
-                LogStore.shared.log(RequestError.timedOut.localizedDescription, level: .error)
-                completion(.failure(RequestError.timedOut))
+                LogStore.shared.log(timeoutError.localizedDescription, level: .error)
+                completion(.failure(timeoutError))
             }
         }
         RunLoop.main.add(timer, forMode: .common)

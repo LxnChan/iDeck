@@ -12,6 +12,7 @@ struct MadeiraJITRequest: Codable, Sendable {
         case prepare
         case enable
         case resetDDI
+        case redownloadDDI
     }
 
     let operation: Operation
@@ -33,6 +34,11 @@ struct MadeiraJITRequest: Codable, Sendable {
     static var resetDDI: MadeiraJITRequest {
         MadeiraJITRequest(operation: .resetDDI, targetPID: nil,
                           pairingData: nil, scriptBase64: nil)
+    }
+
+    static func redownloadDDI(pairingData: Data) -> MadeiraJITRequest {
+        MadeiraJITRequest(operation: .redownloadDDI, targetPID: nil,
+                          pairingData: pairingData, scriptBase64: nil)
     }
 
     struct Response: Codable, Sendable {
