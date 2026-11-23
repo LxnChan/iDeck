@@ -232,7 +232,11 @@ struct MadeiraApp: App {
                     GamepadInput.shared.start()
                     HardwareInput.shared.start()
                     MicrophoneManager.requestPermission()
-                    JITNetworkShortcut.shared.restoreLeftover()   // also starts its network path monitor
+                    // Finish any VPN restore owed by an interrupted JIT shortcut before
+                    // the launch check is allowed to open LocalDevVPN.
+                    JITNetworkShortcut.shared.restoreLeftover {
+                        LocalDevVPNLaunchCoordinator.shared.start()
+                    }
                     SteamCMDirectoryWarmup.shared.start()
                     ExternalStorage.shared.start()
                 }

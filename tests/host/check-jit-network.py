@@ -12,8 +12,8 @@ no device runs.
    shortcut only when it does not answer and the shortcut is turned on; "start" asks for
    the cellular step only when Madeira sees cellular data without Wi-Fi, and "done" undoes
    only what "start" changed; the restore runs after the debugger detached and before
-   Wine starts; the app hands madeira://jit-network/... to the shortcut; Settings has the
-   switch.
+   Wine starts; app launch checks LocalDevVPN and returns to wait for its tunnel; the app
+   hands madeira://jit-network/... to the shortcut; Settings has the switch.
 """
 from pathlib import Path
 import json, os, shutil, socket, subprocess, sys, tempfile, threading
@@ -62,6 +62,21 @@ require('Save File' not in net and 'Get File' not in net,
         'the shortcut needs no file (no iCloud Drive or folder to set up)')
 require('returned output=\\(result.isEmpty ? "none" : "a VPN name")' in net and 'vpn-restore\\n' not in net,
         "Madeira neither logs nor keeps the VPN's name (the shortcut keeps the VPN itself)")
+launch = net[net.index('final class LocalDevVPNLaunchCoordinator'):net.index('/// The signed bundled shortcut')]
+require('LocalDevVPNLaunchCoordinator.shared.start()' in main_app
+        and 'LoopbackProbe.check' in launch and 'guard LocalDevVPN.isInstalled else' in launch
+        and 'UIApplication.shared.open(LocalDevVPN.connect)' in launch,
+        'app launch checks LocalDevVPN once and opens its connect URL only when it is installed and unreachable')
+require('JITNetworkShortcut.shared.restoreLeftover {\n                        LocalDevVPNLaunchCoordinator.shared.start()' in main_app
+        and 'func restoreLeftover(completion: @escaping () -> Void = {})' in net
+        and 'restoreIfNeeded(completion: completion)' in net,
+        'an interrupted JIT shortcut restores its previous VPN before the launch check can replace it')
+require('UIApplication.didBecomeActiveNotification' in launch
+        and 'LoopbackProbe.waitUntilReachable(within: 15)' in launch
+        and 'guard state == .waitingForReturn else { return }' in launch
+        and 'UIApplication.shared.applicationState == .active' in launch
+        and 'if state == .waitingUntilActive' in launch,
+        'the connector waits for an active app, then returning from LocalDevVPN waits for the tunnel without an app loop')
 
 # The bundled shortcut: a signed export (iOS imports only signed files), in the app's
 # resources, named after the shortcut Madeira runs, offered on iOS 27 or later.

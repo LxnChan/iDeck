@@ -130,6 +130,14 @@ through its `madeira://` URL scheme once connected.
 
 ## LocalDevVPN, cellular data and the Madeira JIT shortcut
 
+When Madeira starts, it checks whether LocalDevVPN's loopback is reachable. If
+LocalDevVPN is installed but not reachable, Madeira opens its connection URL.
+LocalDevVPN returns to Madeira through the app's declared URL scheme, and Madeira
+waits up to 15 seconds for the tunnel route to become usable. This automatic check
+runs once per app launch, so a failed or cancelled connection does not create an
+application-switching loop. A missing LocalDevVPN remains an onboarding problem and
+does not send the user to the App Store on every launch.
+
 Both methods reach this iPhone's `lockdownd` through LocalDevVPN's loopback
 (`10.7.0.1:62078`). The loopback works on Wi-Fi, or with no network at all,
 but not while cellular data is in use.

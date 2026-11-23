@@ -158,6 +158,82 @@ enum LoopbackProbe {
     static var vpnInterfaceUp: Bool { route()?.isLocalDevVPN ?? false }
 }
 
+/// On each Madeira launch, make sure LocalDevVPN is ready before the user starts a
+/// JIT-dependent session. The connection URL returns to Madeira through its declared
+/// callback scheme; becoming active again is the reliable signal to wait for the
+/// tunnel, because LocalDevVPN can return before its route is usable.
+@MainActor final class LocalDevVPNLaunchCoordinator {
+    static let shared = LocalDevVPNLaunchCoordinator()
+
+    private enum State { case idle, checking, waitingUntilActive, waitingForReturn, verifying, finished }
+    private var state: State = .idle
+    private var activeObserver: NSObjectProtocol?
+
+    private init() {}
+
+    func start() {
+        guard state == .idle else { return }
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.becameActive() }
+        }
+        check()
+    }
+
+    private func check() {
+        state = .checking
+        LogStore.shared.log("[jit] checking LocalDevVPN at launch")
+        LoopbackProbe.check { [weak self] result in
+            guard let self, self.state == .checking else { return }
+            if result.reachable {
+                self.finish("already reachable (\(result.detail))")
+                return
+            }
+            guard LocalDevVPN.isInstalled else {
+                self.finish("not installed; leaving setup to onboarding", error: true)
+                return
+            }
+            guard UIApplication.shared.applicationState == .active else {
+                self.state = .waitingUntilActive
+                LogStore.shared.log("[jit] LocalDevVPN launch check is waiting for Madeira to become active")
+                return
+            }
+            self.state = .waitingForReturn
+            LogStore.shared.log("[jit] LocalDevVPN is not reachable at launch (\(result.detail)); opening it")
+            UIApplication.shared.open(LocalDevVPN.connect) { [weak self] opened in
+                guard !opened else { return }
+                MainActor.assumeIsolated { self?.finish("could not be opened", error: true) }
+            }
+        }
+    }
+
+    private func becameActive() {
+        if state == .waitingUntilActive {
+            check()
+            return
+        }
+        guard state == .waitingForReturn else { return }
+        state = .verifying
+        LogStore.shared.log("[jit] returned from LocalDevVPN; waiting for its tunnel")
+        LoopbackProbe.waitUntilReachable(within: 15) { [weak self] result in
+            guard let self, self.state == .verifying else { return }
+            self.finish(result.reachable ? "tunnel ready (\(result.detail))" : "tunnel did not become reachable (\(result.detail))",
+                        error: !result.reachable)
+        }
+    }
+
+    private func finish(_ detail: String, error: Bool = false) {
+        guard state != .finished else { return }
+        state = .finished
+        if let activeObserver {
+            NotificationCenter.default.removeObserver(activeObserver)
+            self.activeObserver = nil
+        }
+        LogStore.shared.log("[jit] launch LocalDevVPN check: \(detail)", level: error ? .error : .info)
+    }
+}
+
 /// The signed bundled shortcut is the import source. Share it to Shortcuts,
 /// replacing the older Madeira JIT workflow. Do not offer the historical
 /// iCloud workflow: it returns a VPN content object instead of explicit text.
@@ -252,10 +328,10 @@ enum JITShortcutFile {
 
     /// At launch: a run that ended between "start" and "done" left the device without
     /// cellular data or its VPN; put them back.
-    func restoreLeftover() {
-        guard pending != nil, enabled else { return }
+    func restoreLeftover(completion: @escaping () -> Void = {}) {
+        guard pending != nil, enabled else { completion(); return }
         LogStore.shared.log("[jit-shortcut] an earlier run ended before done: restoring now")
-        restoreIfNeeded {}
+        restoreIfNeeded(completion: completion)
     }
 
     /// From the launch thread, right after the debugger detached: runs "done" if
