@@ -133,12 +133,12 @@ print('PASS: production idle policy handles preference persistence, live toggles
 
 
 # Keep the real preparation, journal, networking, hashing and write logic. The
-# enclosing app's authentication/session and CDN-health models are stand-ins.
+# enclosing app's authentication/session models are stand-ins.
 pieces = [block(downloader, marker).replace('private nonisolated static func', 'nonisolated static func') for marker in [
     'struct WorkItem:', 'struct Prepared:', 'private nonisolated static func prepare(',
     'private nonisolated static func checkSpace(',
     'private nonisolated static func sizeFile(', 'private nonisolated static func chunkAlreadyPresent(',
-    'private nonisolated static func fetchChunk(', 'private nonisolated static func failureReason(',
+    'private nonisolated static func fetchChunk(', 'nonisolated static func failureReason(', 'struct HTTPFailure:',
     'private nonisolated static func write(', 'private nonisolated static func download(']]
 STUBS = r'''
 import Foundation
@@ -153,7 +153,7 @@ typealias CC_LONG = UInt32
     hash.copyBytes(to: output, count: 20)
     return output
 }
-enum SteamLog { static func trace(_ value: String) {} }
+enum SteamLog { static func trace(_ value: String) {}; static func event(_ value: String) {} }
 enum ContentDecryptor {
     static let maximumChunkBytes = 32 << 20
     static func processChunk(encryptedData: Data, depotKey: Data, expectedCRC: UInt32, expectedSize: Int) throws -> Data { encryptedData }
@@ -170,19 +170,16 @@ struct DepotManifest {
     }
     var files: [FileEntry]
 }
-final class Health: @unchecked Sendable {
-    func order(_ hosts: [String], seed: Int) -> [String] { hosts }
-    func recordSuccess(_ host: String) {}
-    func recordFailure(_ host: String, reason: String) {}
-}
+HEALTH_SOURCE
 enum Downloader {
     struct DepotPlan {
         var depotID: UInt32 = 1; var manifestGID: UInt64 = 2; var key = Data()
         var manifest: DepotManifest; var hosts: [String]; var auth: [String: String] = [:]
-        var health = Health()
+        var health = ContentHostHealth()
     }
     static var http: URLSession { URLSession(configuration: .ephemeral) }
 '''
+STUBS = STUBS.replace('HEALTH_SOURCE', block(downloader, 'final class ContentHostHealth:'))
 DRIVER = r'''
 func check(_ value: Bool, _ message: String) { precondition(value, message) }
 actor Storage {
@@ -392,19 +389,37 @@ func checkSpacePreparation(apps: URL) throws {
         check(Date().timeIntervalSince(stopped) < 2, "in-flight network task stops promptly")
         check(try Data(contentsOf: file) == Data("xxxxxxxxx".utf8), "no post-cancel writes")
         print("PASS: cancelling a real in-flight HTTP transfer stops promptly without retry or file writes")
+
+        // Deliberately reorder after every failure. Each host must still get
+        // one attempt before any is repeated, including the sixth pool entry.
+        var rotating = plan
+        rotating.hosts = (0..<5).map { host + "/bad\($0)" } + [host + "/fast"]
+        try await Downloader.fetchChunk(chunks[0], plan: rotating, path: file.path, root: apps,
+                                        attempts: 5, seed: 0, validateStorage: {})
+        check(try Data(contentsOf: file).prefix(3) == Data("abc".utf8), "sixth host succeeds within the pool-sized budget")
+        print("PASS: production chunk retry reaches the sixth host before repeating failed hosts")
+
+        var exhausted = plan; exhausted.hosts = [host + "/bad-final"]
+        do {
+            try await Downloader.fetchChunk(chunks[0], plan: exhausted, path: file.path, root: apps,
+                                            attempts: 2, seed: 0, validateStorage: {})
+            preconditionFailure("HTTP failures must propagate after bounded retries")
+        } catch {
+            check(Downloader.failureReason(error) == "http-503", "terminal HTTP status remains diagnosable")
+        }
     }
 }
 '''
 
 with tempfile.TemporaryDirectory(prefix='ideck-recovery-') as folder:
     work = Path(folder)
-    counts = {'fast': 0, 'slow': 0}
+    counts = {'fast': 0, 'slow': 0, 'bad': 0}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            kind = 'slow' if self.path.startswith('/slow/') else 'fast'
+            kind = 'bad' if self.path.startswith('/bad') else ('slow' if self.path.startswith('/slow/') else 'fast')
             counts[kind] += 1
-            self.send_response(200)
+            self.send_response(503 if kind == 'bad' else 200)
             self.send_header('Content-Length', '3')
             self.end_headers()
             if kind == 'slow':
@@ -473,8 +488,8 @@ struct DockGame { var id: Int; var library: String }
                         str(APP / 'DrivePaths.swift'), str(APP / 'SteamInstall.swift'),
                         str(APP / 'SteamKeyValues.swift'), str(APP / 'SwiftSteam/Core/SteamError.swift'),
                         '-o', str(binary)], check=True)
-        subprocess.run([str(binary), str(work), f'http://127.0.0.1:{server.server_port}'], check=True, timeout=40)
-        assert counts == {'fast': 1, 'slow': 1}, counts
+        subprocess.run([str(binary), str(work), f'http://127.0.0.1:{server.server_port}'], check=True, timeout=55)
+        assert counts == {'fast': 2, 'slow': 1, 'bad': 7}, counts
         print('PASS: no CDN retry after storage loss or cancellation')
     finally:
         server.shutdown()

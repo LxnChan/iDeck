@@ -870,12 +870,12 @@ func packageBuffer(apps: [UInt32], depots: [UInt32]) -> Data {
             SteamInstallFiles.safeFolderName("a\\b\\Last") == "Last" && SteamInstallFiles.safeFolderName("..") == "app" && SteamInstallFiles.safeFolderName("") == "app" &&
             SteamInstallFiles.safeFolderName("c:") == "app", "install folders are one safe component")
     require(DepotDownloader.usableContentHost("cache1.steamcontent.com") && DepotDownloader.usableContentHost("a.b.akamaized.net") &&
-            !DepotDownloader.usableContentHost("evil.example.com") && !DepotDownloader.usableContentHost("x.steamcontent.com:8080") &&
-            !DepotDownloader.usableContentHost("a b.steamcontent.com") && !DepotDownloader.usableContentHost("lancache.steamcontent.com"), "content hosts are Valve's, on the standard port")
+            DepotDownloader.usableContentHost("partner.example.com") && !DepotDownloader.usableContentHost("x.steamcontent.com:8080") &&
+            !DepotDownloader.usableContentHost("a b.steamcontent.com") && !DepotDownloader.usableContentHost("lancache.steamcontent.com"), "Steam directory partners use valid DNS hosts on the standard port")
     let server: [String: Any] = ["https_support": "unavailable"]
     require(DepotDownloader.serverEligibility(server, appID: 1) == .noHTTPS &&
-            DepotDownloader.serverEligibility(["use_as_proxy": true], appID: 1) == .other &&
-            DepotDownloader.serverEligibility(["allowed_app_ids": [5]], appID: 1) == .other &&
+            DepotDownloader.serverEligibility(["use_as_proxy": true], appID: 1) == .proxyOnly &&
+            DepotDownloader.serverEligibility(["allowed_app_ids": [5]], appID: 1) == .restricted &&
             DepotDownloader.serverEligibility(["allowed_app_ids": [1], "https_support": "mandatory"], appID: 1) == .usable &&
             DepotDownloader.serverEligibility([:], appID: 1) == .usable, "content server eligibility")
     let health = ContentHostHealth()

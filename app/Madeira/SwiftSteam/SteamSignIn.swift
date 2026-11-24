@@ -84,11 +84,12 @@ enum SteamSignIn {
 
     static func message(_ error: Error) -> String {
         if let steam = error as? SteamError, let text = steam.errorDescription { return text }
-        if let url = error as? URLError {
-            switch url.code {
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain {
+            switch URLError.Code(rawValue: failure.code) {
             case .notConnectedToInternet, .networkConnectionLost: return "No internet connection. Connect and try again."
             case .timedOut: return "Steam did not respond in time. Try again."
-            default: return "A network error occurred (\(url.code.rawValue)). Try again."
+            default: return "A network error occurred (\(failure.code)). Try again."
             }
         }
         return error.localizedDescription

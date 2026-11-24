@@ -126,7 +126,7 @@ final class DepotDownloader {
 
         // 1. Keys, manifests and per-host authorization for every depot.
         let health = ContentHostHealth()
-        let pool = Array(hosts.prefix(hostPoolSize))
+        let pool = Self.contentPool(hosts, maximum: hostPoolSize)
         var plans: [DepotPlan] = []
         var licenseSkipped: [UInt32] = []
         // The logged-on account, for the install record. Read while the session
@@ -152,7 +152,7 @@ final class DepotDownloader {
             if session.steamID != 0 { accountID = session.steamID }
             let contentAppID = !app.freeToDownload ? (depot.fromApp ?? app.appID) : app.appID
             let manifest = try await fetchManifest(depotID: depot.depotID, appID: contentAppID,
-                                                   manifestGID: gid, key: key, hosts: hosts, validateStorage: validateStorage)
+                                                   manifestGID: gid, key: key, hosts: pool, validateStorage: validateStorage)
             var auth: [String: String] = [:]
             for host in pool {
                 auth[host] = await cdnAuthFragment(depotID: depot.depotID, appID: contentAppID, host: host)
@@ -463,12 +463,17 @@ final class DepotDownloader {
                                                path: String, root: URL, attempts: Int, seed: Int,
                                                validateStorage: @Sendable () async throws -> Void) async throws {
         var lastError: Error = SteamError.chunkDownloadFailed("No content server responded.")
-        for attempt in 0..<max(1, attempts) {
+        let budget = max(1, max(attempts, plan.hosts.count))
+        var tried = Set<String>()
+        for attempt in 0..<budget {
             try Task.checkCancellation()
             try await validateStorage()
             // Healthy servers first, starting from a per-chunk offset.
             let order = plan.health.order(plan.hosts, seed: seed)
-            let host = order[attempt % order.count]
+            guard !order.isEmpty else { throw lastError }
+            if tried.count == Set(order).count { tried.removeAll() }
+            let host = order.first { !tried.contains($0) }!
+            tried.insert(host)
             let url = "\(host)/depot/\(plan.depotID)/chunk/\(chunk.shaHex)\(plan.auth[host] ?? "")"
             let data: Data
             do {
@@ -488,7 +493,7 @@ final class DepotDownloader {
                 // Storage failures stop the install; only content/network
                 // failures are eligible for another CDN attempt.
                 try await validateStorage()
-                if attempt + 1 < attempts { try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 400_000_000) }
+                if attempt + 1 < budget { try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 400_000_000) }
                 continue
             }
             try Task.checkCancellation()
@@ -500,11 +505,23 @@ final class DepotDownloader {
         throw lastError
     }
 
-    private nonisolated static func failureReason(_ error: Error) -> String {
-        if let url = error as? URLError { return "url\(url.code.rawValue)" }
+    /// Keep error identity even when URLSession returns an NSError that does not
+    /// bridge to URLError. Never include URLs, authorization tokens, or userInfo.
+    nonisolated static func failureReason(_ error: Error) -> String {
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain { return "url\(failure.code)" }
+        if failure.domain == NSPOSIXErrorDomain { return "posix-\(failure.code)" }
+        if let http = error as? HTTPFailure { return "http-\(http.status)" }
         if case SteamError.chunkDecodeFailed(let format) = error { return "decode-\(format)" }
         if case SteamError.checksumMismatch = error { return "checksum" }
+        if case SteamError.decompressionFailed = error { return "decompress" }
+        if case SteamError.decryptionFailed = error { return "decrypt" }
         return "other"
+    }
+
+    struct HTTPFailure: LocalizedError {
+        let status: Int
+        var errorDescription: String? { "Content server returned HTTP \(status). Try again; completed downloads are kept." }
     }
 
     private nonisolated static func write(_ data: Data, to path: String, root: URL, offset: UInt64) throws {
@@ -528,7 +545,7 @@ final class DepotDownloader {
         guard let url = URL(string: urlString) else { throw SteamError.chunkDownloadFailed("Invalid content URL.") }
         let (data, response) = try await http.data(from: url)
         guard let status = (response as? HTTPURLResponse)?.statusCode, (200...299).contains(status) else {
-            throw SteamError.chunkDownloadFailed("Content server returned HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0).")
+            throw HTTPFailure(status: (response as? HTTPURLResponse)?.statusCode ?? 0)
         }
         return data
     }
@@ -556,7 +573,7 @@ final class DepotDownloader {
                 throw CancellationError()
             } catch {
                 lastError = error
-                SteamLog.trace("manifest from a content server failed: \(error.localizedDescription)")
+                SteamLog.event("[steam-cdn] manifest failed host=\(URL(string: host)?.host ?? "invalid") reason=\(Self.failureReason(error))")
                 try Task.checkCancellation()
                 try await validateStorage()
                 continue
@@ -704,7 +721,7 @@ final class DepotDownloader {
     /// Content server discovery via the public Web API
     /// (IContentServerDirectoryService/GetServersForSteamPipe). No account
     /// token is attached; the directory does not require one.
-    enum ServerEligibility: Equatable { case usable, noHTTPS, other }
+    enum ServerEligibility: String { case usable, noHTTPS = "no-https", proxyOnly = "proxy-only", restricted = "app-restricted" }
 
     /// Directory fields as served by GetServersForSteamPipe: https_support
     /// ("mandatory", "optional", "unavailable"), use_as_proxy, and an optional
@@ -714,62 +731,94 @@ final class DepotDownloader {
             return .noHTTPS
         }
         if (server["use_as_proxy"] as? Bool) == true || (server["use_as_proxy"] as? NSNumber)?.boolValue == true {
-            return .other
+            return .proxyOnly
         }
         if let allowed = server["allowed_app_ids"] as? [Any], !allowed.isEmpty,
            !allowed.contains(where: { ($0 as? NSNumber)?.uint32Value == appID || ($0 as? String) == String(appID) }) {
-            return .other
+            return .restricted
         }
         return .usable
     }
 
     private func contentServers(appID: UInt32) async throws -> [String] {
         var hosts: [String] = []
-        do {
-            guard let url = URL(string: "https://api.steampowered.com/IContentServerDirectoryService/GetServersForSteamPipe/v1/?cell_id=\(session.cellID)&max_servers=20") else {
-                throw SteamError.chunkDownloadFailed("Bad content directory URL")
-            }
-            let (data, response) = try await Self.http.data(from: url)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                throw SteamError.chunkDownloadFailed("Content directory HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
-            }
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let resp = json["response"] as? [String: Any],
-                  let servers = resp["servers"] as? [[String: Any]] else {
-                throw SteamError.chunkDownloadFailed("Content directory returned unexpected data")
-            }
-            // In the directory's order. The directory marks some CDN servers
-            // https_support "unavailable"; requesting them over HTTPS fails the
-            // TLS handshake (NSURLError -1200). Such servers, proxy-only entries
-            // and servers restricted to other apps are skipped.
-            var skippedHTTP = 0, skippedOther = 0
-            for server in servers {
-                let host = (server["vhost"] as? String) ?? (server["host"] as? String) ?? ""
-                guard Self.usableContentHost(host) else { skippedOther += 1; continue }
-                switch Self.serverEligibility(server, appID: appID) {
-                case .usable: break
-                case .noHTTPS: skippedHTTP += 1; continue
-                case .other: skippedOther += 1; continue
+        // A regional directory can offer only HTTP-only edges. Ask the default
+        // and alternate cells for alternatives, with a finite request budget.
+        for cell in Self.directoryCells(session.cellID) {
+            try Task.checkCancellation()
+            do {
+                guard let url = URL(string: "https://api.steampowered.com/IContentServerDirectoryService/GetServersForSteamPipe/v1/?cell_id=\(cell)&max_servers=20") else {
+                    throw SteamError.chunkDownloadFailed("Bad content directory URL")
                 }
-                let entry = "https://\(host)"
-                if !hosts.contains(entry) { hosts.append(entry) }
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 12
+                let (data, response) = try await Self.http.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    throw HTTPFailure(status: (response as? HTTPURLResponse)?.statusCode ?? 0)
+                }
+                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let resp = json["response"] as? [String: Any],
+                      let servers = resp["servers"] as? [[String: Any]] else {
+                    throw SteamError.chunkDownloadFailed("Content directory returned unexpected data")
+                }
+                var added = 0
+                for server in servers.prefix(20) {
+                    let virtual = (server["vhost"] as? String) ?? ""
+                    let host = (virtual.isEmpty ? (server["host"] as? String ?? "") : virtual).lowercased()
+                    guard Self.usableContentHost(host) else {
+                        SteamLog.event("[steam-cdn] excluded cell=\(cell) reason=invalid-host")
+                        continue
+                    }
+                    let eligibility = Self.serverEligibility(server, appID: appID)
+                    guard eligibility == .usable else {
+                        SteamLog.event("[steam-cdn] excluded cell=\(cell) host=\(host) reason=\(eligibility.rawValue)")
+                        continue
+                    }
+                    let entry = "https://\(host)"
+                    if !hosts.contains(entry) { hosts.append(entry); added += 1 }
+                }
+                SteamLog.event("[steam-cdn] directory cell=\(cell) offered=\(servers.count) added=\(added) usable=\(hosts.count)")
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if Task.isCancelled || (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled {
+                    throw CancellationError()
+                }
+                SteamLog.event("[steam-cdn] directory failed cell=\(cell) reason=\(Self.failureReason(error))")
             }
-            SteamLog.event("[steam-cdn] offered=\(servers.count) usable=\(hosts.count) skipped-no-https=\(skippedHTTP) skipped-other=\(skippedOther)")
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            SteamLog.trace("content directory failed: \(error.localizedDescription)")
+            if hosts.count >= hostPoolSize { break }
         }
         let fallback = "https://steampipe.akamaized.net"
         if !hosts.contains(fallback) { hosts.append(fallback) }
+        SteamLog.event("[steam-cdn] pool discovered=\(hosts.count) selected=\(min(hostPoolSize, hosts.count))")
         return hosts
     }
 
+    nonisolated static func directoryCells(_ preferred: UInt32) -> [UInt32] {
+        var cells: [UInt32] = []
+        for cell in [preferred, 0, 1] where !cells.contains(cell) { cells.append(cell) }
+        return cells
+    }
+
+    nonisolated static func contentPool(_ hosts: [String], maximum: Int) -> [String] {
+        guard maximum > 0 else { return [] }
+        let fallback = "https://steampipe.akamaized.net"
+        var pool = Array(hosts.prefix(maximum))
+        if hosts.contains(fallback), !pool.contains(fallback) { pool[pool.count - 1] = fallback }
+        return pool
+    }
+
+    /// Hosts come only from Steam's HTTPS directory. Regional CDN partners need
+    /// not use Valve domain suffixes; accept plain DNS names on the standard port.
     nonisolated static func usableContentHost(_ host: String) -> Bool {
-        guard host.contains("."), !host.contains(" "), !host.contains("/"), !host.contains("*"),
-              !host.contains("lancache"), !host.contains(":") else { return false }
-        return host.hasSuffix(".steamcontent.com") || host.hasSuffix(".akamaized.net") ||
-            host.hasSuffix(".steampipe.steamcontent.com") || host.hasSuffix(".steamstatic.com")
+        guard host.utf8.count <= 253, !host.lowercased().contains("lancache") else { return false }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2, let suffix = labels.last,
+              suffix.utf8.contains(where: { (65...90).contains($0) || (97...122).contains($0) }) else { return false }
+        return labels.allSatisfy { label in
+            !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-"
+                && label.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }
+        }
     }
 
     /// Unified-service GetCDNAuthToken → "?auth=…" query fragment for this
@@ -803,7 +852,7 @@ final class DepotDownloader {
             cdnAuthTokens[cacheKey] = fragment
             return fragment
         } catch {
-            SteamLog.trace("content authorization request failed; continuing without a token")
+            SteamLog.event("[steam-cdn] authorization failed host=\(bareHost) reason=\(Self.failureReason(error))")
             cdnAuthTokens[cacheKey] = ""
             return ""
         }
@@ -830,12 +879,13 @@ final class ContentHostHealth: @unchecked Sendable {
     func recordFailure(_ host: String, reason: String) {
         lock.lock()
         failures[host, default: 0] += 1
-        let report = failures[host] == 3 && reported < 8
+        let count = failures[host]!
+        let report = (count == 1 || count == 3) && reported < 12
         if report { reported += 1 }
         lock.unlock()
         if report {
             let server = host.replacingOccurrences(of: "https://", with: "")
-            DispatchQueue.main.async { SteamLog.event("[steam-cdn] host demoted host=\(server) reason=\(reason)") }
+            DispatchQueue.main.async { SteamLog.event("[steam-cdn] request failed host=\(server) failures=\(count) reason=\(reason)") }
         }
     }
 

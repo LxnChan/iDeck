@@ -1381,6 +1381,10 @@ final class SteamOwnedLibrary: ObservableObject {
 
     /// Short, credential-free reason for the log.
     static func reason(_ error: Error) -> String {
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain || failure.domain == NSPOSIXErrorDomain || error is DepotDownloader.HTTPFailure {
+            return DepotDownloader.failureReason(error)
+        }
         switch error {
         case SteamError.logonDenied(let code): return "logon-\(code)"
         case SteamError.connectionTimeout: return "timeout"

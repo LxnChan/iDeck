@@ -143,8 +143,21 @@ account that owns the depot, so ownership is Steam's decision, not Madeira's.
    (zstd, LZMA or zip, whichever container Steam served), checked against its
    size and Steam's Adler-32, and written in place. A failed chunk is retried on
    another content server; servers that keep failing move to the back of the
-   rotation. Content servers come from Valve's directory and must be Valve's
-   own hosts, over HTTPS.
+   rotation. Content servers come from Steam's HTTPS directory, including its
+   regional CDN partners. When fewer than six usable hosts are found, discovery
+   also queries cell 0 and cell 1 (deduplicated with the account's cell), with a
+   12-second request timeout and at most three requests. HTTP-only, proxy-only,
+   app-restricted and malformed host entries are excluded with separate reasons.
+   Valid partner DNS names are accepted without a Valve-domain suffix requirement;
+   downloads still use HTTPS with normal certificate verification. The six-host
+   pool reserves a place for `steampipe.akamaized.net` and is shared by manifests
+   and chunks. Each chunk tries distinct hosts before repeating any, even if
+   concurrent failures reorder the pool. It gets five total attempts, or six
+   when the pool has six hosts, with incremental backoff. Exhaustion stops the
+   install; Resume retains completed chunks and discovers servers again. Logs
+   include bounded per-host failure reports, HTTP status and numeric URL/POSIX
+   error codes without request URLs, query tokens or error payloads. An alternate
+   directory does not guarantee that its nodes are reachable on a given network.
 4. Finished chunks are journaled under `steamapps/downloading/<appid>`. An
    interrupted, paused or failed install resumes without fetching them again,
    and bytes already on disk that match a chunk's SHA-1 are kept (an update, or a
@@ -315,7 +328,7 @@ DepotConfigStore.cs) and SteamKit2 (`SteamKit2/Steam/CDN/DepotChunk.cs`,
 | | DepotDownloader (C#) | this code |
 |---|---|---|
 | Steam access | SteamKit2 callback handlers on a `SteamClient` | raw protobuf messages on a WebSocket over TLS (`SteamConnection`, `SteamSession`) |
-| Content servers | `CDNClientPool` weights servers by a persisted penalty list, `Server.NumEntries`, proxy server | Valve's directory over HTTPS, host filter by name and `https_support`, a per-install failure count, hosts rotate per chunk |
+| Content servers | `CDNClientPool` weights servers by a persisted penalty list, `Server.NumEntries`, proxy server | Bounded Steam directory queries across cells, valid HTTPS partner hosts, per-install health, distinct hosts before repetition, and a reserved fallback |
 | Resume | per-file staging directory, old manifest kept in a config store, chunk diff by old/new manifest, file hash | append-only journal of finished chunk indices per depot manifest, SHA-1 of bytes already on disk |
 | File writes | one `FileStream` per file with a lock, async writes | `pwrite` on the download task, files sized to the manifest first |
 | Licensing check | `AccountHasAccess` reads package `appids`/`depotids` before every download | the license depot list is read only when Steam refuses a depot key, to leave out content the account does not own |
