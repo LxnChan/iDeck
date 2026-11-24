@@ -6,9 +6,6 @@
 <h1 align="center">iDeck</h1>
 <p align="center"><strong>在 iOS 与 iPadOS 上体验 Steam 与 Windows PC 游戏</strong><br>主要面向 iPad、iPhoneDuo 等大屏机型的本地 PC 游戏体验。</p>
 <p align="center">
-  <a href="https://discord.gg/aQdsaJyTM"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FaQdsaJyTM%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="加入 iDeck Discord 社区"></a>
-</p>
-<p align="center">
   <a href="https://github.com/LxnChan/iDeck/actions"><img src="https://img.shields.io/badge/构建状态-GitHub%20Actions-brightgreen?logo=github-actions" alt="构建状态"></a>
   <a href="docs/GETTING_STARTED.md"><img src="https://img.shields.io/badge/Platform-iOS%20%26%20iPadOS%2017%2B-007AFF" alt="iOS 与 iPadOS 平台"></a>
   <a href="docs/IDECK.md"><img src="https://img.shields.io/badge/Status-活跃维护中-success" alt="开发状态"></a>
@@ -20,6 +17,9 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
 
 项目仍处于实验阶段。设备、系统版本、签名/JIT 配置及具体游戏都会影响兼容性；上述设备定位不代表所有机型或游戏均已通过真机验证。
 
+> [!IMPORTANT]
+> 本仓库是包含独立修改的分支。使用本仓库编译的 IPA（包括 GitHub Actions 产物及本地编译版本）产生的问题，**仅向 [LxnChan/iDeck Issues](https://github.com/LxnChan/iDeck/issues) 反馈**。请勿向上游 iDeck、Madeira 或其他上游仓库及社群提交相关 Issue、求助或本分支构建的日志。上游维护者不负责支持本分支的构建。
+
 > [!TIP]
 >
 > ### 📦 快速下载预编译 IPA（来人指路）
@@ -27,7 +27,7 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
 > 下载预编译 IPA 不需要 Mac 或 Xcode。向 `main` 推送代码/构建配置变更，或手动启动工作流后，GitHub Actions 会生成待签名的 IPA 安装包：
 >
 > 1. 点击进入 [**GitHub Actions 构建页面**](https://github.com/LxnChan/iDeck/actions?query=workflow%3A%22Build+iDeck+IPA%22+is%3Asuccess)；
-> 2. 点击列表顶部**最新一条带有绿色对勾 ✅ 的构建记录（`Build iDeck IPA`）**；
+> 2. 打开 **Build iDeck IPA** 工作流最新一条成功的构建记录。记录标题描述具体修改，例如 `fix(app): preserve JIT connections and improve download controls`；
 > 3. 滑动至页面最下方的 **Artifacts（构建产物）** 区域；
 > 4. 点击下载 **`iDeck-fork-<sha>`** 压缩包，解压后即可获得编译完成、可直接签名的 IPA 文件（`iDeck-fork-*.ipa`）。
 > 5. 普通安装**不需要下载另外的 `-source` 与 `-relink` 产物**：它们分别是对应源码包和重链接材料，不是应用运行所需的额外资源。每个下载项均附带独立的 SHA-256 校验文件。
@@ -104,6 +104,20 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
 - **三个独立下载项**：`iDeck-fork-<sha>` 包含 IPA、文件清单、运行时清单及校验文件；`iDeck-fork-<sha>-source` 与 `iDeck-fork-<sha>-relink` 分别提供匹配的源码和重链接包。普通安装只需第一个。
 - **交付前失败检查**：运行时素材不完整、prefix 模板无效、IPA 或清单缺失/为空时，工作流会失败，不再将不完整产物当作成功构建提供下载。
 
+### 9. JIT 配置、复用现有 VPN 与 DDI 恢复
+
+- **JIT 方式**：通过 iDeck 的 **Enable JIT** 流程使用 StikDebug 或内置 StikJIT。Automatic 模式优先选择已安装的 StikDebug，否则使用内置辅助扩展。内置 JIT 需要 iOS/iPadOS 26 及以上真机、正确签名的辅助扩展及本机配对文件；应用内配对需要 iOS/iPadOS 27 及以上。
+- **保留可用连接**：JIT 已就绪时跳过网络准备；当前 VPN 若能提供并通过本地调试端点（`10.7.0.1:62078`）验证，也不会自动切换到 LocalDevVPN。LocalDevVPN 仍可作为备用方案，普通 VPN 或 HTTP/SOCKS5 代理不代表已满足调试连接要求。
+- **DDI 准备与恢复**：内置 JIT 在启动调试器连接计时前，先下载并校验 Developer Disk Image。准备失败时显示出错阶段，并可替换缓存、重新下载 DDI。DDI 下载可使用应用本体的下载代理，但代理不能代替本地调试连接。
+- **验证边界**：自动化检查覆盖服务验证、无效响应和超时；其他 VPN 实现仍需真机验证。详见 [JIT 配置说明](docs/JIT.md)。
+
+### 10. 并发下载、恢复校验与屏幕常亮
+
+- **分块并发下载**：共享 Steam 下载器已支持最多 **8 个分块并发下载**，包含校验、重试和断点记录；队列中的游戏仍逐个安装。
+- **校验完成后再恢复**：外置存储重新连接后，校验已下载文件期间禁用 **Resume**、重试及恢复更新按钮，并显示黄色叹号与正在校验的提示；检查结束后显示校验结果。
+- **下载时保持常亮**：**Settings → Steam → Keep screen awake while downloading** 默认开启，偏好持久保存，修改即时生效。它会在应用处于前台且下载进行时阻止自动锁屏；暂停、完成或失败后释放下载的常亮占用，不影响仍显示中的游戏画面自身的常亮需求。
+- **后台限制**：iOS/iPadOS 26 及以上会申请持续后台处理；系统终止任务时，下载会安全暂停；若系统拒绝申请，则退回短暂的后台宽限时间，结束后再暂停。已完成分块会保留，应用恢复活跃后继续下载。手动锁屏或切换应用仍受 iOS 限制；常亮开关不保证后台下载始终不中断，也不能防止外置存储断连。详见 [Steam 游戏库与下载说明](docs/STEAM_LIBRARY.md)。
+
 ---
 
 ## 安装与使用指南
@@ -111,21 +125,23 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
 ### 环境要求
 
 - **设备**：主要面向 **iPad、iPhoneDuo 等大屏机型**，需满足兼容的 iOS/iPadOS 17+ 运行环境。3D 游戏推荐 A17 Pro 或 M1 芯片及以上设备，但硬件规格本身不保证游戏兼容性。
-- **JIT 编译权限**：通过 [StikDebug](https://github.com/stikdebug/stikdebug)、内置 StikJIT、SideStore JIT 或 AltStore 启用。
+- **JIT 编译权限**：通过 iDeck 的 **Enable JIT** 流程使用 [StikDebug](https://github.com/stikdebug/stikdebug) 或内置 StikJIT，并完成相应的开发签名与配对。内置 JIT 需要 iOS/iPadOS 26+，应用内配对需要 27+；仅有已调试标记，不代表准备 JIT 内存所需的调试器连接已就绪。
 - **侧载签名工具**：[SideStore](https://sidestore.io/)、[AltStore](https://altstore.io/)、[Sideloadly](https://sideloadly.io/) 或 Xcode。
 
 ### 详细步骤
 
 1. **下载 IPA**：
    - 前往 [**GitHub Actions 构建流水线**](https://github.com/LxnChan/iDeck/actions?query=workflow%3A%22Build+iDeck+IPA%22+is%3Asuccess)；
-   - 点击最新一条带有绿色对勾 ✅ 的构建记录（`Build iDeck IPA`）；
+   - 打开 **Build iDeck IPA** 工作流最新一条带绿色对勾的记录，标题会显示本次构建对应的修改；
    - 在底部的 **Artifacts** 处下载 **`iDeck-fork-<sha>`**，解压即可提取出最新的 IPA 安装包。
    - 安装时使用其中的 `.ipa`，无需下载另外的 `-source` 与 `-relink` 产物。
 2. **签名并安装**：
    - 使用你常用的签名工具（个人免费开发者证书即可）完成签名安装。
    - **注意**：必须同时保留并对 `MadeiraJITHelper.appex` 扩展进行签名，并确保勾选允许调试权限（`get-task-allow`）。
 3. **启用 JIT**：
-   - 首次启动前或打开应用后，通过 StikDebug（配对并连接 LocalDevVPN）或 SideStore 菜单激活 JIT。
+   - 进入 **Settings → JIT → JIT setup**，选择 JIT 方式，并按对应方式完成配对或导入本机配对文件。
+   - 确保本地调试连接可用，然后在 iDeck 中点击 **Enable JIT**。已验证的兼容 VPN 可以提供该连接；连接已可用或 JIT 已就绪时，不强制使用 LocalDevVPN。
+   - 内置方式若提示 Developer Disk Image 问题，可使用 DDI 恢复操作；要求与排错方法见 [JIT 配置说明](docs/JIT.md)。
 4. **配置网络代理（可选，国内/受限网络推荐）**：
    - 点击主界面齿轮图标进入 **Settings**。
    - 在 **Network Proxy** 分组中开启总开关，选择 **HTTP** 或 **SOCKS5**。
@@ -143,7 +159,7 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
 | 1 | **Local Runtime（本地运行时）** | 点击 **Prepare runtime** 初始化 Wine 环境并解压核心组件（本版本已自带完整 CJK 中文字体集，包括宋体与微软雅黑）。 |
 | 2 | **Steam Client（Steam 文件）** | 在指定 Wine 路径（`wine/drive_c/Steam32BundleLab` 或 `wine/drive_c/Steam32Lab`）放入兼容的 Windows Steam 文件。 |
 | 3 | **Development Signing（开发签名）** | 检查当前安装包是否具有调试权限，缺少需使用有效配置描述文件重新签名。 |
-| 4 | **JIT Setup（JIT 授权）** | 配对 StikDebug 并连接 LocalDevVPN，使 FEX 转译引擎能够动态生成 ARM64 代码。 |
+| 4 | **JIT Setup（JIT 授权）** | 通过 iDeck 的 Enable JIT 使用 StikDebug 或内置 StikJIT；JIT 尚未就绪时需提供兼容的本地调试连接，LocalDevVPN 是其中一种方案。 |
 | 5 | **Launch Steam** | 所有准备项亮起绿灯后，点击 **Launch Steam Big Picture** 或进入桌面模式启动。 |
 
 ---
@@ -174,15 +190,17 @@ cd iDeck
 
 ---
 
-## 社区交流与反馈
+## 问题反馈与支持范围
 
-- **项目讨论**：欢迎加入 [iDeck 官方 Discord 社区](https://discord.gg/aQdsaJyTM) 或 [Madeira Discord 社区](https://discord.gg/4t5mNjwCn7)。
-- **提交 Issue**：若发现 Bug 或兼容性问题，欢迎在 GitHub 上提交 Issue，请务必附带你的设备型号、系统版本号、构建号以及脱敏后的运行日志。
+- **在本仓库反馈**：使用本仓库 IPA 遇到的 Bug、游戏兼容性、安装/JIT、构建或打包问题，请提交至 **[LxnChan/iDeck Issues](https://github.com/LxnChan/iDeck/issues)**。
+- **请勿向上游提交本分支问题**：不要在上游 iDeck、Madeira 或其他上游项目中，针对这些 IPA 发起 Issue、Discussion 或支持请求，也不要向其社群转交此类问题。该要求同时适用于下载的构建产物和使用本仓库源码在本地编译的 IPA。请先在本仓库诊断，必要的上游协调也由本仓库开展。
+- **提供复现信息**：请附设备型号、iOS/iPadOS 版本、构建号、提交 SHA 或 Actions 构建链接、签名/JIT 方式、复现步骤和脱敏日志。下载问题还请注明内置或外置存储，以及当时是否锁屏或切到后台。
 
 ---
 
 ## 致谢与开源许可
 
+- **iDeck**：基于 [kuscholar/iDeck](https://github.com/kuscholar/iDeck) 及其贡献者的工作。
 - **Madeira**：感谢 Will Faust 及其贡献者构建了整个底层架构、图形驱动集成（DXMT）与 iOS 运行时。
 - **上游生态**：致谢 Wine、FEX-Emu、DXMT、StikDebug / StikJIT、idevice 等优秀上游开源工程。
 - **设计启发**：[DroidDeck](https://github.com/Droid-Deck/DroidDeck)。

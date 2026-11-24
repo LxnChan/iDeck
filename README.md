@@ -6,9 +6,6 @@
 <h1 align="center">iDeck</h1>
 <p align="center"><strong>Steam & Windows PC Gaming on iOS & iPadOS</strong><br>Primarily for iPad and large-screen devices such as iPhoneDuo.</p>
 <p align="center">
-  <a href="https://discord.gg/aQdsaJyTM"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FaQdsaJyTM%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Join the iDeck Discord"></a>
-</p>
-<p align="center">
   <a href="https://github.com/LxnChan/iDeck/actions"><img src="https://img.shields.io/badge/Build-GitHub%20Actions-brightgreen?logo=github-actions" alt="Build Status"></a>
   <a href="docs/GETTING_STARTED.md"><img src="https://img.shields.io/badge/Platform-iOS%20%26%20iPadOS%2017%2B-007AFF" alt="iOS and iPadOS"></a>
   <a href="docs/IDECK.md"><img src="https://img.shields.io/badge/Status-Active%20Development-success" alt="Active Development"></a>
@@ -20,6 +17,9 @@ iDeck runs Valve's Windows Steam client and compatible Windows PC games locally 
 
 This is an experimental project. Device, system version, signing/JIT setup, and individual games all affect compatibility; the device focus above is not a claim that every model or game has been validated.
 
+> [!IMPORTANT]
+> This repository maintains a modified fork. Report problems caused by IPAs built from this repository, including its GitHub Actions artifacts and local builds, **only to [LxnChan/iDeck Issues](https://github.com/LxnChan/iDeck/issues)**. Do not submit these issues, support requests, or build-specific logs to upstream iDeck, Madeira, or other upstream repositories or communities. Upstream maintainers do not provide support for this fork's builds.
+
 > [!TIP]
 >
 > ### 📦 Download Pre-built IPA (Artifacts Guide)
@@ -27,7 +27,7 @@ This is an experimental project. Device, system version, signing/JIT setup, and 
 > You don't need a Mac or Xcode to download a pre-built IPA. GitHub Actions builds ready-to-sign packages for code/build changes pushed to `main`, or when the workflow is started manually:
 >
 > 1. Go to the [**Actions** tab](https://github.com/LxnChan/iDeck/actions?query=workflow%3A%22Build+iDeck+IPA%22+is%3Asuccess).
-> 2. Click the topmost completed run with a green checkmark (e.g. `Build iDeck IPA`).
+> 2. Open the latest successful run of the **Build iDeck IPA** workflow. Run titles describe the change, such as `fix(app): preserve JIT connections and improve download controls`.
 > 3. Scroll down to the bottom of the summary page to the **Artifacts** section.
 > 4. Click **`iDeck-fork-<sha>`** to download the ZIP file containing the compiled IPA package (`iDeck-fork-*.ipa`).
 > 5. For installation, **skip the separate `-source` and `-relink` artifacts**. They contain matching source and relinking materials, not extra files needed to run the app. Each download has its own SHA-256 checksum file.
@@ -104,6 +104,20 @@ This is an experimental project. Device, system version, signing/JIT setup, and 
 - **Three Independent Downloads**: `iDeck-fork-<sha>` contains the IPA, inventory/runtime manifests, and checksums; `iDeck-fork-<sha>-source` and `iDeck-fork-<sha>-relink` provide the matching companion archives separately. Only the first is needed for installation.
 - **Fail-Closed Delivery Checks**: Incomplete runtime staging, invalid prefix templates, or missing/empty IPA and inventory outputs fail the workflow instead of producing an apparently successful download.
 
+### 9. JIT Setup, Existing VPN Support & DDI Recovery
+
+- **JIT Methods**: Use iDeck's **Enable JIT** flow with StikDebug or Built-in StikJIT. Automatic mode prefers an installed StikDebug; otherwise, it selects the built-in helper. Built-in JIT requires iOS/iPadOS 26 or later on a physical device, a signed helper extension, and this device's pairing file; in-app pairing requires iOS/iPadOS 27 or later.
+- **Preserve a Working Connection**: When JIT is already ready, network setup is skipped. An existing compatible VPN that exposes and passes verification for the local debug endpoint (`10.7.0.1:62078`) also avoids automatic LocalDevVPN activation. LocalDevVPN remains a fallback; a general-purpose VPN or HTTP/SOCKS5 proxy does not automatically satisfy this requirement.
+- **DDI Preparation & Recovery**: Built-in JIT downloads and verifies the Developer Disk Image before starting the debugger attach timer. Setup reports the failing stage and offers cache replacement and redownload when DDI preparation fails. The app's native download proxy can be used for DDI downloads; it does not replace the local debug connection.
+- **Validation Limits**: Automated checks cover service verification, invalid replies, and timeouts. Alternative VPN implementations still need physical-device testing. See [JIT Configuration](docs/JIT.md).
+
+### 10. Concurrent Downloads, Recovery Checks & Screen Awake
+
+- **Concurrent Chunk Downloads**: The shared Steam downloader fetches up to **8 chunks concurrently**, with checksum verification, retries, and resumable progress. Games in the queue install one at a time.
+- **Verify Before Resuming**: After an external drive reconnects, **Resume**, retry, and update-resume controls stay disabled while downloaded files are checked. A yellow exclamation mark explains that verification is in progress; the results appear when the check finishes.
+- **Keep the Screen Awake**: **Settings → Steam → Keep screen awake while downloading** is on by default, saves your preference, and takes effect immediately. It prevents automatic locking during active foreground downloads. Pausing, completion, or failure releases the download's hold without releasing a visible game's own hold.
+- **Background Limits**: On iOS/iPadOS 26 and later, downloads request continued background processing. If the system ends that task, downloads pause cleanly; if it refuses the request, downloads fall back to a short background grace period before pausing. Completed chunks are preserved, and downloads resume when the app becomes active again. Manually locking the device or switching apps remains subject to iOS limits; the screen-awake switch does not guarantee uninterrupted background transfers or prevent an external drive from disconnecting. See [Steam Library & Downloads](docs/STEAM_LIBRARY.md).
+
 ---
 
 ## Installation & Setup
@@ -111,7 +125,7 @@ This is an experimental project. Device, system version, signing/JIT setup, and 
 ### Requirements
 
 - **Device**: Primarily **iPad and large-screen devices such as iPhoneDuo**, with a compatible iOS/iPadOS 17+ environment. A17 Pro / M1 or higher is recommended for 3D PC titles; hardware capability alone does not guarantee game compatibility.
-- **JIT Compiler**: Enabled via [StikDebug](https://github.com/stikdebug/stikdebug), StikJIT, or SideStore/AltStore JIT.
+- **JIT Compiler**: Use iDeck's **Enable JIT** flow with [StikDebug](https://github.com/stikdebug/stikdebug) or Built-in StikJIT, with appropriate development signing and pairing. Built-in JIT requires iOS/iPadOS 26+; in-app pairing requires 27+. A debugged flag alone does not prove that the debugger connection needed to prepare JIT memory is ready.
 - **Sideloading Tool**: [SideStore](https://sidestore.io/), [AltStore](https://altstore.io/), [Sideloadly](https://sideloadly.io/), or Xcode.
 
 ### Step-by-Step
@@ -124,7 +138,9 @@ This is an experimental project. Device, system version, signing/JIT setup, and 
    - Sideload using your preferred signing tool.
    - **Crucial**: Ensure `MadeiraJITHelper.appex` is signed alongside the main app, and the `get-task-allow` entitlement is preserved so debugging and JIT can attach.
 3. **Enable JIT**:
-   - Pair with StikDebug or launch via SideStore JIT before launching heavy 3D titles or Steam.
+   - Open **Settings → JIT → JIT setup**, choose the JIT method, and complete pairing or import this device's pairing file as appropriate.
+   - Provide a working local debug connection, then tap **Enable JIT** in iDeck. A verified compatible VPN can provide the connection; LocalDevVPN is not mandatory when the connection already works or JIT is ready.
+   - If built-in setup reports a Developer Disk Image problem, use its DDI recovery action. See [JIT Configuration](docs/JIT.md) for requirements and troubleshooting.
 4. **Configure Network Proxy (Optional / Recommended for Restricted Regions)**:
    - Tap the Settings tab in the library.
    - Navigate to **Network Proxy**.
@@ -143,7 +159,7 @@ When opening iDeck for the first time, navigate to the setup checker:
 | 2 | **Fonts & CJK** | Included out of the box in this fork (both SimSun and Microsoft YaHei)—no manual font copying required. |
 | 3 | **Steam Client** | Provide a compatible Windows Steam client into the designated Wine prefix (`wine/drive_c/Steam32BundleLab` or `wine/drive_c/Steam32Lab`). |
 | 4 | **Development Signing** | Requires a developer signature with task debugging permission. |
-| 5 | **JIT Session** | Enable JIT via StikDebug/LocalDevVPN. Required for Wine's FEX translation layer. |
+| 5 | **JIT Session** | Use iDeck's Enable JIT flow with StikDebug or Built-in StikJIT. Provide a compatible local debug connection when JIT is not already ready; LocalDevVPN is one option. |
 
 ---
 
@@ -174,16 +190,17 @@ Detailed build guides are available in:
 
 ---
 
-## Community & Feedback
+## Support & Issue Reporting
 
-- **Upstream Project**: Built on [Madeira](https://github.com/willfaust/Madeira) by Will Faust and the upstream [iDeck](https://github.com/kuscholar/iDeck) community.
-- **Discord**: Join discussions on the [iDeck Discord Server](https://discord.gg/aQdsaJyTM) or the [Madeira Discord](https://discord.gg/4t5mNjwCn7).
-- **Issues**: Found a bug or compatibility quirk? Open an issue on GitHub with your device model, iOS version, build number, and logs.
+- **Report Here**: Submit bugs, compatibility problems, installation/JIT failures, and build or packaging issues from this repository's IPAs to **[LxnChan/iDeck Issues](https://github.com/LxnChan/iDeck/issues)**.
+- **Keep Fork Reports Out of Upstream**: Do not open issues, discussions, or support requests about these IPAs in upstream iDeck, Madeira, or other upstream projects, and do not take these reports to their communities. This applies to both downloaded artifacts and IPAs compiled locally from this repository. Use this repository for initial diagnosis and any necessary upstream coordination.
+- **Include Reproduction Details**: Provide your device model, iOS/iPadOS version, build number, commit SHA or Actions run link, signing/JIT method, steps to reproduce, and relevant logs with personal information removed. For download problems, also state whether storage is internal or external and whether the device was locked or the app was in the background.
 
 ---
 
 ## Credits & License
 
+- **iDeck**: Based on [kuscholar/iDeck](https://github.com/kuscholar/iDeck) and its contributors' work.
 - **Madeira**: Will Faust and Madeira contributors for the core runtime, graphics translation (DXMT), and iOS device integration.
 - **Upstream Tools**: Thanks to the developers of Wine, FEX-Emu, DXMT, StikDebug/StikJIT, and idevice.
 - **Inspiration**: [DroidDeck](https://github.com/Droid-Deck/DroidDeck).
