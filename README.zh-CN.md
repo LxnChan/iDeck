@@ -118,6 +118,16 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
 - **下载时保持常亮**：**Settings → Steam → Keep screen awake while downloading** 默认开启，偏好持久保存，修改即时生效。它会在应用处于前台且下载进行时阻止自动锁屏；暂停、完成或失败后释放下载的常亮占用，不影响仍显示中的游戏画面自身的常亮需求。
 - **后台限制**：iOS/iPadOS 26 及以上会申请持续后台处理；系统终止任务时，下载会安全暂停；若系统拒绝申请，则退回短暂的后台宽限时间，结束后再暂停。已完成分块会保留，应用恢复活跃后继续下载。手动锁屏或切换应用仍受 iOS 限制；常亮开关不保证后台下载始终不中断，也不能防止外置存储断连。详见 [Steam 游戏库与下载说明](docs/STEAM_LIBRARY.md)。
 
+### 11. 外置游戏存储与 Steam 游戏库
+
+- **授权外置目录**：进入 **Settings → Storage → External storage → Add or reauthorize folder**，通过“文件”选择已连接的本地外置存储上的可写目录。游戏文件留在外置存储中，通过 `C:\External\<folder-id>` 访问；应用会保存目录授权以供重新连接。
+- **使用已有游戏和游戏库**：普通 Windows 游戏可通过程序浏览器中的 `drive_c/External/<folder-id>` 添加；Steam 游戏库使用所选目录下的 `steamapps`，自动发现其中已有的安装清单，并将外置游戏库注册到 Windows Steam 客户端。
+- **选择下载位置**：可在外置存储设置中指定新 Steam 下载的全局默认位置，也可在单个游戏的安装页面选择内置存储或已连接的外置目录，且不改变全局默认。已排队、未完成的下载、更新与修复会保留原安装位置；外置存储不可用时不会静默改存到内置存储。剩余空间按实际目标磁盘显示。
+- **连接状态反馈**：游戏库的外置磁盘图标用绿色、黄色、红色分别表示已连接、部分连接和不可用。设置页显示各目录的可用状态、剩余空间，并提供 **Check connected folders** 检查操作。外置存储不可用时保留游戏条目与设置，游戏卡片置灰，恢复访问前禁止启动。
+- **下载中断恢复**：磁盘断连会停止受影响的下载；重新连接原可写目录后自动校验已下载文件，期间禁用 Resume 并显示黄色校验提示。恢复时验证并修复缺失或损坏的分块，不会仅凭旧进度记录认为文件完整。
+- **安全断开与重新授权**：先停止游戏、下载和存档同步，再点 **Safely disconnect**，最后拔出设备。**Reconnect** 使用已保存授权；若权限失效，重新选择原目录即可保留游戏路径。**Remove mapping** 只移除映射，不删除外置文件。
+- **存储边界**：该功能是目录映射，不会合并磁盘容量，也不会自动迁移已有的内置安装。Windows 系统文件和用户目录仍位于内置存储；保存在外置游戏目录旁的存档仍依赖该磁盘。Steam Cloud 会将磁盘不可用视为访问失败，而非存档已删除。运行游戏或写入期间拔盘仍可能中断游戏、丢失未保存数据，具体设备兼容性仍需真机验证。配置、恢复和限制详见[外置游戏存储说明](docs/EXTERNAL_STORAGE.md)。
+
 ---
 
 ## 安装与使用指南
@@ -147,6 +157,10 @@ iDeck 通过 **Madeira、Wine、FEX-Emu、DXMT 和 Metal**，在设备本地运�
    - 在 **Network Proxy** 分组中开启总开关，选择 **HTTP** 或 **SOCKS5**。
    - 输入代理服务器 IP（如本机运行则为 `127.0.0.1`，内网代理则填写如 `192.168.31.2`）与端口。
    - 按需勾选 **App Native Proxy** 与 **Wine & Steam Proxy**。
+5. **使用外置存储（可选）**：
+   - 连接外置存储后，进入 **Settings → Storage → External storage → Add or reauthorize folder**，在“文件”中选择可写目录。
+   - 将其设为新 Steam 下载的默认位置、在单个游戏安装页选择该位置，或通过 `C:\External\<folder-id>` 浏览已有游戏。
+   - 拔出前先停止游戏、下载与存档同步，再使用 **Safely disconnect**。详见[外置游戏存储说明](docs/EXTERNAL_STORAGE.md)。
 
 ---
 
@@ -184,6 +198,7 @@ cd iDeck
 - [快速入门文档 (英文)](docs/GETTING_STARTED.md)
 - [构建详细指南 (英文)](docs/BUILDING.md)
 - [JIT 配置与排错指南 (英文)](docs/JIT.md)
+- [外置游戏存储与恢复说明 (英文)](docs/EXTERNAL_STORAGE.md)
 - [键盘、鼠标与触控板说明 (英文)](docs/KEYBOARD_MOUSE.md)
 - [运行时同步与 CI 产物说明 (英文)](docs/RUNTIME_SYNC.md)
 - [分发要求与合规声明 (英文)](docs/DISTRIBUTION.md)

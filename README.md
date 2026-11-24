@@ -118,6 +118,16 @@ This is an experimental project. Device, system version, signing/JIT setup, and 
 - **Keep the Screen Awake**: **Settings → Steam → Keep screen awake while downloading** is on by default, saves your preference, and takes effect immediately. It prevents automatic locking during active foreground downloads. Pausing, completion, or failure releases the download's hold without releasing a visible game's own hold.
 - **Background Limits**: On iOS/iPadOS 26 and later, downloads request continued background processing. If the system ends that task, downloads pause cleanly; if it refuses the request, downloads fall back to a short background grace period before pausing. Completed chunks are preserved, and downloads resume when the app becomes active again. Manually locking the device or switching apps remains subject to iOS limits; the screen-awake switch does not guarantee uninterrupted background transfers or prevent an external drive from disconnecting. See [Steam Library & Downloads](docs/STEAM_LIBRARY.md).
 
+### 11. External Game Storage & Steam Libraries
+
+- **Authorize an External Folder**: Open **Settings → Storage → External storage → Add or reauthorize folder** and select a writable folder on a connected local drive through Files. Games stay on that drive and are accessible under `C:\External\<folder-id>`; the app saves the folder authorization for reconnection.
+- **Use Existing Games and Libraries**: Add ordinary Windows games through the program browser under `drive_c/External/<folder-id>`. Steam libraries use the selected folder's `steamapps` directory, where existing install manifests are discovered. External libraries are also registered with the Windows Steam client.
+- **Choose Where to Download**: Set the global default for new Steam downloads in External storage settings, or choose internal storage or a connected external folder for one game on its install page. A per-download choice does not change the global default. Queued and unfinished downloads, updates, and repairs keep their original location; an unavailable external drive never silently falls back to internal storage. Free-space reporting uses the selected drive.
+- **Connection Feedback**: The library's external-drive indicator shows connected (green), partially connected (yellow), or unavailable (red) status. Settings shows each folder's availability and free space and provides **Check connected folders**. Games on an unavailable drive retain their library entries and settings, appear gray, and cannot launch until access is restored.
+- **Recover Interrupted Downloads**: Disconnecting a drive stops affected downloads. Reconnecting the original writable folder starts a checksum audit; Resume stays disabled with a yellow verification notice until the check finishes. Resuming verifies and repairs missing or damaged blocks instead of trusting the old progress record alone.
+- **Disconnect and Reauthorize**: Stop games, downloads, and save sync before using **Safely disconnect**, then unplug the drive. **Reconnect** uses the saved authorization; if access is revoked, select the original folder again to preserve game paths. **Remove mapping** keeps the external files.
+- **Storage Boundaries**: This maps folders rather than combining disk capacity or automatically moving existing internal installs. Windows system files and user folders stay internal; saves stored beside external games still require the drive. Unavailable storage is treated as an access error during Steam Cloud sync, not as deleted saves. Unplugging during gameplay or writes can interrupt the game or lose unsaved data, and physical-device validation remains necessary. See [External Game Storage](docs/EXTERNAL_STORAGE.md) for setup, recovery, and limitations.
+
 ---
 
 ## Installation & Setup
@@ -146,6 +156,10 @@ This is an experimental project. Device, system version, signing/JIT setup, and 
    - Navigate to **Network Proxy**.
    - Enable the master switch, select **HTTP** or **SOCKS5**, and enter your proxy IP and port.
    - Toggle **App Native Proxy** and/or **Wine & Steam Proxy** as needed.
+5. **Use External Storage (Optional)**:
+   - Connect the drive, then open **Settings → Storage → External storage → Add or reauthorize folder** and select a writable folder in Files.
+   - Select it as the default for new Steam downloads, choose it for one download on that game's install page, or browse its existing games under `C:\External\<folder-id>`.
+   - Stop games, downloads, and save sync, then use **Safely disconnect** before unplugging. See [External Game Storage](docs/EXTERNAL_STORAGE.md).
 
 ---
 
@@ -184,6 +198,7 @@ Detailed build guides are available in:
 - [Getting Started](docs/GETTING_STARTED.md)
 - [Building the Project](docs/BUILDING.md)
 - [JIT Configuration](docs/JIT.md)
+- [External Game Storage](docs/EXTERNAL_STORAGE.md)
 - [Keyboard, Mouse & Trackpad](docs/KEYBOARD_MOUSE.md)
 - [Runtime Synchronization & CI Artifacts](docs/RUNTIME_SYNC.md)
 - [Distribution Guidelines](docs/DISTRIBUTION.md)
