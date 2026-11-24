@@ -681,6 +681,7 @@ struct SteamSettingsSection: View {
     @ObservedObject private var signIn = SteamSignInModel.shared
     @ObservedObject private var dock = MadeiraDockModel.shared
     @ObservedObject private var onboarding = OnboardingModel.shared
+    @ObservedObject private var downloads = SteamDownloadBackground.shared
     @State private var confirmSignOut = false
 
     /// Shown when Steam sign-in or Madeira Dock is available.
@@ -702,6 +703,11 @@ struct SteamSettingsSection: View {
             }
             if onboarding.available {
                 Button { onboarding.rerun() } label: { Label("Run setup again", systemImage: "wand.and.stars") }
+            }
+            if SteamOwnedLibrary.enabled {
+                Toggle("Keep screen awake while downloading", isOn: $downloads.keepScreenAwake)
+                Text("Prevents automatic screen locking during downloads while iDeck is open. Locking the device manually or switching apps still depends on iOS background limits. Downloads use up to 8 concurrent chunks.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         } header: {
             Text("Steam")

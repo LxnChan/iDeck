@@ -199,6 +199,7 @@ final class SteamOwnedLibrary: ObservableObject {
         var state: State
         var progress = SteamDownloadProgress()
         var recovery: String?
+        var isChecking = false
     }
     @Published private(set) var downloads: [Int: Download] = [:]
     private var queue: [Int] = []
@@ -275,7 +276,7 @@ final class SteamOwnedLibrary: ObservableObject {
                 resumeAfterSession.remove(id)
                 resumeAfterBackgroundIDs.remove(id)
                 var item = downloads[id] ?? Download(state: .failed(message))
-                item.state = .failed(message); item.recovery = nil
+                item.state = .failed(message); item.recovery = nil; item.isChecking = false
                 downloads[id] = item
             } else if active?.id != id, !queue.contains(id), !recoveryChecked.contains(id), recoveryTasks.isEmpty,
                       storageOperations == 0, !inSession, !sessionRunning {
@@ -292,6 +293,7 @@ final class SteamOwnedLibrary: ObservableObject {
         recoveryChecked.insert(appID)
         var item = downloads[appID] ?? Download(state: .paused)
         item.state = .paused; item.recovery = "Checking reconnected download…"
+        item.isChecking = true
         downloads[appID] = item
         let drive = Self.drive, snapshot = Self.recoveryURL(appID)
         recoveryTasks[appID] = Task { @MainActor in
@@ -315,6 +317,7 @@ final class SteamOwnedLibrary: ObservableObject {
                 downloads[appID]?.recovery = "Recovery check could not finish. Existing files were kept. Resume to verify against Steam and repair the download. " + error.localizedDescription
             }
             guard !Task.isCancelled else { return }
+            downloads[appID]?.isChecking = false
             recoveryTasks[appID] = nil
             ExternalStorage.shared.refresh()
             externalStorageChanged()

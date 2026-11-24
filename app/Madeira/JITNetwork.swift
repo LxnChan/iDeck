@@ -18,18 +18,17 @@ import Network
 import UIKit
 
 /// Whether LocalDevVPN's loopback reaches this device's lockdownd at 10.7.0.1:62078
-/// (the address StikDebug uses). Two steps, neither depending on what lockdownd says
-/// (over USB it answers a plain QueryType; through the tunnel it closed the connection):
+/// (the address StikDebug uses). The established LocalDevVPN transport is probed
+/// with TCP; alternative VPN routes must identify the lockdownd service:
 /// 1. The route: the interface traffic to 10.7.0.1 would leave by, asked of the kernel
 ///    with an unsent UDP connect (no packets, microseconds). Not a VPN interface means
 ///    LocalDevVPN is not routing it, so a network that accepts any connection (a proxy;
 ///    the 18 Pro's Wi-Fi has one) is never asked.
-///    It must also be LocalDevVPN's interface, whose address is in 10.7.0.0/16 (10.7.1.1
-///    on the 18 Pro): another VPN carrying all traffic (172.19.0.1 there) also routes
-///    10.7.0.1 and accepts the connection, but the JIT helper then reads "early eof".
-/// 2. Through LocalDevVPN: a TCP connection, at most `timeout`. Through a working
+///    Other VPNs can provide the same service. On those routes, verify a framed
+///    lockdownd QueryType reply so a catch-all proxy accepting TCP is insufficient.
+/// 2. Through the tunnel: a TCP connection, at most `timeout`. Through a working
 ///    tunnel it opens in milliseconds; over cellular data, where the tunnel does not
-///    work, it fails. Nothing is sent, and it is closed at once.
+///    work, it fails. Only alternative routes receive a QueryType request.
 enum LoopbackProbe {
     static let address = "10.7.0.1"
     static let port: UInt16 = 62078
@@ -108,9 +107,6 @@ enum LoopbackProbe {
         }
         guard let route = route() else { return done(false, "no route") }
         if requireVPN, !route.isVPN { return done(false, "routed via \(route.interface), not a VPN") }
-        if requireVPN, !route.isLocalDevVPN {
-            return done(false, "routed via \(route.interface) \(route.address): another VPN, not LocalDevVPN")
-        }
         guard var addr = target() else { return done(false, "bad address") }
         let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
         guard fd >= 0 else { return done(false, "socket: \(String(cString: strerror(errno)))") }
@@ -128,7 +124,54 @@ enum LoopbackProbe {
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
             guard err == 0 else { return done(false, "\(String(cString: strerror(err))) via \(route.interface)") }
         }
+        // The established LocalDevVPN transport closes plain QueryType requests.
+        // Keep its connect probe, but positively identify the service on other VPNs.
+        if !route.isLocalDevVPN {
+            guard queryLockdown(fd, deadline: start + timeout) else {
+                return done(false, "lockdownd did not answer via \(route.interface)")
+            }
+        }
         return done(true, "connected via \(route.interface) \(route.address)")
+    }
+
+    private static func queryLockdown(_ fd: Int32, deadline: CFAbsoluteTime) -> Bool {
+        guard let payload = try? PropertyListSerialization.data(
+            fromPropertyList: ["Request": "QueryType", "Label": "iDeck"], format: .xml, options: 0) else { return false }
+        var length = UInt32(payload.count).bigEndian
+        var request = withUnsafeBytes(of: &length) { Data($0) }
+        request.append(payload)
+        func ready(_ event: Int16) -> Bool {
+            let remaining = deadline - CFAbsoluteTimeGetCurrent()
+            guard remaining > 0 else { return false }
+            var pfd = pollfd(fd: fd, events: event, revents: 0)
+            return poll(&pfd, 1, Int32(max(1, remaining * 1000))) > 0 && pfd.revents & event != 0
+        }
+        var sent = 0
+        while sent < request.count {
+            guard ready(Int16(POLLOUT)) else { return false }
+            let count = request.withUnsafeBytes { Darwin.send(fd, $0.baseAddress!.advanced(by: sent), request.count - sent, 0) }
+            if count < 0 && (errno == EAGAIN || errno == EINTR) { continue }
+            guard count > 0 else { return false }
+            sent += count
+        }
+        func read(_ size: Int) -> Data? {
+            var bytes = [UInt8](repeating: 0, count: size)
+            var received = 0
+            while received < size {
+                guard ready(Int16(POLLIN)) else { return nil }
+                let count = bytes.withUnsafeMutableBytes { Darwin.recv(fd, $0.baseAddress!.advanced(by: received), size - received, 0) }
+                if count < 0 && (errno == EAGAIN || errno == EINTR) { continue }
+                guard count > 0 else { return nil }
+                received += count
+            }
+            return Data(bytes)
+        }
+        guard let header = read(4) else { return false }
+        let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard size > 0, size <= 64 * 1024, let response = read(Int(size)),
+              let plist = try? PropertyListSerialization.propertyList(from: response, options: [], format: nil),
+              let reply = plist as? [String: Any] else { return false }
+        return reply["Type"] as? String == "com.apple.mobile.lockdown"
     }
 
     static func check(timeout: TimeInterval = 0.4, completion: @escaping @MainActor (Result) -> Void) {
@@ -182,10 +225,12 @@ enum LoopbackProbe {
     }
 
     private func check() {
+        guard !StikJITHelper.ready else { finish("JIT is already ready"); return }
         state = .checking
         LogStore.shared.log("[jit] checking LocalDevVPN at launch")
         LoopbackProbe.check { [weak self] result in
             guard let self, self.state == .checking else { return }
+            guard !StikJITHelper.ready else { self.finish("JIT is already ready"); return }
             if result.reachable {
                 self.finish("already reachable (\(result.detail))")
                 return

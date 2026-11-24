@@ -16,7 +16,7 @@ no device runs.
    hands madeira://jit-network/... to the shortcut; Settings has the switch.
 """
 from pathlib import Path
-import json, os, shutil, socket, subprocess, sys, tempfile, threading
+import json, os, plistlib, shutil, socket, struct, subprocess, sys, tempfile, threading
 
 root = Path(__file__).resolve().parents[2]
 app = root / 'app/Madeira'
@@ -67,6 +67,10 @@ require('LocalDevVPNLaunchCoordinator.shared.start()' in main_app
         and 'LoopbackProbe.check' in launch and 'guard LocalDevVPN.isInstalled else' in launch
         and 'UIApplication.shared.open(LocalDevVPN.connect)' in launch,
         'app launch checks LocalDevVPN once and opens its connect URL only when it is installed and unreachable')
+require(launch.count('guard !StikJITHelper.ready else') == 2,
+        'launch skips VPN changes when JIT is ready, including readiness gained during the asynchronous probe')
+require('if requireVPN, !route.isLocalDevVPN' not in net and 'queryLockdown(fd, deadline: start + timeout)' in net,
+        'other VPNs can satisfy readiness with a bounded lockdownd service check')
 require('JITNetworkShortcut.shared.restoreLeftover {\n                        LocalDevVPNLaunchCoordinator.shared.start()' in main_app
         and 'func restoreLeftover(completion: @escaping () -> Void = {})' in net
         and 'restoreIfNeeded(completion: completion)' in net,
@@ -106,7 +110,13 @@ require("Keychain" in onboarding and "stays in Madeira's Documents folder" not i
         "setup no longer says the pairing file is in Documents")
 
 # ------------------------------------------------------------------ Swift
-probe = net[net.index('enum LoopbackProbe {'):net.index('/// The user\'s "Madeira JIT" shortcut')]
+if not Path(SWIFTC).is_file():
+    if '--require-swift' in sys.argv:
+        raise SystemExit('swiftc is required for JIT network checks')
+    print('SKIP: JIT network execution requires macOS swiftc (required in CI)')
+    sys.exit(0 if failures == 0 else 1)
+
+probe = net[net.index('enum LoopbackProbe {'):net.index('/// On each Madeira launch')]
 probe = probe.replace('static let address = "10.7.0.1"', 'static var address = "10.7.0.1"') \
              .replace('static let port: UInt16 = 62078', 'static var port: UInt16 = 62078')
 main = r'''
@@ -144,10 +154,29 @@ with tempfile.TemporaryDirectory() as tmp:
         srv = socket.socket()
         srv.bind(('127.0.0.1', 0))
         srv.listen(8)
-        threading.Thread(target=lambda: [srv.accept()[0].close() for _ in range(8)], daemon=True).start()
+        def serve_lockdown():
+            conn, _ = srv.accept()
+            with conn:
+                def read(size):
+                    data = b''
+                    while len(data) < size:
+                        part = conn.recv(size - len(data))
+                        if not part:
+                            return data
+                        data += part
+                    return data
+                size = struct.unpack('>I', read(4))[0]
+                query = plistlib.loads(read(size))
+                assert query['Request'] == 'QueryType'
+                reply = plistlib.dumps({'Type': 'com.apple.mobile.lockdown'})
+                packet = struct.pack('>I', len(reply)) + reply
+                # Exercise partial socket reads, including a split length header.
+                for part in (packet[:2], packet[2:9], packet[9:]):
+                    conn.sendall(part)
+        threading.Thread(target=serve_lockdown, daemon=True).start()
         port = srv.getsockname()[1]
         up = run('127.0.0.1', port, False)
-        require(up['reachable'] and up['ms'] < 100, 'a listening port connects in %.1f ms (%s)' % (up['ms'], up['detail']))
+        require(up['reachable'] and up['ms'] < 400, 'a framed lockdownd reply verifies in %.1f ms (%s)' % (up['ms'], up['detail']))
         require(up['interface'].startswith('lo') and up['vpn'] is False,
                 'the route check names the interface traffic leaves by (%s), and lo0 is not a VPN' % up['interface'])
         held = run('127.0.0.1', port, True)
@@ -160,6 +189,26 @@ with tempfile.TemporaryDirectory() as tmp:
         require(up['ldv'] == [True, False, False],
                 "LocalDevVPN is told from another VPN by its tunnel address: utun5 10.7.1.1 is LocalDevVPN; "
                 "utun5 172.19.0.1 (a VPN carrying all traffic) and en0 are not")
+        for label, reply in [('early EOF', b''), ('HTTP proxy', b'HTTP/1.1 200 OK\r\n'),
+                             ('oversized frame', struct.pack('>I', 65537)),
+                             ('wrong service', (lambda p: struct.pack('>I', len(p)) + p)(plistlib.dumps({'Type': 'proxy'})))]:
+            def reject_service(reply=reply):
+                conn, _ = srv.accept()
+                with conn:
+                    conn.recv(4096)
+                    if reply:
+                        conn.sendall(reply)
+            threading.Thread(target=reject_service, daemon=True).start()
+            result = run('127.0.0.1', port, False)
+            require(not result['reachable'], label + ' does not satisfy JIT readiness')
+        def silent_service():
+            conn, _ = srv.accept()
+            with conn:
+                conn.recv(4096)
+                threading.Event().wait(1)
+        threading.Thread(target=silent_service, daemon=True).start()
+        result = run('127.0.0.1', port, False)
+        require(not result['reachable'] and result['ms'] < 800, 'an unresponsive service is bounded by the probe deadline')
         srv.close()
 
 print('\n%s' % ('ALL PASS' if failures == 0 else '%d FAILURE(S)' % failures))

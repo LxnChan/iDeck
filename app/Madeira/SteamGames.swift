@@ -835,7 +835,12 @@ struct SteamDownloadStatus: View {
         VStack(alignment: .leading, spacing: 6) {
             ProgressView(value: download.progress.fraction)
             Text(caption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            if let recovery = download.recovery { Text(recovery).font(.caption).foregroundStyle(.secondary) }
+            if download.isChecking {
+                Label("Verifying downloaded files. Resume will be available when verification finishes.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.yellow)
+            } else if let recovery = download.recovery {
+                Text(recovery).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
     private var caption: String {
@@ -1073,10 +1078,10 @@ struct SteamGameSheet: View {
                     .buttonStyle(.bordered)
             case .paused:
                 Button { requestDownload() } label: { steamActionLabel("Resume", symbol: "arrow.down.circle.fill") }
-                    .buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable)
+                    .buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable || download.isChecking)
             case .failed:
                 Button { requestDownload() } label: { steamActionLabel("Try again", symbol: "arrow.clockwise") }
-                    .buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable)
+                    .buttonStyle(.borderedProminent).disabled(!steam.signedIn || !locationAvailable || download.isChecking)
             }
         } else if item.owned != nil {
             Button { requestDownload() } label: {
@@ -1466,7 +1471,9 @@ struct SteamEntrySection: View {
                 SteamDownloadStatus(download: download)
                 switch download.state {
                 case .active, .queued: Button("Pause update") { steam.pause(appID) }
-                case .paused, .failed: Button("Resume update") { requestDownload(appID) }
+                case .paused, .failed:
+                    Button("Resume update") { requestDownload(appID) }
+                        .disabled(!steam.signedIn || download.isChecking)
                 }
             } else if downloads, steam.updateAvailable(appID: appID, installedBuild: games.builds[appID]) {
                 Button { requestDownload(appID) } label: { Label("Update available — download", systemImage: "arrow.down.circle") }

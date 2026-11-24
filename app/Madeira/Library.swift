@@ -2934,7 +2934,7 @@ struct LibraryView: View {
                     }
                 }
             }
-            if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup") {
+            if SteamSettingsSection.shown, settingsShow("Steam", "Dock", "sign in", "account", "setup", "downloads", "screen", "awake", "lock") {
                 SteamSettingsSection(open: { settingsSheet = $0 })
             }
             if settingsShow("Steam Cloud", "Cloud", "sync", "saves", "backup", "restore", "save games") { SavesSection() }

@@ -24,6 +24,9 @@ import os.log
 
 /// Raw window-level host for the presenting CAMetalLayer.
 final class MetalHostView: UIView {
+    override var isHidden: Bool {
+        didSet { SteamDownloadBackground.shared.renderingActive = !isHidden }
+    }
     // Process-lifetime singleton. The CAMetalLayer is registered with DXMT's
     // swapchain exactly once; if the host were recreated on view teardown
     // (rotation, re-attach) DXMT would keep presenting to the DEAD layer —
@@ -69,7 +72,7 @@ final class MetalHostView: UIView {
             LogStore.shared.log("MetalLayer: ml651 nominalFPS=\(hz) (was hardcoded 60; "
                                 + "display link asks preferred=120)")
         }
-        UIApplication.shared.isIdleTimerDisabled = true
+        SteamDownloadBackground.shared.renderingActive = true
         // Set once so DXMT's swapchain setup never blocks on a zero-sized
         // layer. After this, DXMT's setProps is the ONLY drawableSize
         // writer — per-layout rewrites from the app were a second writer

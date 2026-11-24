@@ -47,11 +47,89 @@ assert '.disabled(storage.statuses[record.id]?.ready != true)' in sheet
 assert 'Storage settings and global default' not in sheet
 assert 'Manage external folders and the global download default in Settings' in sheet
 print('PASS: install page passes a local selection without writing the global default and locks unfinished installs')
+status = block((APP / 'SteamGames.swift').read_text(encoding='utf-8'), 'struct SteamDownloadStatus: View')
+assert 'if download.isChecking' in status and '.foregroundStyle(.yellow)' in status
+assert 'exclamationmark.triangle.fill' in status
+assert sheet.count('|| download.isChecking)') == 2
+assert '.disabled(!steam.signedIn || download.isChecking)' in (APP / 'SteamGames.swift').read_text(encoding='utf-8')
+assert 'item.isChecking = true' in owned and 'downloads[appID]?.isChecking = false' in owned
+assert 'guard recoveryTasks[appID] == nil else' in block(owned, 'func install(_ appID:')
+print('PASS: recovery state disables resume and retry across installs and updates and shows a yellow verification notice')
+background = (APP / 'SteamDownloadBackground.swift').read_text(encoding='utf-8')
+assert 'as? Bool ?? true' in background and 'didSet {' in background
+assert 'UserDefaults.standard.set(keepScreenAwake' in background
+idle = block(background, 'private func updateIdleTimer()')
+assert 'applicationState == .active' in idle
+assert 'renderingActive || (downloading && keepScreenAwake)' in idle
+assert 'downloading = true' in block(background, 'func downloadStarted(')
+assert 'downloading = false' in block(background, 'func downloadEnded(')
+content = (APP / 'ContentView.swift').read_text(encoding='utf-8')
+assert 'renderingActive = !isHidden' in content and 'isIdleTimerDisabled = true' not in content
+assert 'Toggle("Keep screen awake while downloading", isOn: $downloads.keepScreenAwake)' in (APP / 'Onboarding.swift').read_text(encoding='utf-8')
+print('PASS: foreground download hold is persistent, opt-out, and composed with the rendering hold')
 if not swift:
     if args.require_swift:
         raise SystemExit('swiftc is required for download recovery checks')
     print('SKIP: download recovery execution requires macOS swiftc (required in CI)')
     raise SystemExit(0)
+
+# Run the actual persisted preference and idle policy with an in-memory UIKit
+# stand-in. Drive both holds to catch one operation releasing another's hold.
+idle_source = background[background.index('@MainActor final class SteamDownloadBackground:'):background.index('    /// On iOS 26 and later,')]
+idle_driver = r'''
+import Foundation
+import Combine
+@MainActor final class UIApplication {
+    enum State { case active, background }
+    static let shared = UIApplication()
+    var applicationState = State.active
+    var isIdleTimerDisabled = false
+}
+'''
+idle_driver += idle_source + r'''
+    func simulateDownload(_ active: Bool) { downloading = active; updateIdleTimer() }
+    func applicationChanged() { updateIdleTimer() }
+}
+@main struct IdleCheck {
+    @MainActor static func main() {
+        let key = "keepScreenAwakeWhileDownloading", defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: key)
+        defaults.removeObject(forKey: key)
+        defer { defaults.set(previous, forKey: key) }
+        let policy = SteamDownloadBackground()
+        let app = UIApplication.shared
+        precondition(policy.keepScreenAwake)
+        policy.simulateDownload(true)
+        precondition(app.isIdleTimerDisabled)
+        policy.keepScreenAwake = false
+        precondition(!app.isIdleTimerDisabled)
+        precondition(!SteamDownloadBackground().keepScreenAwake)
+        policy.renderingActive = true
+        precondition(app.isIdleTimerDisabled)
+        policy.simulateDownload(false)
+        precondition(app.isIdleTimerDisabled)
+        policy.renderingActive = false
+        precondition(!app.isIdleTimerDisabled)
+        policy.keepScreenAwake = true
+        policy.simulateDownload(true)
+        app.applicationState = .background
+        policy.applicationChanged()
+        precondition(!app.isIdleTimerDisabled)
+        app.applicationState = .active
+        policy.applicationChanged()
+        precondition(app.isIdleTimerDisabled)
+        policy.simulateDownload(false)
+        precondition(!app.isIdleTimerDisabled)
+    }
+}
+'''
+with tempfile.TemporaryDirectory() as idle_tmp:
+    source = Path(idle_tmp) / 'IdleCheck.swift'
+    binary = Path(idle_tmp) / 'idle-check'
+    source.write_text(idle_driver, encoding='utf-8')
+    subprocess.run([swift, '-parse-as-library', '-swift-version', '5', str(source), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True, timeout=10)
+print('PASS: production idle policy handles preference persistence, live toggles, overlapping holds, backgrounding, and completion')
 
 
 # Keep the real preparation, journal, networking, hashing and write logic. The

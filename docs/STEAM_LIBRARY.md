@@ -192,6 +192,20 @@ run (`docs/LIBRARY.md`).
 
 ## Downloads in the background
 
+**Settings → Steam → Keep screen awake while downloading** is on by default.
+It prevents automatic locking while a download is active and iDeck is in the
+foreground. Pausing, failure, completion, or turning off the switch releases
+the download's hold; a visible game retains its own hold. The choice is saved
+on the device and takes effect immediately. Manual locking and switching apps
+still depend on iOS background execution limits; this setting cannot prevent
+system suspension or external-drive disconnection.
+
+Downloads already fetch up to eight chunks concurrently, with independent
+checksum verification, retries, and offset-based writes. This is shared by all
+downloaded games; games in the queue still install one at a time. After an
+external drive reconnects, Resume and retry controls stay disabled until the
+recovery audit finishes, with a yellow verification notice below the action.
+
 On iOS 26 and later, a download submits a `BGContinuedProcessingTask` when it
 starts: iOS keeps Madeira running in the background for the whole queue and
 shows its own progress UI (title, game, percentage, a cancel control), fed from

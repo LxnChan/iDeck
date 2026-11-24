@@ -168,7 +168,7 @@ final class JITCoordinator: ObservableObject {
         var message: String {
             switch self {
             case .vpn:
-                return "Madeira couldn't reach this device. Connect LocalDevVPN, then try again."
+                return "Madeira couldn't reach this device. Connect a VPN that provides the local debug connection, such as LocalDevVPN, then try again."
             case .pairing:
                 return "This device closed the connection, which usually means it no longer accepts Madeira's pairing. Pair again, and check that LocalDevVPN is connected."
             }
@@ -439,7 +439,7 @@ final class JITCoordinator: ObservableObject {
         connectionProblem = nil
         ddiProblem = nil
         serviceProblem = false
-        status = "Checking LocalDevVPN and the Developer Disk Image…"
+        status = "Checking the local debug connection and the Developer Disk Image…"
         MadeiraBuiltInJIT.send(.prepare(pairingData: pairing, downloadProxy: downloadProxy)) { [weak self] result in
             guard let self else { return }
             busy = false
@@ -814,7 +814,7 @@ struct JITSetupView: View {
                                  destination: URL(string: "https://github.com/StikDebug/StikDebug/releases/latest")!)
                         }
                     } footer: {
-                        Text("StikDebug needs a pairing file and an active LocalDevVPN connection. Madeira sends its own script automatically.")
+                        Text("StikDebug needs a pairing file and a working local debug connection. LocalDevVPN is one option; an existing compatible VPN can also provide it. Madeira sends its own script automatically.")
                     }
                 }
 

@@ -195,7 +195,7 @@ private actor MadeiraJITWork {
         }
         return response(success: true,
                         message: forceDownload ? "The Developer Disk Image was downloaded and verified."
-                            : "LocalDevVPN is reachable and the Developer Disk Image is ready.",
+                            : "The local debug connection is reachable and the Developer Disk Image is ready.",
                         txmPresent: StikJIT.isTXMPresent)
     }
 }

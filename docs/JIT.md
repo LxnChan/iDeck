@@ -146,8 +146,9 @@ through its `madeira://` URL scheme once connected.
 
 ## LocalDevVPN, cellular data and the Madeira JIT shortcut
 
-When Madeira starts, it checks whether LocalDevVPN's loopback is reachable. If
-LocalDevVPN is installed but not reachable, Madeira opens its connection URL.
+When Madeira starts, it leaves the VPN alone if JIT is already ready or the
+current VPN provides a verified local debug connection. Otherwise, if
+LocalDevVPN is installed, Madeira opens its connection URL.
 LocalDevVPN returns to Madeira through the app's declared URL scheme, and Madeira
 waits up to 15 seconds for the tunnel route to become usable. This automatic check
 runs once per app launch, so a failed or cancelled connection does not create an
@@ -159,19 +160,22 @@ Both methods reach this iPhone's `lockdownd` through LocalDevVPN's loopback
 but not while cellular data is in use.
 
 **Enable JIT** first checks the loopback directly
-(`app/Madeira/JITNetwork.swift`), in two steps that do not depend on what
-`lockdownd` says (over USB it answers a plain `QueryType`; through the tunnel it
-closed the connection instead):
+(`app/Madeira/JITNetwork.swift`). JIT that is already ready skips network setup.
+Otherwise the probe uses two steps:
 
 1. The route: which interface traffic to `10.7.0.1` would leave by, asked of the
-   kernel without sending anything. It must be LocalDevVPN's tunnel, whose
-   address is in `10.7.0.0/16`. Through Wi-Fi or cellular, or through another
-   VPN that carries all traffic (it accepts the connection, and the JIT helper
-   then reads "early eof"), the check fails at once, so a network or VPN that
-   accepts any connection is never asked.
-2. Through a VPN interface: a TCP connection, at most 0.4 s. Through a working
-   loopback it opens in milliseconds, and JIT is enabled with nothing else
-   opening; over cellular data, where the tunnel does not work, it fails.
+   kernel without sending anything. It must be a VPN interface. Wi-Fi and
+   cellular routes fail immediately.
+2. Through a VPN interface: a TCP connection, at most 0.4 s including service
+   verification. LocalDevVPN's established `10.7.0.0/16` route keeps its TCP
+   probe because that transport closes plain `QueryType` requests. Other VPNs
+   must return a framed plist identifying `com.apple.mobile.lockdown` in
+   response to `QueryType`. A proxy that merely accepts TCP, closes early,
+   stays silent, or returns an invalid or oversized frame does not qualify.
+
+A compatible VPN must expose the same `10.7.0.1:62078` endpoint. This does not
+add support for arbitrary tunnel addresses or protocols. Physical-device
+testing is still needed for each alternative VPN implementation.
 
 On a network that accepts any connection, the helper's own error reads "early
 eof"; after a check that found no loopback, Madeira explains any JIT failure as

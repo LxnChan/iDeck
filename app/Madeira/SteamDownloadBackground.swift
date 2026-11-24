@@ -3,6 +3,7 @@
 // Madeira Converter Exception: see LICENSE-EXCEPTION.md
 
 import UIKit
+import Combine
 import BackgroundTasks
 import UserNotifications
 
@@ -28,8 +29,22 @@ import UserNotifications
 // grace period and the clean pause remain). `env.MADEIRA_DOWNLOAD_NOTIFICATIONS
 // = 0`: no notifications and no permission request.
 // Log tag: [bg-download] (counts and states only).
-@MainActor final class SteamDownloadBackground {
+@MainActor final class SteamDownloadBackground: ObservableObject {
     static let shared = SteamDownloadBackground()
+    @Published var keepScreenAwake = UserDefaults.standard.object(forKey: "keepScreenAwakeWhileDownloading") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(keepScreenAwake, forKey: "keepScreenAwakeWhileDownloading")
+            updateIdleTimer()
+        }
+    }
+    /// Rendering and downloads share one idle timer so either can hold it awake.
+    var renderingActive = false { didSet { updateIdleTimer() } }
+    private var downloading = false
+
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = UIApplication.shared.applicationState == .active
+            && (renderingActive || (downloading && keepScreenAwake))
+    }
     /// On iOS 26 and later, Steam downloads continue in the background as a continued-processing task that iOS shows with its progress. 0: only the short grace period, then a clean pause until Madeira is active again.
     static var continuedEnabled: Bool { SteamSignIn.flag("MADEIRA_BACKGROUND_DOWNLOADS", default: true) }
     /// Local notifications when a Steam download finishes, fails or pauses while Madeira is in the background (permission asked at the first download). 0: none, and no permission request.
@@ -66,19 +81,25 @@ import UserNotifications
         guard !observing else { return }
         observing = true
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.beginGrace() }
+            MainActor.assumeIsolated {
+                self?.updateIdleTimer()
+                self?.beginGrace()
+            }
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.endGrace()
                 self?.library?.resumeAfterBackground()
                 self?.library?.reconcileSession()
+                self?.updateIdleTimer()
             }
         }
     }
 
     /// A download became active (always a user action or its queue).
     func downloadStarted(appID: Int, name: String) {
+        downloading = true
+        updateIdleTimer()
         currentName = name
         requestNotificationPermission()
         if #available(iOS 26.0, *), Self.continuedEnabled { submitContinued() }
@@ -100,6 +121,8 @@ import UserNotifications
 
     /// One download ended. `queueEmpty`: nothing else is waiting.
     func downloadEnded(appID: Int, name: String, outcome: Outcome, queueEmpty: Bool) {
+        downloading = false
+        updateIdleTimer()
         if isBackground {
             switch outcome {
             case .completed: notify("\(name) is ready to play", body: "The Steam download finished.")
