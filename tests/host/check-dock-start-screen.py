@@ -293,6 +293,14 @@ func window(_ image: String, _ w: Int, _ h: Int, visible: Bool = true, drawn: Bo
         require(text(started, installers: true, progress: finishedWords, finished: true) == "Loading Steam…" &&
                 text(started, installers: true, progress: "x") == "Loading Steam…", "the host's first field ends the installs")
         require(D.hostStarted(["probe-start-bits": "64"]) && !D.hostStarted([:]), "host start")
+        require(D.failure(result: nil, words: nil, launching: true, hostExit: 0x80000101)?.contains("0x80000101") == true,
+                "a host assertion without a final report ends Loading Steam")
+        require(D.failure(result: nil, words: nil, launching: true, hostExit: 0) != nil,
+                "a clean host exit before the game appears is still a failed start")
+        require(D.failure(result: nil, words: nil, launching: false, hostExit: 0) == nil,
+                "a clean host exit after the game starts is not a startup failure")
+        require(D.failure(result: 35, words: "License failure", launching: true, hostExit: 0x80000101) == "License failure",
+                "the host's final report takes precedence over the exit status")
         require(D.failure(result: nil, words: nil, launching: true) == nil, "no result: the start goes on")
         require(D.failure(result: 0, words: nil, launching: false) == nil, "a normal end after the game's window is not a failure")
         require(D.failure(result: 0, words: nil, launching: true) == "Madeira Dock exited before a game window appeared. Export the diagnostic log.",

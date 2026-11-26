@@ -469,10 +469,12 @@ c_src = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <pthread.h>
 '''
 start = bridge.index('static uint64_t g_launch_exit')
 end = bridge.index('static char *g_prefix_path')
 c_src += 'void wine_launched_process_did_exit(int status);\nvoid wine_exit_status_reset(void);\nint wine_crash_exit_status(uint32_t *status);\n'
+c_src += 'void wine_watch_process_exit(const uint16_t *image, uint32_t length);\n'
 c_src += bridge[start:end]
 c_src += r'''
 static int failed;

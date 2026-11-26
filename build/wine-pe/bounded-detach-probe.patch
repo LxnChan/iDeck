@@ -1,0 +1,44 @@
+Wine ntdll: bound thread-detach diagnostic reads to their TLS allocations.
+
+Retain LGPL-2.1-or-later and all existing source notices.
+
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4975,6 +4975,19 @@
+  *		LdrShutdownThread (NTDLL.@)
+  *
+  */
++/* Diagnostic reads must stay within the heap allocation that owns the TLS
++ * block. A fixed 1 KB read can cross into a neighboring stack reservation.
++ * NtReadVirtualMemory still handles a concurrent protection change. */
++#if defined(__aarch64__) || defined(__arm64ec__)
++static NTSTATUS detach_probe_read( const void *block, void *buffer, SIZE_T capacity, SIZE_T *got )
++{
++    SIZE_T size = RtlSizeHeap( GetProcessHeap(), 0, block );
++    *got = 0;
++    if (size == ~(SIZE_T)0) return STATUS_INVALID_PARAMETER;
++    return NtReadVirtualMemory( GetCurrentProcess(), block, buffer, min( size, capacity ), got );
++}
++#endif
++
+ void WINAPI LdrShutdownThread(void)
+ {
+     PLIST_ENTRY mark, entry;
+@@ -5027,7 +5040,7 @@
+                 ULONG_PTR blk[128];
+                 SIZE_T got = 0;
+                 if (!blocks[b]) continue;
+-                if (NtReadVirtualMemory( GetCurrentProcess(), blocks[b], blk, sizeof(blk), &got ))
++                if (detach_probe_read( blocks[b], blk, sizeof(blk), &got ))
+                     continue;
+                 for (k = 0; k < got / sizeof(ULONG_PTR); k++)
+                     IOS_DP_CHECK( blk[k], "static TLS block %u +0x%x", b, (unsigned)(k * 8) );
+@@ -5043,7 +5056,7 @@
+             if (blocks && blocks[0])
+             {
+                 ULONG64 q[12]; SIZE_T got = 0;
+-                if (!NtReadVirtualMemory( GetCurrentProcess(), blocks[0], q, sizeof(q), &got ) && got == sizeof(q))
++                if (!detach_probe_read( blocks[0], q, sizeof(q), &got ) && got == sizeof(q))
+                     ERR( "[detach-probe] ml844   tls0[+00..+58] = %llx %llx %llx %llx %llx %llx | %llx %llx %llx | %llx %llx %llx\n",
+                          (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2],
+                          (unsigned long long)q[3], (unsigned long long)q[4], (unsigned long long)q[5],

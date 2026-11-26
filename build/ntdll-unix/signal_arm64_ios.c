@@ -13833,6 +13833,17 @@ bus_fatal:
     { static unsigned long ml1055_bus; unsigned long k = __sync_add_and_fetch( &ml1055_bus, 1 );   /* 20,764 lines a run */
       if (k <= 40 || !(k % 1000)) ERR("BUS at pc=%p addr=%p exec=%d (#%lu, sampled) rev=ml345\n", pc, siginfo->si_addr, is_exec_fault, k); }
 #endif
+    /* Darwin can report an inaccessible data page as SIGBUS. Honor the
+     * syscall's __TRY before delivering a guest exception, just as SIGSEGV
+     * does. Otherwise NtReadVirtualMemory leaves its jump buffer installed
+     * and the next protected operation aborts the entire pseudo-process. */
+    if (handle_syscall_fault( sigcontext, &rec ))
+    {
+#ifdef WINE_IOS
+        ios_fixup_x18_for_return( sigcontext );
+#endif
+        return;
+    }
     setup_exception( sigcontext, &rec );
 }
 

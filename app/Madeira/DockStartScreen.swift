@@ -250,7 +250,11 @@ enum DockStartStatus {
     /// The host reported a result. The host waits for the game it started, so a
     /// result while the starting screen is up means no game window appeared; any
     /// non-zero result is a failure too. nil when the start goes on.
-    static func failure(result: Int?, words: String?, launching: Bool) -> String? {
+    static func failure(result: Int?, words: String?, launching: Bool, hostExit: UInt32? = nil) -> String? {
+        if result == nil, let hostExit, launching || hostExit != 0 {
+            let code = String(hostExit, radix: 16, uppercase: true)
+            return "Madeira Dock exited before completing the launch (Windows status 0x\(code)). Export the diagnostic log."
+        }
         guard let result, launching || result != 0 else { return nil }
         return words ?? "Madeira Dock exited before a game window appeared. Export the diagnostic log."
     }
@@ -293,6 +297,12 @@ final class DockStartScreen: ObservableObject {
         endHold(reason: nil)
         active = game != nil; appID = game?.id; failure = nil
         exitObserved = false; hostStarted = false; early = []; started = start
+        if game != nil {
+            let image = Array(MadeiraDock.executable.utf16)
+            image.withUnsafeBufferPointer { wine_watch_process_exit($0.baseAddress, UInt32($0.count)) }
+        } else {
+            wine_watch_process_exit(nil, 0)
+        }
         guard let game, MadeiraConfig.flag("MADEIRA_DOCK_HIDE_DESKTOP") else { return }   // 0: a Dock start's starting screen ends on the desktop's first frame, as before
         let hold = SteamLaunchHold(autoReveal: MadeiraConfig.flag("MADEIRA_DOCK_AUTO_REVEAL"))   // 0: a window that may need the user never reveals the desktop by itself (Show desktop still does)
         self.hold = hold; sceneLines = 0; holding = true
@@ -303,6 +313,7 @@ final class DockStartScreen: ObservableObject {
     /// The session ended.
     func finish() {
         endHold(reason: "session-ended")
+        wine_watch_process_exit(nil, 0)
         active = false; appID = nil; failure = nil
     }
 
@@ -314,13 +325,20 @@ final class DockStartScreen: ObservableObject {
         var report: MadeiraDock.Report?
         // The host's result: a start that stopped keeps the starting screen with the report's words.
         if !exitObserved && MadeiraConfig.flag("MADEIRA_DOCK_STATUS") {   // 0: the starting screen does not watch the host's result
-            let current = MainActor.assumeIsolated { MadeiraDock.pollReport() }
+            var current = MainActor.assumeIsolated { MadeiraDock.pollReport() }
+            var status: UInt32 = 0
+            let hostExit: UInt32? = wine_watched_process_exit_status(&status) != 0 ? status : nil
+            // The final report may have been flushed after our first read.
+            if hostExit != nil, current.result == nil {
+                current = MainActor.assumeIsolated { MadeiraDock.pollReport() }
+            }
             report = current
-            if current.result != nil {
+            if current.result != nil || hostExit != nil {
                 exitObserved = true
-                if let words = DockStartStatus.failure(result: current.result, words: current.failure, launching: model.launching) {
+                if let words = DockStartStatus.failure(result: current.result, words: current.failure, launching: model.launching, hostExit: hostExit) {
                     failure = words
-                    LogStore.shared.log("[dock-status] host-ended result=\(current.result ?? 0) starting=\(model.launching ? 1 : 0)", level: .error)
+                    let outcome = current.result.map { "result=\($0)" } ?? "exit-status=0x\(String(status, radix: 16))"
+                    LogStore.shared.log("[dock-status] host-ended \(outcome) starting=\(model.launching ? 1 : 0)", level: .error)
                     MainActor.assumeIsolated { MadeiraDock.cleanup() }
                 }
             }

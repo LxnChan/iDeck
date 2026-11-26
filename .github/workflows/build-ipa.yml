@@ -117,6 +117,8 @@ jobs:
           python3 -B tests/host/check-steam-cdn.py --require-swift
           python3 -B tests/host/check-steam-games.py
           python3 -B tests/host/check-dock-contract.py
+          python3 -B tests/host/check-syscall-bus-recovery.py --require-native
+          python3 -B tests/host/check-dock-start-screen.py
           echo "::endgroup::"
           echo "::group::Audio regressions"
           python3 -B tests/host/check-audio-period.py

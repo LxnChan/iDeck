@@ -338,9 +338,50 @@ void wine_launched_process_did_exit(int status) {
 }
 void wine_exit_status_reset(void) {
     __atomic_store_n(&g_launch_exit, 0, __ATOMIC_RELEASE);
+    wine_watch_process_exit(NULL, 0);
 }
 int wine_crash_exit_status(uint32_t *status) {
     uint64_t value = __atomic_load_n(&g_launch_exit, __ATOMIC_ACQUIRE);
+    if (!(value >> 32)) return 0;
+    if (status) *status = (uint32_t)value;
+    return 1;
+}
+
+/* A process watch is independent of the initial Wine desktop's lifetime.
+ * The exit callback may run on a guest worker while Swift polls on main. */
+static pthread_mutex_t g_process_exit_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint16_t g_process_exit_image[1024];
+static uint32_t g_process_exit_length;
+static uint64_t g_process_exit_result;
+
+static uint16_t wine_exit_path_char(uint16_t c) {
+    if (c == '/') return '\\';
+    return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
+}
+void wine_watch_process_exit(const uint16_t *image, uint32_t length) {
+    pthread_mutex_lock(&g_process_exit_lock);
+    g_process_exit_length = 0;
+    g_process_exit_result = 0;
+    if (image && length && length <= sizeof(g_process_exit_image) / sizeof(g_process_exit_image[0])) {
+        for (uint32_t i = 0; i < length; i++) g_process_exit_image[i] = wine_exit_path_char(image[i]);
+        g_process_exit_length = length;
+    }
+    pthread_mutex_unlock(&g_process_exit_lock);
+}
+void wine_process_did_exit(const uint16_t *image, uint32_t length, int status) {
+    pthread_mutex_lock(&g_process_exit_lock);
+    if (image && length && length == g_process_exit_length && !g_process_exit_result) {
+        uint32_t i;
+        for (i = 0; i < length; i++)
+            if (wine_exit_path_char(image[i]) != g_process_exit_image[i]) break;
+        if (i == length) g_process_exit_result = (UINT64_C(1) << 32) | (uint32_t)status;
+    }
+    pthread_mutex_unlock(&g_process_exit_lock);
+}
+int wine_watched_process_exit_status(uint32_t *status) {
+    pthread_mutex_lock(&g_process_exit_lock);
+    uint64_t value = g_process_exit_result;
+    pthread_mutex_unlock(&g_process_exit_lock);
     if (!(value >> 32)) return 0;
     if (status) *status = (uint32_t)value;
     return 1;

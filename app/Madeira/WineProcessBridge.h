@@ -27,6 +27,13 @@ int wine_crash_exit_status(uint32_t *status);
 // Forget the recorded status; called when a session begins.
 void wine_exit_status_reset(void);
 
+// Watch one full Windows image path (UTF-16, no terminator required).
+// Passing NULL or an empty path disables the watch and clears its result.
+// The runtime reports exits from any thread before reclaiming the process.
+void wine_watch_process_exit(const uint16_t *image, uint32_t length);
+void wine_process_did_exit(const uint16_t *image, uint32_t length, int status);
+int wine_watched_process_exit_status(uint32_t *status);
+
 // Steam S0 net-test VPN gate: write C:\madeira-continue.flag into the
 // prefix's drive_c so the paused winhttp-test.exe resumes to the Steam
 // stage. Called by the "Continue Net Test" UI button after the user has

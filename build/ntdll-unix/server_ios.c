@@ -4688,6 +4688,16 @@ static int init_thread_pipe(void)
 void process_exit_wrapper( int status )
 {
 #ifdef WINE_IOS
+    /* Observe the designated process even when a worker thread ends it.
+     * Report before reclaiming its PEB or mappings; the app copies only the
+     * exit status when this full image path matches its current watch. */
+    {
+        extern void wine_process_did_exit( const WCHAR *image, unsigned int length, int status ) __attribute__((weak));
+        RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+        if (wine_process_did_exit && params)
+            wine_process_did_exit( params->ImagePathName.Buffer,
+                                   params->ImagePathName.Length / sizeof(WCHAR), status );
+    }
     /* Close THIS pseudo-process's master socket — the EOF is how wineserver
      * learns the process died (signals its process object, wakes waiters).
      * Clear the registry slot so a stray second call can't double-close. */

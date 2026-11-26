@@ -8,18 +8,20 @@ import sys
 
 
 PATCH = Path(__file__).resolve().with_name("win32u-attach-order.patch")
+PATCHES = (PATCH, PATCH.with_name("bounded-detach-probe.patch"))
 WINE = PATCH.parents[2] / "wine"
 
 
 def apply(wine=WINE):
     command = ["git", "-C", str(wine), "apply"]
-    if subprocess.run(command + ["--reverse", "--check", str(PATCH)],
-                      capture_output=True).returncode == 0:
-        print("Wine PE loader overlay already applied")
-        return
-    subprocess.run(command + ["--check", str(PATCH)], check=True)
-    subprocess.run(command + [str(PATCH)], check=True)
-    print("Applied Wine PE CRT and win32u initialization order fix")
+    for patch in PATCHES:
+        if subprocess.run(command + ["--reverse", "--check", str(patch)],
+                          capture_output=True).returncode == 0:
+            print(f"Wine PE loader overlay already applied: {patch.name}")
+            continue
+        subprocess.run(command + ["--check", str(patch)], check=True)
+        subprocess.run(command + [str(patch)], check=True)
+        print(f"Applied Wine PE loader overlay: {patch.name}")
 
 
 if __name__ == "__main__":
