@@ -993,7 +993,62 @@ extern NSString * const MadeiraDisplayModeChangedNotification;
 static UIView *g_compositor_view;
 static BOOL g_comp_game;   /* g_compositor_view is the game-mode overlay (below) */
 static void winios_drop_compositor(const char *why);
-static CALayer *g_desk_bg;               /* teal desktop-area backdrop */
+static CALayer *g_desk_bg;               /* desktop backdrop, below all windows */
+static UIImage *g_desk_wallpaper;
+static CGSize g_wallpaper_render_size;
+
+/* Render in guest pixels so tiles keep their size through rotation, display
+ * scaling, and resolution changes. Bound the backing bitmap to 4096 pixels. */
+static void winios_render_desktop_wallpaper(int width, int height) {
+    if (!g_desk_bg || !g_desk_wallpaper || width <= 0 || height <= 0) return;
+    CGSize size = CGSizeMake(width, height);
+    if (CGSizeEqualToSize(size, g_wallpaper_render_size)) return;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = MIN(1.0, 4096.0 / MAX(width, height));
+    format.opaque = YES;
+    format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+    NSString *style = [[NSUserDefaults standardUserDefaults] stringForKey:@"desktop.wallpaper.style"];
+    UIImage *rendered = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [[UIColor colorWithRed:0.0 green:0.502 blue:0.502 alpha:1.0] setFill];
+        [context fillRect:(CGRect){CGPointZero, size}];
+        CGSize imageSize = g_desk_wallpaper.size;
+        if ([style isEqualToString:@"tile"]) {
+            [g_desk_wallpaper drawAsPatternInRect:(CGRect){CGPointZero, size}];
+        } else {
+            CGFloat sx = width / imageSize.width, sy = height / imageSize.height;
+            CGFloat scale = [style isEqualToString:@"fit"] ? MIN(sx, sy) : MAX(sx, sy);
+            CGSize drawn = CGSizeMake(imageSize.width * scale, imageSize.height * scale);
+            [g_desk_wallpaper drawInRect:CGRectMake((width - drawn.width) / 2,
+                                                  (height - drawn.height) / 2,
+                                                  drawn.width, drawn.height)];
+        }
+    }];
+    g_desk_bg.contents = (__bridge id)rendered.CGImage;
+    g_wallpaper_render_size = size;
+}
+
+static void winios_load_desktop_wallpaper(void) {
+    NSURL *directory = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
+                                                             inDomains:NSUserDomainMask] firstObject];
+    NSURL *file = [directory URLByAppendingPathComponent:@"DesktopWallpaper/image.png"];
+    g_desk_wallpaper = [UIImage imageWithContentsOfFile:file.path];
+    g_wallpaper_render_size = CGSizeZero;
+    g_desk_bg.contents = nil;
+}
+
+void winios_reload_desktop_wallpaper(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_desk_bg) return;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        winios_load_desktop_wallpaper();
+        int width = 0, height = 0;
+        winios_screen_size(&width, &height);
+        winios_render_desktop_wallpaper(width > 0 ? width : 1024, height > 0 ? height : 768);
+        [CATransaction commit];
+    });
+}
 static CGFloat g_px_to_pt = 1.0 / 3.0;   /* desktop px → screen pt (x, and y unless stretched) */
 static CGFloat g_px_to_pt_y;             /* y scale when the display mode stretches; 0 = same as x */
 static CGPoint g_desk_origin;            /* desktop (0,0) in view pt (letterbox offset) */
@@ -1061,6 +1116,7 @@ static void winios_layout_compositor(void) {
         fit = g_desk_rect.size;
     }
     g_desk_bg.frame = CGRectMake(g_desk_origin.x, g_desk_origin.y, fit.width, fit.height);
+    winios_render_desktop_wallpaper(desk_w, desk_h);
 
     /* re-place existing window layers under the new mapping */
     for (NSNumber *key in g_px_rects) {
@@ -1215,6 +1271,8 @@ static void winios_drop_compositor(const char *why) {
     [g_compositor_view removeFromSuperview];
     g_compositor_view = nil;
     g_desk_bg = nil;
+    g_desk_wallpaper = nil;
+    g_wallpaper_render_size = CGSizeZero;
     fprintf(stderr, "[winios] %s compositor removed (%s)\n", g_comp_game ? "game-mode" : "desktop", why);
     fflush(stderr);
     g_comp_game = NO;
@@ -1319,11 +1377,13 @@ static void winios_ensure_compositor(void) {
     g_compositor_view.clipsToBounds = YES;
     /* letterbox area: black, like the rest of a session's screen (the game
      * view's host and the library's session view are black); an 8 % grey
-     * showed as grey bands around a fitted desktop. desktop area: classic
-     * teal (until explorer's own background paint works) */
+     * showed as grey bands around a fitted desktop. The desktop area uses the
+     * saved wallpaper, with classic teal as the default and fit background. */
     g_compositor_view.backgroundColor = UIColor.blackColor;
     g_desk_bg = [CALayer layer];
     g_desk_bg.backgroundColor = [UIColor colorWithRed:0.0 green:0.502 blue:0.502 alpha:1.0].CGColor;
+    g_desk_bg.masksToBounds = YES;
+    winios_load_desktop_wallpaper();
     [g_compositor_view.layer addSublayer:g_desk_bg];
     [win addSubview:g_compositor_view];
     winios_layout_compositor();

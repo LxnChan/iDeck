@@ -51,6 +51,8 @@ void winios_post_key(int vk, int down);
  * dispatch inside. */
 void winios_set_compositor_frame(double x, double y, double w, double h);
 void winios_set_desktop_rect(double x, double y, double w, double h, int set);
+/* Reload the saved desktop wallpaper and its display style on the main queue. */
+void winios_reload_desktop_wallpaper(void);
 
 /* S2 trackpad pointer. (x, y) are ABSOLUTE wine-desktop pixels (the
  * Swift trackpad engine owns the cursor position); flags are raw

@@ -2899,6 +2899,13 @@ struct LibraryView: View {
             if settingsShow("pointer", "mouse", "cursor", "touch", "trackpad", "sensitivity") {
                 Section("Pointer") { LibraryPointerSettings() }
             }
+            if settingsShow("desktop", "wallpaper", "background", "image") {
+                Section("Desktop") {
+                    NavigationLink { DesktopWallpaperSettings() } label: {
+                        Label("Wallpaper", systemImage: "photo")
+                    }
+                }
+            }
             if MadeiraConfig.flag("MADEIRA_RUNTIME_SETTINGS") {
                 if settingsShow("display", "refresh", "rate", "ProMotion", "120 Hz") { DisplayRateSettings() }
                 if settingsShow("memory", "JIT pool", "pool", "video memory", "VRAM", "swap", "coverage", "madsync", "sync", "eco", "all settings") {
@@ -4281,6 +4288,115 @@ struct FPSChoice: View {
             if ProMotionIntent.has40Cap || mode == 4 { Text("40 FPS").tag(4) }
             Text("60 FPS").tag(1); Text("Display maximum").tag(0); Text("Uncapped").tag(2)
         }.labelsHidden().pickerStyle(.menu) }
+    }
+}
+
+/// Wallpaper is stored outside the Wine prefix so replacing a prefix preserves it.
+private enum DesktopWallpaperStorage {
+    static var file: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DesktopWallpaper", isDirectory: true)
+            .appendingPathComponent("image.png")
+    }
+
+    static func importImage(from url: URL) throws {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let attributes = try url.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = attributes.fileSize, size <= 40_000_000 else {
+            throw LibraryError.message("Choose an image smaller than 40 MB.")
+        }
+        // Decode only a bounded thumbnail, applying the camera orientation.
+        guard let source = CGImageSourceCreateWithURL(url as CFURL,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 4096,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+              ] as CFDictionary),
+              let png = UIImage(cgImage: thumbnail).pngData() else {
+            throw LibraryError.message("This image could not be opened. Choose a JPEG, PNG, HEIC, or another supported image.")
+        }
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // A failed import leaves the previous wallpaper intact.
+        try png.write(to: file, options: .atomic)
+    }
+
+    static func remove() throws {
+        if FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+}
+
+private struct DesktopWallpaperSettings: View {
+    @AppStorage("desktop.wallpaper.style") private var style = "fill"
+    @State private var importing = false
+    @State private var busy = false
+    @State private var preview: UIImage?
+    @State private var error: String?
+
+    var body: some View {
+        Form {
+            Section {
+                if let preview {
+                    Image(uiImage: preview)
+                        .resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 220)
+                        .accessibilityLabel("Selected wallpaper")
+                } else {
+                    Color(red: 0, green: 0.502, blue: 0.502)
+                        .frame(height: 160).accessibilityLabel("Default desktop background")
+                }
+                Button("Choose Image from Files", systemImage: "photo") { importing = true }
+                if busy { ProgressView("Importing image…") }
+                Picker("Display style", selection: $style) {
+                    Text("Fill").tag("fill")
+                    Text("Fit").tag("fit")
+                    Text("Tile").tag("tile")
+                }
+                Button("Restore Default Background", role: .destructive) {
+                    do {
+                        try DesktopWallpaperStorage.remove()
+                        style = "fill"
+                        refresh()
+                    } catch { self.error = error.localizedDescription }
+                }.disabled(preview == nil)
+            } footer: {
+                Text("Used for all Desktop sessions, including games launched in Desktop mode. Fill crops the image to cover the desktop. Fit shows the entire image. Tile repeats the image. Your selection is saved for future sessions. To use a photo, save it to Files first.")
+            }
+            .disabled(busy)
+        }
+        .navigationTitle("Desktop Wallpaper")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { refresh() }
+        .onChange(of: style) { _, _ in winios_reload_desktop_wallpaper() }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
+            switch result {
+            case .success(let url):
+                busy = true
+                Task {
+                    let problem = await Task.detached(priority: .userInitiated) { () -> String? in
+                        do { try DesktopWallpaperStorage.importImage(from: url); return nil }
+                        catch { return error.localizedDescription }
+                    }.value
+                    error = problem
+                    busy = false
+                    refresh()
+                }
+            case .failure(let problem):
+                if (problem as NSError).code != NSUserCancelledError { error = problem.localizedDescription }
+            }
+        }
+        .alert("Couldn't Update Wallpaper", isPresented: Binding(
+            get: { error != nil }, set: { if !$0 { error = nil } }
+        )) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+
+    private func refresh() {
+        preview = UIImage(contentsOfFile: DesktopWallpaperStorage.file.path)
+        winios_reload_desktop_wallpaper()
     }
 }
 

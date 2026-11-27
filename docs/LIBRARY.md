@@ -17,6 +17,24 @@ The code is `app/Madeira/Library.swift` and `app/Madeira/GuestDisplay.swift`
 library HUD inside `TouchControlsOverlay`, and `MetalBackedView`'s layout and
 touch mapping).
 
+## Desktop wallpaper
+
+Open **Settings > Desktop > Wallpaper**, then choose **Choose Image from Files**.
+To use a photo from Photos, save it to Files first. Images must be smaller than
+40 MB; imported images are orientation-corrected and resized to at most 4096
+pixels on the longest edge.
+
+- **Fill** covers the desktop and crops excess edges.
+- **Fit** preserves the entire image with the default teal background around it.
+- **Tile** repeats the imported image at its pixel size.
+- **Restore Default Background** removes the saved wallpaper and restores teal.
+
+The wallpaper applies to all Desktop sessions, including games launched inside
+the desktop. It is saved in the app's Application Support directory, outside the
+Wine prefix, and persists across app restarts and prefix replacement. This is an
+iDeck background setting; it does not change the Windows wallpaper registry.
+The background follows the desktop's resolution and display scaling.
+
 ## Adding games
 
 Copy a game's whole folder into **Madeira › wine › drive_c** with the Files app,
