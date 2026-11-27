@@ -177,7 +177,6 @@ enum Downloader {
         var manifest: DepotManifest; var hosts: [String]; var auth: [String: String] = [:]
         var health = ContentHostHealth()
     }
-    static var http: URLSession { URLSession(configuration: .ephemeral) }
 '''
 STUBS = STUBS.replace('HEALTH_SOURCE', block(downloader, 'final class ContentHostHealth:'))
 DRIVER = r'''
@@ -367,9 +366,11 @@ func checkSpacePreparation(apps: URL) throws {
 
         try Data("xxxxxxxxx".utf8).write(to: file)
         let storage = Storage()
+        let http = URLSession(configuration: .ephemeral)
+        defer { http.invalidateAndCancel() }
         do {
             try await Downloader.fetchChunk(chunks[0], plan: plan, path: file.path, root: apps, attempts: 5, seed: 0,
-                                             validateStorage: { try await storage.validate() })
+                                             http: http, validateStorage: { try await storage.validate() })
             preconditionFailure("disconnect after network response must stop before writing")
         } catch is DrivePaths.Failure {}
         check(try Data(contentsOf: file) == Data("xxxxxxxxx".utf8), "disconnect prevents late writes")
@@ -377,7 +378,7 @@ func checkSpacePreparation(apps: URL) throws {
 
         var slow = plan; slow.hosts = [host + "/slow"]
         let request = Task { try await Downloader.fetchChunk(chunks[0], plan: slow, path: file.path, root: apps,
-                                                            attempts: 5, seed: 0, validateStorage: {}) }
+                                                            attempts: 5, seed: 0, http: http, validateStorage: {}) }
         let marker = root.appendingPathComponent("request-started")
         let deadline = Date().addingTimeInterval(10)
         while !fm.fileExists(atPath: marker.path), Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
@@ -395,14 +396,14 @@ func checkSpacePreparation(apps: URL) throws {
         var rotating = plan
         rotating.hosts = (0..<5).map { host + "/bad\($0)" } + [host + "/fast"]
         try await Downloader.fetchChunk(chunks[0], plan: rotating, path: file.path, root: apps,
-                                        attempts: 5, seed: 0, validateStorage: {})
+                                        attempts: 5, seed: 0, http: http, validateStorage: {})
         check(try Data(contentsOf: file).prefix(3) == Data("abc".utf8), "sixth host succeeds within the pool-sized budget")
         print("PASS: production chunk retry reaches the sixth host before repeating failed hosts")
 
         var exhausted = plan; exhausted.hosts = [host + "/bad-final"]
         do {
             try await Downloader.fetchChunk(chunks[0], plan: exhausted, path: file.path, root: apps,
-                                            attempts: 2, seed: 0, validateStorage: {})
+                                            attempts: 2, seed: 0, http: http, validateStorage: {})
             preconditionFailure("HTTP failures must propagate after bounded retries")
         } catch {
             check(Downloader.failureReason(error) == "http-503", "terminal HTTP status remains diagnosable")

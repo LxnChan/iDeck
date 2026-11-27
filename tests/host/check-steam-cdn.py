@@ -37,7 +37,7 @@ assert 'request.timeoutInterval = 12' in discovery
 assert 'servers.prefix(20)' in discovery
 assert 'localizedDescription' not in discovery
 assert 'let pool = Self.contentPool(hosts, maximum: hostPoolSize)' in source
-assert 'hosts: pool, validateStorage:' in source
+assert 'hosts: pool, http: http, validateStorage:' in source
 reason = block('nonisolated static func failureReason(')
 assert 'failure.domain == NSURLErrorDomain' in reason
 assert 'userInfo' not in reason
@@ -66,6 +66,7 @@ import Foundation
         let cell = UInt32(query.first { $0.name == "cell_id" }!.value!)!
         seen.append(cell)
         if mode == "cancel" { throw NSError(domain: NSURLErrorDomain, code: -999) }
+        if mode == "memory" { throw NSError(domain: NSPOSIXErrorDomain, code: 12) }
         if mode == "offline" { throw NSError(domain: NSURLErrorDomain, code: -1001,
             userInfo: [NSLocalizedDescriptionKey: "secret-auth-value", NSURLErrorFailingURLStringErrorKey: "https://private/?auth=secret-auth-value"]) }
         var servers: [[String: Any]] = []
@@ -96,7 +97,7 @@ for marker in ('enum ServerEligibility:', 'nonisolated static func serverEligibi
                'private func contentServers(', 'nonisolated static func directoryCells(',
                'nonisolated static func contentPool(', 'nonisolated static func usableContentHost(',
                'nonisolated static func failureReason(', 'struct HTTPFailure:'):
-    driver += block(marker).replace('private func contentServers(', 'func contentServers(') + '\n'
+    driver += block(marker).replace('private func contentServers(', 'func contentServers(').replace('http: URLSession', 'http: DirectoryHTTP') + '\n'
 driver += '\n}\n@MainActor enum SteamOwnedLibrary {\n' + block(
     'static func reason(_ error:', (APP / 'SteamOwnedLibrary.swift').read_text(encoding='utf-8')) + '\n}\n'
 driver += '\nenum SteamSignIn {\n' + block(
@@ -106,7 +107,7 @@ driver += r'''
     @MainActor static func main() async throws {
         let downloader = DepotDownloader(), http = DepotDownloader.http
         let fallback = "https://steampipe.akamaized.net"
-        let hosts = try await downloader.contentServers(appID: 1)
+        let hosts = try await downloader.contentServers(appID: 1, http: http)
         precondition(http.seen == [52, 0, 1])
         precondition(hosts.count == 9 && Set(hosts).count == hosts.count)
         precondition(!hosts.contains("https://bad.example") && !hosts.contains("https://restricted.example"))
@@ -119,21 +120,26 @@ driver += r'''
         precondition(SteamLog.lines.contains { $0.contains("reason=invalid-host") })
         print("PASS: regional HTTP-only reproduction discovers alternate HTTPS partners, deduplicates hosts, and retains fallback in six-host pool")
         http.mode = "healthy"; http.seen = []
-        _ = try await downloader.contentServers(appID: 1)
+        _ = try await downloader.contentServers(appID: 1, http: http)
         precondition(http.seen == [52])
         precondition(DepotDownloader.directoryCells(0) == [0, 1] && DepotDownloader.directoryCells(1) == [1, 0])
         for mode in ["offline", "malformed"] {
             http.mode = mode; http.seen = []
-            let recovered = try await downloader.contentServers(appID: 1)
+            let recovered = try await downloader.contentServers(appID: 1, http: http)
             precondition(recovered == [fallback] && http.seen == [52, 0, 1])
         }
         precondition(SteamLog.lines.contains { $0.contains("reason=url-1001") })
         precondition(!SteamLog.lines.contains { $0.contains("secret-auth-value") })
         http.mode = "cancel"; http.seen = []
-        do { _ = try await downloader.contentServers(appID: 1); preconditionFailure("cancel must stop discovery") }
+        do { _ = try await downloader.contentServers(appID: 1, http: http); preconditionFailure("cancel must stop discovery") }
         catch is CancellationError {}
         precondition(http.seen == [52])
         print("PASS: healthy discovery stops early; outages and malformed replies have bounded fallback; cancellation stops immediately")
+        http.mode = "memory"; http.seen = []
+        do { _ = try await downloader.contentServers(appID: 1, http: http); preconditionFailure("memory exhaustion must stop discovery") }
+        catch { precondition(SteamNetworkFailure.isResourceExhaustion(error)) }
+        precondition(http.seen == [52])
+        print("PASS: resource exhaustion stops directory requests without creating fallback traffic")
         for bad in ["localhost", "127.0.0.1", "[::1]", "user@edge.example", "edge.example/path", "edge.example?auth=secret", "x..example", "-x.example", "x.example:443", "lancache.example", "a\n.example", String(repeating: "a", count: 64) + ".example"] {
             precondition(!DepotDownloader.usableContentHost(bad), bad)
         }

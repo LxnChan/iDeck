@@ -68,7 +68,7 @@ final class DepotDownloader {
     private let attemptsPerChunk = 5
     private let hostPoolSize = 6
 
-    private nonisolated static var http: URLSession {
+    private nonisolated static func makeHTTP() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -99,6 +99,10 @@ final class DepotDownloader {
                  progress report: @escaping (SteamDownloadProgress) -> Void) async throws -> URL {
         let depots = app.installDepots()
         guard !depots.isEmpty else { throw SteamError.depotNotFound(app.appID) }
+        // One connection pool for the entire install, including retries. Capture
+        // current proxy settings once; a resumed install gets a fresh session.
+        let http = Self.makeHTTP()
+        defer { http.invalidateAndCancel() }
         try await validateStorage()
         let steamApps = requestedSteamApps.resolvingSymlinksInPath().standardizedFileURL
         // Before the key requests, so a refused depot still has its selection logged.
@@ -121,7 +125,7 @@ final class DepotDownloader {
 
         depotCache = steamApps.appendingPathComponent("depotcache", isDirectory: true)
         let hosts: [String]
-        if let provider = contentHosts { hosts = try await provider(app.appID) } else { hosts = try await contentServers(appID: app.appID) }
+        if let provider = contentHosts { hosts = try await provider(app.appID) } else { hosts = try await contentServers(appID: app.appID, http: http) }
         guard !hosts.isEmpty else { throw SteamError.chunkDownloadFailed("No content servers are available.") }
 
         // 1. Keys, manifests and per-host authorization for every depot.
@@ -152,7 +156,7 @@ final class DepotDownloader {
             if session.steamID != 0 { accountID = session.steamID }
             let contentAppID = !app.freeToDownload ? (depot.fromApp ?? app.appID) : app.appID
             let manifest = try await fetchManifest(depotID: depot.depotID, appID: contentAppID,
-                                                   manifestGID: gid, key: key, hosts: pool, validateStorage: validateStorage)
+                                                   manifestGID: gid, key: key, hosts: pool, http: http, validateStorage: validateStorage)
             var auth: [String: String] = [:]
             for host in pool {
                 auth[host] = await cdnAuthFragment(depotID: depot.depotID, appID: contentAppID, host: host)
@@ -228,7 +232,7 @@ final class DepotDownloader {
                         try await validateStorage()
                         if verify, Self.chunkAlreadyPresent(chunk, path: path) { return (item.key, UInt64(chunk.compressedSize)) }
                         try await Self.fetchChunk(chunk, plan: plan, path: path, root: steamApps, attempts: attempts,
-                                                  seed: item.file &+ item.chunk, validateStorage: validateStorage)
+                                                  seed: item.file &+ item.chunk, http: http, validateStorage: validateStorage)
                         return (item.key, UInt64(chunk.compressedSize))
                     }
                 }
@@ -460,7 +464,7 @@ final class DepotDownloader {
     }
 
     private nonisolated static func fetchChunk(_ chunk: DepotManifest.ChunkEntry, plan: DepotPlan,
-                                               path: String, root: URL, attempts: Int, seed: Int,
+                                               path: String, root: URL, attempts: Int, seed: Int, http: URLSession,
                                                validateStorage: @Sendable () async throws -> Void) async throws {
         var lastError: Error = SteamError.chunkDownloadFailed("No content server responded.")
         let budget = max(1, max(attempts, plan.hosts.count))
@@ -477,7 +481,7 @@ final class DepotDownloader {
             let url = "\(host)/depot/\(plan.depotID)/chunk/\(chunk.shaHex)\(plan.auth[host] ?? "")"
             let data: Data
             do {
-                let encrypted = try await download(url)
+                let encrypted = try await download(url, http: http)
                 try Task.checkCancellation()
                 data = try ContentDecryptor.processChunk(encryptedData: encrypted, depotKey: plan.key,
                                                              expectedCRC: chunk.crc,
@@ -487,6 +491,8 @@ final class DepotDownloader {
                 throw CancellationError()
             } catch {
                 if Task.isCancelled { throw CancellationError() }
+                // Changing servers cannot recover exhausted local resources.
+                if SteamNetworkFailure.isResourceExhaustion(error) { throw error }
                 lastError = error
                 plan.health.recordFailure(host, reason: failureReason(error))
                 SteamLog.trace("chunk attempt \(attempt + 1) failed: \(failureReason(error))")
@@ -541,7 +547,7 @@ final class DepotDownloader {
         }
     }
 
-    private nonisolated static func download(_ urlString: String) async throws -> Data {
+    private nonisolated static func download(_ urlString: String, http: URLSession) async throws -> Data {
         guard let url = URL(string: urlString) else { throw SteamError.chunkDownloadFailed("Invalid content URL.") }
         let (data, response) = try await http.data(from: url)
         guard let status = (response as? HTTPURLResponse)?.statusCode, (200...299).contains(status) else {
@@ -553,7 +559,7 @@ final class DepotDownloader {
     // MARK: - Manifest
 
     private func fetchManifest(depotID: UInt32, appID: UInt32, manifestGID: UInt64,
-                               key: Data, hosts: [String], validateStorage: @Sendable () async throws -> Void) async throws -> DepotManifest {
+                               key: Data, hosts: [String], http: URLSession, validateStorage: @Sendable () async throws -> Void) async throws -> DepotManifest {
         let requestCode = try await manifestRequestCode(depotID: depotID, appID: appID, manifestGID: manifestGID)
         var lastError: Error = SteamError.manifestFetchFailed("No content server returned the manifest.")
         for host in hosts.prefix(6) {
@@ -562,7 +568,7 @@ final class DepotDownloader {
             let code = requestCode == 0 ? "" : "/\(requestCode)"
             let parsed: (DepotManifest, Data)
             do {
-                let raw = try await Self.download("\(host)/depot/\(depotID)/manifest/\(manifestGID)/5\(code)\(auth)")
+                let raw = try await Self.download("\(host)/depot/\(depotID)/manifest/\(manifestGID)/5\(code)\(auth)", http: http)
                 try Task.checkCancellation()
                 let parsing = Task.detached(priority: .userInitiated) {
                     try Task.checkCancellation()
@@ -572,6 +578,7 @@ final class DepotDownloader {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                if SteamNetworkFailure.isResourceExhaustion(error) { throw error }
                 lastError = error
                 SteamLog.event("[steam-cdn] manifest failed host=\(URL(string: host)?.host ?? "invalid") reason=\(Self.failureReason(error))")
                 try Task.checkCancellation()
@@ -740,7 +747,7 @@ final class DepotDownloader {
         return .usable
     }
 
-    private func contentServers(appID: UInt32) async throws -> [String] {
+    private func contentServers(appID: UInt32, http: URLSession) async throws -> [String] {
         var hosts: [String] = []
         // A regional directory can offer only HTTP-only edges. Ask the default
         // and alternate cells for alternatives, with a finite request budget.
@@ -752,7 +759,7 @@ final class DepotDownloader {
                 }
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 12
-                let (data, response) = try await Self.http.data(for: request)
+                let (data, response) = try await http.data(for: request)
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                     throw HTTPFailure(status: (response as? HTTPURLResponse)?.statusCode ?? 0)
                 }
@@ -784,6 +791,7 @@ final class DepotDownloader {
                 if Task.isCancelled || (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled {
                     throw CancellationError()
                 }
+                if SteamNetworkFailure.isResourceExhaustion(error) { throw error }
                 SteamLog.event("[steam-cdn] directory failed cell=\(cell) reason=\(Self.failureReason(error))")
             }
             if hosts.count >= hostPoolSize { break }

@@ -89,23 +89,14 @@ public final class NetworkProxySettings: ObservableObject {
         applyProxyDictionary(to: configuration)
     }
 
-    /// Factory for ephemeral or default URLSession that respects proxy
+    /// Creates an owned session with current proxy settings. The caller must
+    /// invalidate it when its operation finishes, fails, or is cancelled.
     public func makeSession(configuration: URLSessionConfiguration = .default, delegate: URLSessionDelegate? = nil, delegateQueue: OperationQueue? = nil) -> URLSession {
         apply(to: configuration)
         return URLSession(configuration: configuration, delegate: delegate, delegateQueue: delegateQueue)
     }
 
-    /// Convenience shared session that reflects current proxy settings
-    public static var session: URLSession {
-        if shared.isAppActive {
-            let config = URLSessionConfiguration.default
-            shared.apply(to: config)
-            return URLSession(configuration: config)
-        }
-        return URLSession.shared
-    }
-
-    /// Helper to configure any ephemeral session
+    /// Creates an owned ephemeral session; the caller must invalidate it.
     public static func makeEphemeralSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         shared.apply(to: config)

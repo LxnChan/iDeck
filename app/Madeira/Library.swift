@@ -1811,7 +1811,9 @@ enum SteamCatalog {
         var url = URLComponents(string: "https://store.steampowered.com/api/storesearch/")!
         url.queryItems = [URLQueryItem(name: "term", value: text), URLQueryItem(name: "l", value: "english"), URLQueryItem(name: "cc", value: "US")]
         var request = URLRequest(url: url.url!); request.timeoutInterval = 15
-        let (data, response) = try await NetworkProxySettings.session.data(for: request)
+        let session = NetworkProxySettings.shared.makeSession()
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count < 2_000_000 else {
             throw LibraryError.message("Steam search is unavailable. You can still edit the title and artwork manually.")
         }
@@ -2179,7 +2181,9 @@ enum AmbientArtwork {
     }
 
     private static func fetch(_ url: URL) async -> UIImage? {
-        guard let (data, response) = try? await NetworkProxySettings.session.data(from: url),
+        let session = NetworkProxySettings.shared.makeSession()
+        defer { session.invalidateAndCancel() }
+        guard let (data, response) = try? await session.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return UIImage(data: data)
     }

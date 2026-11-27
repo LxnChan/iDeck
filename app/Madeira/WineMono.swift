@@ -337,7 +337,8 @@ private struct TarReader {
         log("download \(WineMonoPin.url.absoluteString)")
         phase = .downloading(0)
         let archive = root.appendingPathComponent("download.tar.xz")
-        let task = NetworkProxySettings.session.downloadTask(with: WineMonoPin.url) { temp, response, failure in
+        let session = NetworkProxySettings.shared.makeSession()
+        let task = session.downloadTask(with: WineMonoPin.url) { temp, response, failure in
             // The temporary file is removed when this returns: move it first.
             var moved: Error? = failure
             if failure == nil, let temp {
@@ -359,6 +360,8 @@ private struct TarReader {
             }
         }
         task.resume()
+        // Stop accepting new work and release the pool after the callback.
+        session.finishTasksAndInvalidate()
     }
 
     private func downloaded(archive: URL, error failure: Error?) {

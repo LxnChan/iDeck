@@ -77,6 +77,9 @@ enum SteamError: LocalizedError, Equatable {
         case .connectionFailed(let reason):
             return "Connection failed: \(reason)"
         case .transportFailed(let domain, let code):
+            if SteamNetworkFailure.isResourceExhaustion(NSError(domain: domain, code: code)) {
+                return SteamNetworkFailure.resourceMessage
+            }
             if domain == NSURLErrorDomain {
                 switch URLError.Code(rawValue: code) {
                 case .secureConnectionFailed:
@@ -134,6 +137,7 @@ enum SteamGuardType: String, Codable {
 /// Explicit trust failures and cancellation must not be hidden by retries.
 enum SteamCMTransportPolicy {
     static func canTryAnotherServer(_ error: Error) -> Bool {
+        guard !SteamNetworkFailure.isResourceExhaustion(error) else { return false }
         let failure = error as NSError
         guard failure.domain == NSURLErrorDomain else { return false }
         switch URLError.Code(rawValue: failure.code) {
@@ -143,8 +147,33 @@ enum SteamCMTransportPolicy {
         }
     }
     static func sanitized(_ error: Error) -> SteamError {
+        if let resource = SteamNetworkFailure.resourceError(error) {
+            return .transportFailed(domain: resource.domain, code: resource.code)
+        }
         let failure = error as NSError
         let domain = [NSURLErrorDomain, NSPOSIXErrorDomain].contains(failure.domain) ? failure.domain : "other"
         return .transportFailed(domain: domain, code: failure.code)
     }
+}
+
+/// Local resource failures must not trigger retries against other servers.
+/// Inspect only known POSIX codes, not numerically similar URL error codes.
+enum SteamNetworkFailure {
+    static let resourceMessage = "The device could not allocate memory or network resources. Close other apps and restart iDeck before resuming. Downloaded parts are kept."
+
+    static func resourceError(_ error: Error) -> NSError? {
+        var failure = error as NSError
+        // Bound traversal in case a framework returns a cyclic error chain.
+        for _ in 0..<8 {
+            if failure.domain == NSPOSIXErrorDomain,
+               [POSIXErrorCode.ENOMEM, .ENOBUFS, .EMFILE, .ENFILE].contains(where: { Int($0.rawValue) == failure.code }) {
+                return failure
+            }
+            guard let underlying = failure.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+            failure = underlying
+        }
+        return nil
+    }
+
+    static func isResourceExhaustion(_ error: Error) -> Bool { resourceError(error) != nil }
 }

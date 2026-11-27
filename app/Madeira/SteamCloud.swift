@@ -401,9 +401,9 @@ enum SteamCloudTransfer {
     /// Saves are small; anything larger than this is refused.
     static let maxFileBytes = 256 << 20
 
-    private static var http: URLSession {
+    private static func makeHTTP(timeout: TimeInterval) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForRequest = timeout
         config.urlCache = nil
         NetworkProxySettings.shared.apply(to: config)
         return URLSession(configuration: config)
@@ -448,6 +448,8 @@ enum SteamCloudTransfer {
         }
         var request = URLRequest(url: url)
         for header in info.headers { request.setValue(header.value, forHTTPHeaderField: header.name) }
+        let http = makeHTTP(timeout: 60)
+        defer { http.invalidateAndCancel() }
         let (body, response) = try await http.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw SteamFileError.invalid("Steam Cloud download failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
@@ -619,6 +621,8 @@ extension SteamCloudTransfer {
     /// is 3; Steam's storage otherwise takes PUT. Returns each part's HTTP status.
     @discardableResult
     static func send(_ file: Data, blocks: [SteamCloudUploadBlock]) async throws -> [Int] {
+        let http = makeHTTP(timeout: 120)
+        defer { http.invalidateAndCancel() }
         var statuses: [Int] = []
         for block in blocks {
             guard let url = block.url else { throw SteamFileError.invalid("Steam gave no usable address for an upload.") }
@@ -632,20 +636,12 @@ extension SteamCloudTransfer {
             var request = URLRequest(url: url)
             request.httpMethod = block.method == 3 ? "POST" : "PUT"
             for header in block.headers { request.setValue(header.value, forHTTPHeaderField: header.name) }
-            let (_, response) = try await uploadSession.upload(for: request, from: body)
+            let (_, response) = try await http.upload(for: request, from: body)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             statuses.append(status)
             guard (200..<300).contains(status) else { throw SteamFileError.invalid("Steam Cloud upload failed (HTTP \(status)).") }
         }
         return statuses
-    }
-
-    private static var uploadSession: URLSession {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 120
-        config.urlCache = nil
-        NetworkProxySettings.shared.apply(to: config)
-        return URLSession(configuration: config)
     }
 }
 

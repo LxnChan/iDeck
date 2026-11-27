@@ -83,6 +83,7 @@ enum SteamSignIn {
     // MARK: Messages
 
     static func message(_ error: Error) -> String {
+        if SteamNetworkFailure.isResourceExhaustion(error) { return SteamNetworkFailure.resourceMessage }
         if let steam = error as? SteamError, let text = steam.errorDescription { return text }
         let failure = error as NSError
         if failure.domain == NSURLErrorDomain {
