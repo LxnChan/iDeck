@@ -28,16 +28,17 @@ enum BCDLaunch {
 
     /// The switches every launch of a game applies. Everything is set or unset, so a
     /// previous launch's choice never leaks into this one.
-    static func applyExtras(avx: Bool, wineVCRT: Bool, nvidia: Bool, profile: GameProfile?) {
+    static func applyExtras(avx: Bool, wineVCRT: Bool, nvidia: Bool,
+                            nvidiaModel: NvidiaGPUModel = .defaultModel, profile: GameProfile?) {
         if avx { setenv("MADEIRA_FEX_AVX", "1", 1) } else { unsetenv("MADEIRA_FEX_AVX") }
         if wineVCRT { setenv("MADEIRA_WINE_VCRT", "1", 1) } else { unsetenv("MADEIRA_WINE_VCRT") }
         var dxmtExtra: [String] = []
         if nvidia {
             setenv("DXMT_ENABLE_NVEXT", "1", 1)
-            // The same GeForce RTX 3060 (10DE:2544) win32u registers as the
-            // display adapter (sysparams_ios.c, ios_virtual_gpu_ids); merged
-            // into DXMT_CONFIG by ContentView.
-            dxmtExtra.append("dxgi.customDeviceId=2544")
+            setenv("MADEIRA_NVIDIA_DEVICE_ID", nvidiaModel.rawValue, 1)
+            // win32u registers the same selected NVIDIA PCI device as the
+            // display adapter; ContentView merges this id into DXMT_CONFIG.
+            dxmtExtra.append("dxgi.customDeviceId=\(nvidiaModel.rawValue)")
             // DXGI's output carries user32's monitor handle and user32's mode
             // list, so a game can find its monitor on the adapter. Default-on
             // in this fork until the build 222 switch to upstream, where both
@@ -49,6 +50,7 @@ enum BCDLaunch {
             setenv("DXMT_WSI_MODE_TABLE", "1", 1)
         } else {
             unsetenv("DXMT_ENABLE_NVEXT")
+            unsetenv("MADEIRA_NVIDIA_DEVICE_ID")
             unsetenv("DXMT_WSI_MONITOR_IDENTITY")
             unsetenv("DXMT_WSI_MODE_TABLE")
         }
@@ -72,10 +74,12 @@ enum BCDLaunch {
         let path = entry.windowsPath
         let profile = GameProfile(windowsPath: path)
         applyExtras(avx: LibraryPrefs.avx(path), wineVCRT: LibraryPrefs.wineVCRT(path),
-                    nvidia: LibraryPrefs.nvidia(path), profile: profile)
+                    nvidia: LibraryPrefs.nvidia(path), nvidiaModel: LibraryPrefs.nvidiaModel(path),
+                    profile: profile)
         let program = path.split(separator: "\\").last.map(String.init) ?? path
         LogStore.shared.log("[bcd] library launch \(program): avx=\(LibraryPrefs.avx(path) ? 1 : 0) "
                             + "wine-vcrt=\(LibraryPrefs.wineVCRT(path) ? 1 : 0) nvidia=\(LibraryPrefs.nvidia(path) ? 1 : 0) "
+                            + "nvidia-model=\(LibraryPrefs.nvidiaModel(path).rawValue) "
                             + "game-config=\(profile.hasSettings ? 1 : 0)")
     }
 }

@@ -2951,9 +2951,13 @@ struct ContentView: View {
         if LibraryPrefs.wineVCRT(path) { setenv("MADEIRA_WINE_VCRT", "1", 1); on.append("wine-vcrt") }
         if LibraryPrefs.nvidia(path) {
             setenv("DXMT_ENABLE_NVEXT", "1", 1)
+            let deviceID = LibraryPrefs.nvidiaModel(path).rawValue
+            setenv("MADEIRA_NVIDIA_DEVICE_ID", deviceID, 1)
             setenv("DXMT_WSI_MONITOR_IDENTITY", "1", 1)
             setenv("DXMT_WSI_MODE_TABLE", "1", 1)
-            if entry.desktop == true, getenv("MADEIRA_DXMT_EXTRA") == nil { setenv("MADEIRA_DXMT_EXTRA", "dxgi.customDeviceId=2544", 1) }
+            if entry.desktop == true, getenv("MADEIRA_DXMT_EXTRA") == nil {
+                setenv("MADEIRA_DXMT_EXTRA", "dxgi.customDeviceId=\(deviceID)", 1)
+            }
             on.append("nvidia")
         }
         if !on.isEmpty { LogStore.shared.log("[bcd] game switches: \(on.joined(separator: " "))") }
@@ -3241,11 +3245,12 @@ struct ContentView: View {
                 unsetenv("DXMT_METALFX_SPATIAL_SWAPCHAIN")
             }
             // A library entry's "Report an NVIDIA GPU" (LibraryEntry.applyEnvironment):
-            // DXGI's device id is the GeForce RTX 3060 win32u registers as the
+            // DXGI's device id matches the selected model win32u registers as the
             // display adapter (sysparams_ios.c), so every API names one GPU.
-            if profile?.reportNVIDIA == true {
-                dxmtOptions.append("dxgi.customDeviceId=2544")
-                logStore.log("DXMT config: dxgi.customDeviceId=2544 via Report an NVIDIA GPU")
+            if let profile, profile.reportNVIDIA == true {
+                let deviceID = LibraryPrefs.nvidiaModel(profile.windowsPath).rawValue
+                dxmtOptions.append("dxgi.customDeviceId=\(deviceID)")
+                logStore.log("DXMT config: dxgi.customDeviceId=\(deviceID) via Report an NVIDIA GPU")
             }
             // madeira-bcd: the game's options from BCDLaunch.applyExtras (LibraryPrefs'
             // NVIDIA device id), last, as before the merge. An option whose key is already

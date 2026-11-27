@@ -28,6 +28,7 @@
 #include <assert.h>
 #include <unistd.h>  /* iOS-Madeira: dprintf for BADMODE diagnostic */
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "ntstatus.h"
 #include "ntgdi_private.h"
@@ -2908,16 +2909,23 @@ void reset_monitor_update_serial(void)
 
 #ifdef WINE_IOS
 /* iOS-Madeira: the display adapter of the virtual-monitor regime. Its identity
- * follows DXGI's: Apple 106B:0001, or NVIDIA when DXMT reports NVIDIA
- * (DXMT_ENABLE_NVEXT=1; the app then also sets dxgi.customDeviceId=2544, a
- * GeForce RTX 3060, so DXGI, EnumDisplayDevices, SetupAPI and NVAPI name the
- * same GPU). */
+ * follows DXGI's: Apple 106B:0001, or the selected NVIDIA device when DXMT
+ * reports NVIDIA, so DXGI, EnumDisplayDevices, and SetupAPI name the same GPU. */
 static const char ios_video_guidA[] = "{8C0C2A5B-0E7E-4B0E-9E3F-1D0A6B5C4D21}";
 
 static void ios_virtual_gpu_ids( UINT16 *vendor, UINT16 *device )
 {
     const char *nv = getenv( "DXMT_ENABLE_NVEXT" );
-    if (nv && nv[0] == '1') { *vendor = 0x10de; *device = 0x2544; }
+    if (nv && nv[0] == '1')
+    {
+        const char *id = getenv( "MADEIRA_NVIDIA_DEVICE_ID" );
+        char *end = NULL;
+        unsigned long parsed = 0x2544;
+        if (id && strlen( id ) == 4) parsed = strtoul( id, &end, 16 );
+        *vendor = 0x10de;
+        *device = id && strlen( id ) == 4 && end != id && end && !*end && parsed <= 0xffff
+                    ? (UINT16)parsed : 0x2544;
+    }
     else { *vendor = 0x106b; *device = 0x0001; }
 }
 
@@ -2949,6 +2957,18 @@ static void ios_forget_virtual_gpu( UINT16 vendor, UINT16 device )
     }
 }
 
+static void ios_forget_stale_virtual_gpus( UINT16 vendor, UINT16 device )
+{
+    static const UINT16 nvidia_devices[] = { 0x1f08, 0x2544, 0x2882, 0x2786, 0x2704, 0x2684 };
+    unsigned int i;
+
+    if (vendor != 0x106b || device != 0x0001)
+        ios_forget_virtual_gpu( 0x106b, 0x0001 );
+    for (i = 0; i < ARRAY_SIZE(nvidia_devices); i++)
+        if (vendor != 0x10de || device != nvidia_devices[i])
+            ios_forget_virtual_gpu( 0x10de, nvidia_devices[i] );
+}
+
 /* This port never enumerates display devices (the service-process branch of
  * lock_display_devices), so the registry held no display adapter: no Enum\PCI
  * entry for SetupAPI, no Class\{display}\0000 with a DriverVersion, no
@@ -2977,8 +2997,7 @@ static void ios_register_virtual_gpu(void)
     if (!enum_key || !control_key) return;
 
     ios_virtual_gpu_ids( &pci.vendor, &pci.device );
-    if (pci.vendor == 0x10de) ios_forget_virtual_gpu( 0x106b, 0x0001 );
-    else ios_forget_virtual_gpu( 0x10de, 0x2544 );
+    ios_forget_stale_virtual_gpus( pci.vendor, pci.device );
     name = gpu_device_name( pci.vendor, pci.device, "Madeira Display" );
     RtlUTF8ToUnicodeN( gpu.name, sizeof(gpu.name) - sizeof(WCHAR), &len, name, strlen( name ) );
     gpu.refcount = 1;

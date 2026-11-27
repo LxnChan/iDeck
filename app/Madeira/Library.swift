@@ -3614,6 +3614,14 @@ struct LibraryDetail: View {
                     Toggle("Report an NVIDIA GPU", isOn: Binding(get: { bcd.nvidia }, set: { on in
                         bcd.nvidia = on; LibraryPrefs.setNvidia(on, for: entry.windowsPath)
                     }))
+                    Picker("NVIDIA GPU model", selection: Binding(get: { bcd.nvidiaModel }, set: { model in
+                        bcd.nvidiaModel = model; LibraryPrefs.setNvidiaModel(model, for: entry.windowsPath)
+                    })) {
+                        ForEach(NvidiaGPUModel.allCases) { model in
+                            Text(model.title).tag(model)
+                        }
+                    }
+                    .disabled(!bcd.nvidia)
                     Toggle("Wine's C++ runtime", isOn: Binding(get: { bcd.wineVCRT }, set: { on in
                         bcd.wineVCRT = on; LibraryPrefs.setWineVCRT(on, for: entry.windowsPath)
                     }))
@@ -3935,11 +3943,13 @@ private struct LibraryChildArgumentsSection: View {
 /// LibraryPrefs' switches and the GameProfiles.swift file's lines.
 struct BCDGameValues {
     var avx = false, nvidia = false, wineVCRT = false
+    var nvidiaModel = NvidiaGPUModel.defaultModel
     var configText = ""
     init() {}
     init(windowsPath: String) {
         avx = LibraryPrefs.avx(windowsPath)
         nvidia = LibraryPrefs.nvidia(windowsPath)
+        nvidiaModel = LibraryPrefs.nvidiaModel(windowsPath)
         wineVCRT = LibraryPrefs.wineVCRT(windowsPath)
         configText = GameProfile(windowsPath: windowsPath).text
     }

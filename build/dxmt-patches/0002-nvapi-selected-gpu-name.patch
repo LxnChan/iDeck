@@ -1,0 +1,75 @@
+From 4f3fa522af60ef28b89278b159829e8f3cfd2fc0 Mon Sep 17 00:00:00 2001
+From: LxnChan <lingxuanning@outlook.com>
+Date: Fri, 27 Nov 2026 15:48:43 +0800
+Subject: [PATCH] feat(nvapi): report selected NVIDIA adapter name
+
+Signed-off-by: LxnChan <lingxuanning@outlook.com>
+---
+ src/nvapi/nvapi.cpp | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/src/nvapi/nvapi.cpp b/src/nvapi/nvapi.cpp
+index bbe99c82..07b40e96 100644
+--- a/src/nvapi/nvapi.cpp
++++ b/src/nvapi/nvapi.cpp
+@@ -6,6 +6,8 @@
+ #include "util_string.hpp"
+ #include "winemetal.h"
+ #include "wsi_monitor.hpp"
++#include <cstdlib>
++#include <cstring>
+ #include <string>
+ #define __NVAPI_EMPTY_SAL
+ #include "nvapi.h"
+@@ -35,6 +37,23 @@ CopyShortString(NvAPI_ShortString dst, const std::string &src) {
+ static constexpr NvU32 kDriverVersion = 58157;
+ static constexpr const char *kDriverBranch = "r580_00";
+ 
++static std::string nvidiaAdapterName() {
++  const char *deviceId = std::getenv("MADEIRA_NVIDIA_DEVICE_ID");
++  if (!deviceId || std::strcmp(deviceId, "2544") == 0)
++    return "NVIDIA GeForce RTX 3060";
++  if (deviceId && std::strcmp(deviceId, "1F08") == 0)
++    return "NVIDIA GeForce RTX 2060";
++  if (deviceId && std::strcmp(deviceId, "2882") == 0)
++    return "NVIDIA GeForce RTX 4060";
++  if (deviceId && std::strcmp(deviceId, "2786") == 0)
++    return "NVIDIA GeForce RTX 4070";
++  if (deviceId && std::strcmp(deviceId, "2704") == 0)
++    return "NVIDIA GeForce RTX 4080";
++  if (deviceId && std::strcmp(deviceId, "2684") == 0)
++    return "NVIDIA GeForce RTX 4090";
++  return "NVIDIA GeForce RTX 3060";
++}
++
+ NVAPI_INTERFACE
+ NvAPI_Initialize() {
+   if (FAILED(DXGIGetDebugInterface1(0, DXMT_NVEXT_GUID, nullptr))) {
+@@ -69,7 +88,7 @@ NvAPI_SYS_GetDriverAndBranchVersion(NvU32 *pDriverVersion,
+ NVAPI_INTERFACE
+ NvAPI_GetDisplayDriverVersion(NvDisplayHandle hNvDisplay, NV_DISPLAY_DRIVER_VERSION *pVersion) {
+   std::string build_str = kDriverBranch;
+-  std::string adapter_str = "NVIDIA GeForce RTX";
++  std::string adapter_str = nvidiaAdapterName();
+ 
+   if (!pVersion)
+     return NVAPI_INVALID_ARGUMENT;
+@@ -650,7 +669,7 @@ NvAPI_GPU_GetMemoryInfoEx(NvPhysicalGpuHandle hPhysicalGpu, NV_GPU_MEMORY_INFO_E
+ 
+ NVAPI_INTERFACE
+ NvAPI_GPU_GetFullName(NvPhysicalGpuHandle hPhysicalGpu, NvAPI_ShortString szName) {
+-  std::string adapter_str = "NVIDIA GeForce RTX 4090";
++  std::string adapter_str = nvidiaAdapterName();
+ 
+   if (!szName)
+     return NVAPI_INVALID_ARGUMENT;
+@@ -1309,4 +1328,4 @@ extern "C" __cdecl void *nvapi_QueryInterface(NvU32 id) {
+   return nullptr;
+ }
+ 
+-}; // namespace dxmt
+\ No newline at end of file
++}; // namespace dxmt
+-- 
+2.55.0.windows.3
+
