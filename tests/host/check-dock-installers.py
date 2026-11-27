@@ -69,7 +69,12 @@ require(body.index('try MadeiraDock.writeHandoff(') < body.index('DockInstallers
         'installers are planned after the launch checks, before the session starts')
 require('installers: DockInstallers.script' in body, 'the planned batch goes into the launch arguments')
 require('DockInstallers.poll(drive: MadeiraDock.drive)' in view and 'Picker(game.name' in view and
-        'Text("Run at next start").tag(true)' in view and 'Text("Skip").tag(false)' in view, 'the Dock sheet shows the choice and progress')
+        'Text("Run at next start").tag(DockInstallChoice.run)' in view and 'Text("Skip").tag(DockInstallChoice.skip)' in view,
+        'the Dock sheet shows the choice and progress')
+for name, text in [('Dock sheet', view), ('Game details', steam_games)]:
+    require('Text("Automatic (game scripts)").tag(DockInstallChoice.automatic)' in text and
+            'dock.setInstallChoice(' in text and 'DockInstallRequestRows(dock: dock,' in text,
+            name + ' offers automatic, manual recovery and shared recovery instructions')
 require('Copyright 2026 125hz' in installers.split('\n', 3)[1], 'new file carries the owner copyright')
 # Record as done / Reset: saved from the app, applied by prepare() before it reads the registry.
 prep = installers[installers.index('    static func prepare('):]
@@ -263,6 +268,8 @@ func pe(_ url: URL, machine: UInt16) throws {
         try write(prefix.appendingPathComponent(DockInstallLedger.fileName), "{\"runNext\":{\"7000\":false},\"session\":[],\"sessionApp\":0}")
         let older = DockInstallLedger.load(prefix: prefix)
         require(!older.runsNext(7000) && older.requests == nil && older.unfinished == nil, "an older ledger file keeps its choice")
+        require(older.choice(7000) == .skip && older.choice(7006) == .automatic,
+                "legacy Skip is preserved and an absent choice defaults to automatic game scripts")
         try write(prefix.appendingPathComponent(DockInstallLedger.fileName), "{\"runNext\":{\"7000\":false},\"session\":[],\"sessionApp\":0,\"requests\":{\"7000\":\"later\"}}")
         let unknown = DockInstallLedger.load(prefix: prefix)
         require(!unknown.runsNext(7000) && unknown.request(7000) == nil, "an unknown request value reads as none, the choice stays")
@@ -305,6 +312,56 @@ func pe(_ url: URL, machine: UInt16) throws {
                 "MADEIRA_INSTALL_DEFAULT_KEY=0: entries without a key are ignored")
         require(DockInstallers.programCount(game, drive: drive) == 5, "the sheet's program count")
 
+        // A shared-only game reproduces unrelated setups being run at first launch.
+        // The recovery choice must still expose and run them without a local script.
+        let sharedOnly = DockGame(id: 7006, name: "Shared only", installDir: "Shared Only", library: game.library,
+                                  installed: true, customExecutables: false)
+        try write(prefix.appendingPathComponent("system.reg"), "WINE REGISTRY Version 2\n")
+        try write(prefix.appendingPathComponent("user.reg"), "WINE REGISTRY Version 2\n")
+        require(DockInstallers.programCount(sharedOnly, drive: drive) == 1,
+                "shared-only games retain the manual recovery control")
+        require(DockInstallers.found(sharedOnly, drive: drive, includeShared: false).processes.isEmpty,
+                "automatic discovery excludes unrelated library-wide scripts")
+        DockInstallers.prepare(sharedOnly, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        require(DockInstallers.script == nil && !DockInstallers.installsOnly && !DockInstallers.serverSync &&
+                DockInstallLedger.load(prefix: prefix).choice(7006) == .automatic && logged("shared-deferred=1"),
+                "first launch proceeds to the game without an installer session or a false success record")
+        // Disabling the legacy Skip switch must not broaden automatic selection.
+        setenv("MADEIRA_DOCK_INSTALL_CHOICE", "0", 1)
+        DockInstallers.prepare(sharedOnly, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        require(DockInstallers.script == nil, "choice override does not run unrelated shared installers")
+        unsetenv("MADEIRA_DOCK_INSTALL_CHOICE")
+        require(DockInstallers.setChoice(7006, .run, prefix: prefix) && DockInstallLedger.load(prefix: prefix).choice(7006) == .run,
+                "manual shared recovery choice persists")
+        DockInstallers.prepare(sharedOnly, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        require(DockInstallers.script != nil && DockInstallLedger.load(prefix: prefix).session == [found[4].run] &&
+                DockInstallLedger.load(prefix: prefix).choice(7006) == .skip, "manual recovery runs shared setups once")
+        try write(drive.appendingPathComponent("madeira-dock-installers.result"), "begin 1\nstart 1 shared runtime\nexit 1 -9\nend\n")
+        DockInstallers.prepare(sharedOnly, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        let failedSharedRegistry = try String(contentsOf: prefix.appendingPathComponent("system.reg"), encoding: .utf8)
+        require(DockInstallers.script == nil && !DockInstallScripts.marked(found[4].run, in: failedSharedRegistry),
+                "failed shared setup is neither recorded as successful nor retried automatically")
+        DockInstallers.setChoice(7006, .run, prefix: prefix)
+        DockInstallers.prepare(sharedOnly, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        require(DockInstallers.script != nil, "failed shared setup remains manually retryable")
+        try write(drive.appendingPathComponent("madeira-dock-installers.result"), "begin 1\nstart 1 shared runtime\nexit 1 0\nend\n")
+        DockInstallers.prepare(sharedOnly, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        require(DockInstallScripts.marked(found[4].run, in: try! String(contentsOf: prefix.appendingPathComponent("system.reg"), encoding: .utf8)),
+                "successful manual shared setup is recorded normally")
+        DockInstallers.setChoice(7006, .automatic, prefix: prefix)
+        require(DockInstallLedger.load(prefix: prefix).choice(7006) == .automatic, "automatic mode can be restored")
+
+        // Scope is based on the declaring script, not the executable's location.
+        let declared = DockGame(id: 7007, name: "Declared shared", installDir: "Declared Shared", library: game.library,
+                                installed: true, customExecutables: false)
+        try write(common.appendingPathComponent("Declared Shared/installscript.vdf"),
+                  "\"installscript\" { \"run process\" { \"Declared\" { \"process 1\" \"" +
+                  SteamInstallScripts.escape(found[4].executable) + "\" } } }")
+        DockInstallers.prepare(declared, drive: drive, prefix: prefix, has32Bit: true, hasMsiexec: true, fusionSource: nil)
+        let declaredBatch = try String(contentsOf: drive.appendingPathComponent("madeira-dock-installers.cmd"), encoding: .utf8)
+        require(DockInstallers.script != nil && declaredBatch.contains("echo start 1 declared") && !declaredBatch.contains("echo start 2"),
+                "a game's explicit shared executable still runs automatically")
+
         // ---- prepare(): a first start on a bundle without 32-bit support or msiexec
         MadeiraConfig.values["inproc-sync"] = "1"   // madsync chosen: the per-session request applies
         setenv("MADEIRA_DOCK_INSTALL_SEPARATE", "0", 1)   // the same session; the installs-only default is checked below
@@ -319,7 +376,7 @@ func pe(_ url: URL, machine: UInt16) throws {
         require(ledger.session == [tool.run] && ledger.sessionApp == 7000 && !ledger.runsNext(7000), "session recorded; the choice turns to Skip")
         let firstNote = DockInstallers.note ?? ""
         require(firstNote.contains("Runs first: tool") && firstNote.contains("runtime a (32-bit installer)") && firstNote.contains("package (Windows Installer package)") &&
-                firstNote.contains("Installer file missing: gone") && firstNote.contains("Already done: shared runtime") && firstNote.contains("standard synchronization"),
+                firstNote.contains("Installer file missing: gone") && !firstNote.contains("shared runtime") && firstNote.contains("standard synchronization"),
                 "the sheet's note (\(firstNote))")
         require(logged("dotnet-fusion=no-source") && logged("program=runtime a file=setup32.exe status=unsupported reason=32-bit-installer"), "fusion and per-program log lines")
         require(MadeiraDockLaunch.arguments(DockInstallers.script) ==

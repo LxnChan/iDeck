@@ -477,15 +477,19 @@ enum DockInstallRequest: String, Sendable {
     case resetSignOut = "reset-signout"
 }
 
-/// Kept next to the prefix's registry files, one small JSON file: the programs the last
-/// batch runs, in its order (result lines refer to them by index), and each game's
-/// One-time installs choice.
+/// Automatic discovery is scoped to the game; shared installers require an explicit run.
+enum DockInstallChoice: String, Sendable {
+    case automatic, run, skip
+}
+
+/// Kept next to the registry: the last batch's ordered programs and per-game choices.
 struct DockInstallLedger: Codable, Equatable, Sendable {
     static let fileName = "madeira-dock-installs.json"
     var session: [SteamInstallRun] = []
     var sessionApp: Int = 0
     /// App ID -> false: the game's next Dock start skips its one-time installs (Skip).
-    /// Absent or true: the next start runs the pending ones ("Run at next start").
+    /// Absent: automatic, using only scripts shipped with the game. True: explicitly
+    /// run pending installers, including the library's shared redistributables.
     var runNext: [String: Bool] = [:]
     /// App ID -> entry names the game's last batch started but never saw exit (an installer
     /// window that stayed open, a session ended early). Optional, like `requests`, so files
@@ -506,6 +510,10 @@ struct DockInstallLedger: Codable, Equatable, Sendable {
         try encoder.encode(self).write(to: prefix.appendingPathComponent(Self.fileName), options: .atomic)
     }
     func runsNext(_ appID: Int) -> Bool { runNext[String(appID)] != false }
+    func choice(_ appID: Int) -> DockInstallChoice {
+        guard let run = runNext[String(appID)] else { return .automatic }
+        return run ? .run : .skip
+    }
     func request(_ appID: Int) -> DockInstallRequest? {
         guard let raw = requests?[String(appID)] else { return nil }
         return DockInstallRequest(rawValue: raw)
@@ -628,8 +636,11 @@ enum DockInstallers {
 
     /// The install scripts' programs of a game: its own folder (one level down) and the
     /// shared redistributables Steam keeps next to it, and how many scripts were read.
+    /// Automatic starts pass includeShared=false. The full catalog stays available to
+    /// the settings and manual recovery even when a game has no script of its own.
     nonisolated static func found(_ game: DockGame, drive: URL,
-                                  defaultKey: Bool = DockInstallers.flag("MADEIRA_INSTALL_DEFAULT_KEY")) -> (processes: [SteamInstallProcess], scripts: Int) {
+                                  defaultKey: Bool = DockInstallers.flag("MADEIRA_INSTALL_DEFAULT_KEY"),
+                                  includeShared: Bool = true) -> (processes: [SteamInstallProcess], scripts: Int) {
         let common = game.library + "/common"
         let shared = common + "/Steamworks Shared"
         func windows(_ relative: String) -> String { "C:\\" + relative.replacingOccurrences(of: "/", with: "\\") }
@@ -640,7 +651,9 @@ enum DockInstallers {
         ]
         var result: [SteamInstallProcess] = []
         var scripts = 0
-        for (root, depth, installDir, owner) in roots {
+        for (index, entry) in roots.enumerated() {
+            if index == 1 && !includeShared { continue }
+            let (root, depth, installDir, owner) = entry
             guard inside(root, drive: drive) else { continue }
             for file in SteamInstallScripts.scripts(folder: root, depth: depth) {
                 guard let contents = try? Data(contentsOf: file) else { continue }
@@ -716,12 +729,19 @@ enum DockInstallers {
 
     nonisolated static func runsNext(_ appID: Int, prefix: URL) -> Bool { DockInstallLedger.load(prefix: prefix).runsNext(appID) }
 
+    /// Existing reset/uninstall callers restore automatic mode, never a shared recovery run.
     static func setRunsNext(_ appID: Int, _ run: Bool, prefix: URL) {
+        setChoice(appID, run ? .automatic : .skip, prefix: prefix)
+    }
+
+    @discardableResult
+    static func setChoice(_ appID: Int, _ choice: DockInstallChoice, prefix: URL) -> Bool {
         var ledger = DockInstallLedger.load(prefix: prefix)
-        ledger.runNext[String(appID)] = run ? nil : false
+        ledger.runNext[String(appID)] = choice == .automatic ? nil : choice == .run
         do { try ledger.save(prefix: prefix) }
-        catch { LogStore.shared.log("[dock-installers] app=\(appID) choice not saved: \(error.localizedDescription)", level: .error); return }
-        LogStore.shared.log("[dock-installers] app=\(appID) choice=\(run ? "run" : "skip")")
+        catch { LogStore.shared.log("[dock-installers] app=\(appID) choice not saved: \(error.localizedDescription)", level: .error); return false }
+        LogStore.shared.log("[dock-installers] app=\(appID) choice=\(choice.rawValue)")
+        return true
     }
 
     /// Saves (or with nil cancels) a game's Record as done / Reset request. Nothing changes in
@@ -885,25 +905,30 @@ enum DockInstallers {
         let registry = [SteamInstallRun.Hive.machine: "system.reg", .user: "user.reg"].mapValues {
             (try? String(contentsOf: prefix.appendingPathComponent($0), encoding: .utf8)) ?? ""
         }
-        let items = DockInstallScripts.plan(found,
+        var ledger = DockInstallLedger.load(prefix: prefix)
+        // A shared directory is a library-wide catalog, not this game's dependency list.
+        // A game's own script can still explicitly reference a shared executable. Keep
+        // the full catalog available for an explicit recovery run, including games with
+        // no local script, without guessing dependencies from program or game names.
+        let selected = ledger.choice(app) == .run ? found
+            : Self.found(game, drive: drive, defaultKey: defaultKey, includeShared: false).processes
+        let deferred = found.filter { !selected.contains($0) }.count
+        LogStore.shared.log("[dock-installers] app=\(app) selection=\(ledger.choice(app).rawValue) selected=\(selected.count) shared-deferred=\(deferred)")
+        let items = DockInstallScripts.plan(selected,
                                             done: { DockInstallScripts.marked($0, in: registry[$0.hive] ?? "") },
                                             exists: { resolve($0, drive: drive) != nil },
                                             runnable: { runnable($0, drive: drive, has32Bit: has32Bit, hasMsiexec: hasMsiexec) })
         var pending = items.filter { $0.status == .pending }.map(\.process)
-        var ledger = DockInstallLedger.load(prefix: prefix)
         // Programs the game's last batch started but never saw exit (absorbResults).
         let unfinished = Set(ledger.unfinishedRuns(app))
-        // The game's One-time installs choice: absent or "Run at next start" runs the pending
-        // programs at this start, after which the choice becomes Skip (unless some wait for a
-        // later start); Skip starts the game without them. MADEIRA_DOCK_INSTALL_CHOICE=0 ignores it.
+        // Automatic runs game-declared programs; Run at next start also includes shared
+        // programs. Only a successfully written batch consumes the choice. Keep it when
+        // more programs exceed the batch limit. The switch ignores Skip, not selection.
         let choiceOn = flag("MADEIRA_DOCK_INSTALL_CHOICE")
         let skipped = choiceOn && !ledger.runsNext(app) && !pending.isEmpty
         if skipped {
             LogStore.shared.log("[dock-installers] app=\(app) choice=skip pending=\(pending.count)")
             pending = []
-        } else if choiceOn && !pending.isEmpty && !items.contains(where: { $0.status == .limit }) {
-            ledger.runNext[String(app)] = false
-            LogStore.shared.log("[dock-installers] app=\(app) choice=run pending=\(pending.count); the next start skips them")
         }
         // Installers expect a service manager, and a Dock session starts none before the
         // host. With madsync, Wine's services.exe never answered its RPC clients in the
@@ -920,6 +945,10 @@ enum DockInstallers {
                 let text = DockInstallScripts.batch(pending, resultFile: "C:\\" + resultName, services: services)
                 try Data(text.utf8).write(to: batchFile, options: .atomic)
                 script = "C:\\" + scriptName
+                if choiceOn && !items.contains(where: { $0.status == .limit }) {
+                    ledger.runNext[String(app)] = false
+                    LogStore.shared.log("[dock-installers] app=\(app) choice=run pending=\(pending.count); the next start skips them")
+                }
                 serverSync = sessionOff
                 installsOnly = flag("MADEIRA_DOCK_INSTALL_SEPARATE")   // 0: the host follows the installers in the same session
             } catch {

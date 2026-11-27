@@ -96,9 +96,11 @@ library session. The sheet has:
 4. **Smaller JIT pool (512 MB) for this launch.** Opt-in. The toggle starts
    from `env.MADEIRA_DOCK_COMPACT_POOL` and is off unless that is `1`.
 5. **One-time installs.** Listed for each installed game whose Steam install
-   script has programs to run (see below): "Run at next start" or "Skip".
-   A game starts at "Run at next start"; a start that runs its programs
-   turns it to "Skip".
+   scripts or library shared directory have programs to run (see below):
+   "Automatic (game scripts)", "Run at next start", or "Skip". Automatic is
+   the default and only runs programs declared by the game's own scripts.
+   An explicit run also includes shared installers. A prepared batch turns
+   the choice to "Skip" unless more programs exceed the per-start limit.
 
 Tap a game. Dock is started with Steam's default launch option only; custom
 arguments are not supported.
@@ -336,7 +338,10 @@ tasks, before the step Dock asks it for, so on the Dock route nothing ran them.
    "Run Process" sections all count. An entry without a `HasRunKey` is
    recorded where Valve's client records it, a DWORD named after the entry
    under `HKLM\Software\Valve\Steam\Apps\<appid>`. HKLM keys are read and
-   written in both registry views.
+   written in both registry views. Automatic selection uses only scripts
+   under the game's directory, including their explicit references to shared
+   executables. The library-wide shared directory is not evidence that a
+   particular game needs every component in it.
 2. **Plan.** Each program is `done` (recorded at least at its minimum),
    `missing` (not on disk; paths resolve case-insensitively inside drive_c),
    `unsupported` or `pending`; at most 8 run per start (`limit`: the next
@@ -344,9 +349,14 @@ tasks, before the step Dock asks it for, so on the Dock route nothing ran them.
    bundle has: a Windows Installer package needs `msiexec.exe` in the bundle,
    a 32-bit executable (PE machine 0x14c) needs `i386-windows`. There is no
    list of program names; every runtime setup is treated alike.
-3. **Choice.** With "Skip", nothing runs. Otherwise the pending programs go
-   into `C:\madeira-dock-installers.cmd` and the choice turns to "Skip"
-   (unless some programs wait for a later start).
+3. **Choice.** "Automatic (game scripts)" selects game-declared programs;
+   "Run at next start" also selects shared scripts as a manual recovery path.
+   With "Skip", nothing runs. The pending programs go into
+   `C:\madeira-dock-installers.cmd`. Only after the batch is successfully
+   written does the choice turn to "Skip" (unless programs exceed the limit).
+   A missing old choice migrates to Automatic; an existing Skip stays Skip.
+   Reset and uninstall restore Automatic. Disabling
+   `MADEIRA_DOCK_INSTALL_CHOICE` bypasses Skip without broadening selection.
 4. **Batch.** It first runs `dockhost.exe --start-services`: installers
    expect a service manager, and a Dock session starts none before the host.
    That mode loads no Steam client, starts Wine's `services.exe` only if no
@@ -359,6 +369,17 @@ tasks, before the step Dock asks it for, so on the Dock route nothing ran them.
    in `system.reg`/`user.reg` (a `.madeira-bak` copy is kept once). Failed
    programs are not recorded; with the choice at "Skip" they do not run
    again at every start.
+
+   If a game reports a missing runtime or DLL, select **Run at next start**
+   under **One-time installs** in Game details or the Dock sheet, then launch
+   it. This control remains available for a game with only shared scripts.
+   It includes all pending shared installers in that library, potentially
+   for other games, and may require restarting Madeira afterward. Failed or
+   unfinished installs can be retried this way; they are not marked successful.
+   Missing installer files must first be restored, or the required runtime
+   installed through Wine's file explorer. No installers are downloaded by
+   this selector, and it does not diagnose missing DLLs automatically.
+
 6. **Sync engine for that session.** With madsync, Wine's `services.exe`
    never answered its RPC clients in the fork's device runs, so the service
    step and then every installer waited; msiexec's custom actions use the same

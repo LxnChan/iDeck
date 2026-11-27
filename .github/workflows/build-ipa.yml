@@ -120,6 +120,7 @@ jobs:
           python3 -B tests/host/check-dock-contract.py
           python3 -B tests/host/check-syscall-bus-recovery.py --require-native
           python3 -B tests/host/check-dock-start-screen.py
+          python3 -B tests/host/check-dock-installers.py --require-swift
           echo "::endgroup::"
           echo "::group::Audio regressions"
           python3 -B tests/host/check-audio-period.py

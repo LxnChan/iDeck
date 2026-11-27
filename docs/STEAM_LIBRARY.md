@@ -51,9 +51,10 @@ The page has, in this order:
 - **Library details**: title, **Choose cover image**, **Use Steam artwork**;
 - **Steam**: **Start with** Madeira Dock (the default) or **The game** (below);
   under Madeira Dock, **Smaller JIT pool (512 MB) for this launch** (Dock's
-  per-launch choice) and **One-time installs**, **Run at next start** or
-  **Skip** (Dock's choice for the game's Steam install scripts, when it has
-  any), with **Record as done…** and **Reset one-time installs…** (applied at
+  per-launch choice) and **One-time installs**: **Automatic (game scripts)**,
+  **Run at next start** (also includes pending shared installers), or **Skip**.
+  The choice is available when game or shared scripts exist, with
+  **Record as done…** and **Reset one-time installs…** (applied at
   the game's next Dock start; docs/MADEIRA_DOCK.md); under The game, **Program**; an update's progress with **Pause update** / **Resume update**,
   or **Update available — download**; **Repair installed files**; App ID; free
   space; the last Dock result; **Uninstall** (with a confirmation);

@@ -1459,10 +1459,11 @@ struct SteamEntrySection: View {
                 Toggle("Smaller JIT pool (512 MB) for this launch", isOn: $dock.compactPool)
                 // The game's One-time installs choice (Madeira Dock, DockInstallers).
                 if DockInstallers.choiceEnabled, dock.installPrograms[appID] != nil {
-                    Picker("One-time installs", selection: Binding(get: { dock.installRunNext[appID] ?? true },
-                                                                   set: { dock.setRunsInstallers(appID, $0) })) {
-                        Text("Run at next start").tag(true)
-                        Text("Skip").tag(false)
+                    Picker("One-time installs", selection: Binding(get: { dock.installChoice[appID] ?? .automatic },
+                                                                   set: { dock.setInstallChoice(appID, $0) })) {
+                        Text("Automatic (game scripts)").tag(DockInstallChoice.automatic)
+                        Text("Run at next start").tag(DockInstallChoice.run)
+                        Text("Skip").tag(DockInstallChoice.skip)
                     }.pickerStyle(.menu)
                     DockInstallRequestRows(dock: dock, appID: appID, name: entry.title)
                 }

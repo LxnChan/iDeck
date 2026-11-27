@@ -21,8 +21,8 @@ final class MadeiraDockModel: ObservableObject {
     @Published var compactPool = SteamSignIn.flag("MADEIRA_DOCK_COMPACT_POOL", default: false)
     /// App ID -> number of one-time install programs in the game's Steam install scripts.
     @Published private(set) var installPrograms: [Int: Int] = [:]
-    /// App ID -> the game's One-time installs choice (true: Run at next start).
-    @Published private(set) var installRunNext: [Int: Bool] = [:]
+    /// App ID -> automatic game scripts, an explicit recovery run, or Skip.
+    @Published private(set) var installChoice: [Int: DockInstallChoice] = [:]
     /// App ID -> the Record as done / Reset request its next Dock start applies.
     @Published private(set) var installRequest: [Int: DockInstallRequest] = [:]
 
@@ -33,27 +33,30 @@ final class MadeiraDockModel: ObservableObject {
         let drive = MadeiraDock.drive, prefix = MadeiraDock.prefix
         Task.detached(priority: .userInitiated) {
             let found = MadeiraDock.games(drive: drive)
-            var programs: [Int: Int] = [:], runNext: [Int: Bool] = [:], requests: [Int: DockInstallRequest] = [:]
+            var programs: [Int: Int] = [:], choices: [Int: DockInstallChoice] = [:], requests: [Int: DockInstallRequest] = [:]
             if DockInstallers.choiceEnabled {
                 let ledger = DockInstallLedger.load(prefix: prefix)
                 for game in found where game.installed {
                     let count = DockInstallers.programCount(game, drive: drive)
-                    if count > 0 { programs[game.id] = count; runNext[game.id] = ledger.runsNext(game.id) }
+                    if count > 0 { programs[game.id] = count; choices[game.id] = ledger.choice(game.id) }
                     if count > 0, let request = ledger.request(game.id) { requests[game.id] = request }
                 }
             }
-            let counts = programs, choices = runNext, pendingRequests = requests
+            let counts = programs, savedChoices = choices, pendingRequests = requests
             await MainActor.run {
-                self.games = found; self.installPrograms = counts; self.installRunNext = choices
+                self.games = found; self.installPrograms = counts; self.installChoice = savedChoices
                 self.installRequest = pendingRequests
             }
         }
     }
 
     /// The game's One-time installs choice, saved next to the prefix's registry files.
-    func setRunsInstallers(_ appID: Int, _ run: Bool) {
-        DockInstallers.setRunsNext(appID, run, prefix: MadeiraDock.prefix)
-        installRunNext[appID] = run
+    func setInstallChoice(_ appID: Int, _ choice: DockInstallChoice) {
+        guard DockInstallers.setChoice(appID, choice, prefix: MadeiraDock.prefix) else {
+            error = "The one-time install choice could not be saved. Try again before starting the game."
+            return
+        }
+        installChoice[appID] = choice
     }
 
     /// Saves (nil: cancels) the game's Record as done / Reset request; its next Dock start
@@ -213,16 +216,17 @@ struct MadeiraDockView: View {
                 if !dock.installPrograms.isEmpty {
                     Section {
                         ForEach(dock.games.filter { dock.installPrograms[$0.id] != nil }) { game in
-                            Picker(game.name, selection: Binding(get: { dock.installRunNext[game.id] ?? true },
-                                                                 set: { dock.setRunsInstallers(game.id, $0) })) {
-                                Text("Run at next start").tag(true)
-                                Text("Skip").tag(false)
+                            Picker(game.name, selection: Binding(get: { dock.installChoice[game.id] ?? .automatic },
+                                                                 set: { dock.setInstallChoice(game.id, $0) })) {
+                                Text("Automatic (game scripts)").tag(DockInstallChoice.automatic)
+                                Text("Run at next start").tag(DockInstallChoice.run)
+                                Text("Skip").tag(DockInstallChoice.skip)
                             }
                             .pickerStyle(.menu)
                             DockInstallRequestRows(dock: dock, appID: game.id, name: game.name)
                         }
                     } header: { Text("One-time installs") } footer: {
-                        Text("Programs from a game's Steam install script, such as runtime setups, that Steam's desktop client runs before a first start. A Dock start runs the ones not yet recorded as done before Valve's client starts; the choice then changes to Skip. Record as done and Reset take effect at the game's next Dock start.")
+                        Text("Automatic runs only installers declared by the game's own scripts. Shared installers remain available through Run at next start. After an installer batch starts, the choice changes to Skip. Record as done and Reset take effect at the game's next Dock start.")
                     }
                 }
                 if let status = dock.status {
@@ -255,6 +259,8 @@ struct DockInstallRequestRows: View {
 
     var body: some View {
         Group {
+            Text("If the game reports a missing runtime or DLL, choose Run at next start, then launch the game. This also runs pending installers from this library's shared folder, which may include components for other games. After installation, restart Madeira to play. If an installer is missing, restore the game's dependency files or install the required runtime through Wine's file explorer.")
+                .font(.caption).foregroundStyle(.secondary)
             if let request = dock.installRequest[appID] {
                 HStack {
                     Text(request == .record ? "Next start: one-time installs recorded as done."
