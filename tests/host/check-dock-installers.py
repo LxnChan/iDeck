@@ -292,7 +292,12 @@ func pe(_ url: URL, machine: UInt16) throws {
                   "\"installscript\" { \"run process\" { \"Shared Runtime\" { \"HasRunKey\" \"HKEY_LOCAL_MACHINE\\\\Software\\\\Fixture Shared\" \"process 1\" \"%INSTALLDIR%\\\\_CommonRedist\\\\Shared\\\\2015\\\\setup.exe\" } } }")
         try pe(common.appendingPathComponent("Steamworks Shared/_CommonRedist/Shared/2015/setup.exe"), machine: 0x8664)
         try write(folder.appendingPathComponent("bin/other.vdf"), "\"nothing\" { }")
-        require(DockInstallers.resolve(dir + "\\redist\\tool.exe", drive: drive)?.lastPathComponent == "Tool.EXE", "paths resolve case-insensitively")
+        // Case-insensitive hosts can resolve the supplied spelling directly; require
+        // the correct file contents, not a particular spelling of its returned URL.
+        let resolvedTool = DockInstallers.resolve(dir + "\\redist\\tool.exe", drive: drive)
+        let resolvedToolBytes = resolvedTool.flatMap { try? Data(contentsOf: $0) }
+        let expectedToolBytes = try Data(contentsOf: folder.appendingPathComponent("Redist/Tool.EXE"))
+        require(resolvedToolBytes == expectedToolBytes, "paths resolve case-insensitively to the correct file")
         require(DockInstallers.resolve(dir + "\\..\\..\\x.exe", drive: drive) == nil && DockInstallers.resolve("D:\\x.exe", drive: drive) == nil &&
                 DockInstallers.resolve(dir + "\\nothing.exe", drive: drive) == nil, "parent references, other drives and absent files do not resolve")
         try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("link"), withDestinationURL: base)
