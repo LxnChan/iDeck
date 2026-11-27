@@ -6,6 +6,7 @@
 set -euo pipefail
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 "$R/build/wine-pe/apply-loader-patches.py"
+python3 "$R/build/wine-pe/apply-shell-patches.py"
 : "${LLVM_MINGW:?Set LLVM_MINGW to the verified LLVM-MinGW toolchain directory}"
 TC="$LLVM_MINGW/bin"
 export PATH="$TC:$PATH"

@@ -1,0 +1,199 @@
+From: LxnChan <lingxuanning@outlook.com>
+Subject: [PATCH] shell32: preserve background menus and restrict view notifications to direct children
+
+SPDX-License-Identifier: LGPL-2.1-or-later
+
+Keep background resource IDs in the command range before the context-menu
+merge offset is applied. Retain the normalized subscription PIDL and check
+direct-child membership before updating rows, including both endpoints of
+rename events. Preserve recursive delivery for other consumers and deliver
+two-item events when either endpoint matches. Avoid duplicate or excluded
+rows, invalid deletion indices and unterminated destination lists.
+
+diff --git a/dlls/shell32/changenotify.c b/dlls/shell32/changenotify.c
+index 93feedfa..d316ed45 100644
+--- a/dlls/shell32/changenotify.c
++++ b/dlls/shell32/changenotify.c
+@@ -350,9 +350,9 @@ void WINAPI SHChangeNotify(LONG wEventId, UINT uFlags, LPCVOID dwItem1, LPCVOID
+                 else if( wEventId & SHCNE_NOITEMEVENTS )
+                     notify = TRUE;
+                 else if( wEventId & ( SHCNE_ONEITEMEVENTS | SHCNE_TWOITEMEVENTS ) )
+-                    notify = should_notify( Pidls[0], pidl, subtree );
+-                else if( wEventId & SHCNE_TWOITEMEVENTS )
+-                    notify = should_notify( Pidls[1], pidl, subtree );
++                    notify = should_notify( Pidls[0], pidl, subtree )
++                            || ((wEventId & SHCNE_TWOITEMEVENTS)
++                                && should_notify( Pidls[1], pidl, subtree ));
+             }
+         }
+ 
+diff --git a/dlls/shell32/shell32.rc b/dlls/shell32/shell32.rc
+index fe803395..c65d3dc9 100644
+--- a/dlls/shell32/shell32.rc
++++ b/dlls/shell32/shell32.rc
+@@ -39,7 +39,7 @@ MENU_002 MENUEX
+ BEGIN
+ 	POPUP ""
+ 	BEGIN
+-	  POPUP "&View",                0x40   /* Submenus need ids <= FCIDM_SHVIEWLAST so they don't get removed by MergeMenu */
++	  POPUP "&View",                0x7040 /* Use the command range before the context-menu offset is applied. */
+ 	  BEGIN
+ 	    MENUITEM "Lar&ge Icons",	FCIDM_SHVIEW_BIGICON
+ 	    MENUITEM "S&mall Icons",	FCIDM_SHVIEW_SMALLICON
+@@ -47,12 +47,12 @@ BEGIN
+ 	    MENUITEM "&Details",	FCIDM_SHVIEW_REPORTVIEW
+ 	  END
+ 	  MENUITEM SEPARATOR
+-	  POPUP "Arrange &Icons",       0x41
++	  POPUP "Arrange &Icons",       0x7041
+ 	  BEGIN
+-	    MENUITEM "By &Name",	0x30	/* column 0 */
+-	    MENUITEM "By &Type",	0x32	/* column 2 */
+-	    MENUITEM "By &Size",	0x31	/* ... */
+-	    MENUITEM "By &Date",	0x33
++	    MENUITEM "By &Name",	0x7080	/* column 0 */
++	    MENUITEM "By &Type",	0x7082	/* column 2 */
++	    MENUITEM "By &Size",	0x7081	/* ... */
++	    MENUITEM "By &Date",	0x7083
+ 	    MENUITEM SEPARATOR
+ 	    MENUITEM "&Auto Arrange",	FCIDM_SHVIEW_AUTOARRANGE
+ 	  END
+@@ -63,7 +63,7 @@ BEGIN
+ 	  MENUITEM "Paste",		FCIDM_SHVIEW_INSERT
+ 	  MENUITEM "Paste as Link",	FCIDM_SHVIEW_INSERTLINK
+ 	  MENUITEM SEPARATOR
+-	  POPUP "New",                  0x42
++	  POPUP "New",                  0x7042
+ 	  BEGIN
+ 	    MENUITEM "New &Folder",	FCIDM_SHVIEW_NEWFOLDER
+ 	    MENUITEM "New &Link",	FCIDM_SHVIEW_NEWLINK
+diff --git a/dlls/shell32/shlview.c b/dlls/shell32/shlview.c
+index b1524b1f..a913e5bd 100644
+--- a/dlls/shell32/shlview.c
++++ b/dlls/shell32/shlview.c
+@@ -134,6 +134,7 @@ typedef struct
+ 	LPITEMIDLIST	*apidl;
+         LISTVIEW_SORT_INFO ListViewSortInfo;
+ 	ULONG			hNotify;	/* change notification handle */
++        LPITEMIDLIST       pidlNotify; /* normalized folder used by the notification subscription */
+ 	HANDLE		hAccel;
+ 	DWORD		dwAspects;
+ 	DWORD		dwAdvf;
+@@ -749,9 +750,9 @@ static LRESULT ShellView_OnCreate(IShellViewImpl *This)
+             else
+                 ntreg.pidl = raw_pidl;
+             ntreg.fRecursive = TRUE;
++            This->pidlNotify = (LPITEMIDLIST)ntreg.pidl;
+             This->hNotify = SHChangeNotifyRegister(This->hWnd, SHCNRF_InterruptLevel, SHCNE_ALLEVENTS,
+                                                    SHV_CHANGE_NOTIFY, 1, &ntreg);
+-            SHFree((LPITEMIDLIST)ntreg.pidl);
+             SHFree(computer_pidl);
+         }
+         IPersistFolder2_Release(ppf2);
+@@ -1279,12 +1280,12 @@ static LRESULT ShellView_OnCommand(IShellViewImpl * This,DWORD dwCmdID, DWORD dw
+ 	    CheckToolbar(This);
+ 	    break;
+ 
+-	  /* the menu IDs for sorting are 0x30... see shell32.rc */
+-	  case 0x30:
+-	  case 0x31:
+-	  case 0x32:
+-	  case 0x33:
+-            This->ListViewSortInfo.nHeaderID = dwCmdID - 0x30;
++	  /* The sorting commands use the same resource range as other view commands. */
++	  case 0x7080:
++	  case 0x7081:
++	  case 0x7082:
++	  case 0x7083:
++            This->ListViewSortInfo.nHeaderID = dwCmdID - 0x7080;
+ 	    This->ListViewSortInfo.bIsAscending = TRUE;
+ 	    This->ListViewSortInfo.nLastHeaderID = This->ListViewSortInfo.nHeaderID;
+ 	    SendMessageW(This->hWndList, LVM_SORTITEMS, (WPARAM) &This->ListViewSortInfo, (LPARAM)ShellView_ListViewCompareItems);
+@@ -1625,28 +1626,47 @@ static LRESULT ShellView_OnNotify(IShellViewImpl * This, UINT CtlID, LPNMHDR lpn
+ 
+ static LRESULT ShellView_OnChange(IShellViewImpl * This, const LPCITEMIDLIST *pidls, LONG event)
+ {
+-    LPCITEMIDLIST pidl;
++    LPCITEMIDLIST old_child = NULL, new_child = NULL;
++    LPITEMIDLIST pidl;
+     BOOL ret = TRUE;
++    INT i;
++
++    if (!pidls || !This->pidlNotify) return ret;
+ 
+     TRACE("(%p)->(%p, %p, 0x%08lx)\n", This, pidls[0], pidls[1], event);
+ 
++    /* Recursive notifications also describe descendants that are not rows in
++     * this view. Compare against the same namespace used by the subscription. */
++    if (pidls[0] && ILIsParent(This->pidlNotify, pidls[0], TRUE))
++        old_child = ILFindLastID(pidls[0]);
++    if (pidls[1] && ILIsParent(This->pidlNotify, pidls[1], TRUE))
++        new_child = ILFindLastID(pidls[1]);
++
+     switch (event)
+     {
+         case SHCNE_MKDIR:
+         case SHCNE_CREATE:
+-            pidl = ILClone(ILFindLastID(pidls[0]));
+-            shellview_add_item(This, pidl);
++            if (old_child && LV_FindItemByPidl(This, old_child) == -1
++                    && IncludeObject(This, old_child) == S_OK && (pidl = ILClone(old_child)))
++                shellview_add_item(This, pidl);
+             break;
+         case SHCNE_RMDIR:
+         case SHCNE_DELETE:
+-        {
+-            INT i = LV_FindItemByPidl(This, ILFindLastID(pidls[0]));
+-            ret = SendMessageW(This->hWndList, LVM_DELETEITEM, i, 0);
++            if (old_child && (i = LV_FindItemByPidl(This, old_child)) != -1)
++                ret = SendMessageW(This->hWndList, LVM_DELETEITEM, i, 0);
+             break;
+-        }
+         case SHCNE_RENAMEFOLDER:
+         case SHCNE_RENAMEITEM:
+-            LV_RenameItem(This, pidls[0], pidls[1]);
++            i = old_child ? LV_FindItemByPidl(This, old_child) : -1;
++            if (new_child && IncludeObject(This, new_child) == S_OK)
++            {
++                if (i != -1)
++                    LV_RenameItem(This, pidls[0], pidls[1]);
++                else if (LV_FindItemByPidl(This, new_child) == -1 && (pidl = ILClone(new_child)))
++                    shellview_add_item(This, pidl);
++            }
++            else if (i != -1)
++                ret = SendMessageW(This->hWndList, LVM_DELETEITEM, i, 0);
+             break;
+         case SHCNE_UPDATEITEM:
+ 	    break;
+@@ -1697,6 +1717,9 @@ static LRESULT CALLBACK ShellView_WndProc(HWND hWnd, UINT uMessage, WPARAM wPara
+ 
+ 	  case WM_DESTROY:	
+ 				SHChangeNotifyDeregister(pThis->hNotify);
++                                pThis->hNotify = 0;
++                                SHFree(pThis->pidlNotify);
++                                pThis->pidlNotify = NULL;
+ 				RevokeDragDrop(pThis->hWnd);
+ 	                        break;
+ 
+diff --git a/dlls/shell32/shlview_cmenu.c b/dlls/shell32/shlview_cmenu.c
+index cac33c39..3b5346e9 100644
+--- a/dlls/shell32/shlview_cmenu.c
++++ b/dlls/shell32/shlview_cmenu.c
+@@ -411,7 +411,7 @@ static HRESULT do_paste(ContextMenu *menu, HWND hwnd)
+     IPersistFolder2 *dst_persist;
+     const DWORD *drop_effect;
+     IShellFolder *dst_folder;
+-    WCHAR dst_path[MAX_PATH];
++    WCHAR dst_path[MAX_PATH + 1] = {0};
+     SHFILEOPSTRUCTW op = {0};
+     ITEMIDLIST *dst_pidl;
+     IDataObject *data;
+@@ -1498,7 +1498,7 @@ static HRESULT WINAPI BackgroundMenu_InvokeCommand(
+ 
+             default:
+                 /* if it's an id just pass it to the parent shv */
+-                if (hWnd) SendMessageA(hWnd, WM_COMMAND, MAKEWPARAM(LOWORD(lpcmi->lpVerb), 0), 0);
++                if (hWnd) SendMessageA(hWnd, WM_COMMAND, MAKEWPARAM(LOWORD(lpcmi->lpVerb) + FCIDM_BASE, 0), 0);
+                 break;
+          }
+     }
